@@ -3362,8 +3362,13 @@ function DropZone({ onFiles, compact }) {
       style={{ borderColor: over ? C.accent : C.lineStrong, background: over ? C.accentSoft : C.surfaceAlt }}>
       <div className="flex h-11 w-11 items-center justify-center rounded-xl" style={{ background: C.accentSoft }}><Upload size={20} style={{ color: C.accent }} /></div>
       <p className="text-sm font-medium">Arrastra aquí el CSV de tu banco</p>
+      <p className="text-[11px] text-slate-400">o púlsalo para buscarlo en tu dispositivo</p>
       <Btn onClick={() => inputRef.current?.click()} kind="primary">Seleccionar archivo</Btn>
-      <input ref={inputRef} type="file" accept=".csv,.txt,text/csv" multiple className="hidden"
+      {/* El `accept` estricto escondía el archivo en el móvil: los selectores de Android e iOS
+          reportan el CSV con tipos dispares (vnd.ms-excel, comma-separated-values, y
+          octet-stream cuando viene de Drive). Se amplía para que no quede nunca en gris. */}
+      <input ref={inputRef} type="file" multiple className="hidden"
+        accept=".csv,.txt,.tsv,.json,text/csv,text/plain,text/tab-separated-values,application/json,application/vnd.ms-excel,text/comma-separated-values,application/octet-stream"
         onChange={(e) => { if (e.target.files.length) onFiles(e.target.files); e.target.value = ""; }} />
     </div>
   );
@@ -3459,7 +3464,7 @@ function EmptyState({ onFiles, onSample, error, parsing, onSettings }) {
               </span>
               <span className="mt-3 block text-base font-semibold">Trae tu extracto</span>
               <span className="mt-1 block text-xs leading-relaxed text-slate-500">
-                Descarga el Excel o el CSV desde la web de tu banco y arrástralo aquí. Un minuto, sin registrarte en nada.
+                Descárgalo en <strong>formato CSV</strong> desde la web de tu banco y tráelo aquí. Un minuto, sin registrarte en nada. Si solo te lo da en Excel, ábrelo y guárdalo como CSV.
               </span>
               <div className="mt-3"><DropZone onFiles={onFiles} compact /></div>
             </div>
@@ -8324,6 +8329,13 @@ function AppMain() {
     const file = fileList[0];
     if (!file) return;
     setError(null);
+    // Una copia de seguridad (.json) no es un extracto: pasarla por el lector de CSV producía
+    // un error sin sentido. Se detecta y se restaura por su camino.
+    if (/\.json$/i.test(file.name) || file.type === "application/json") {
+      const r = await importJSON(file);
+      if (!r.ok) setError(r.text);
+      return;
+    }
     setImp({ phase: "parsing", fileName: file.name });
     try {
       const buf = await file.arrayBuffer();
