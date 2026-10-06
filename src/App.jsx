@@ -3369,6 +3369,54 @@ function DropZone({ onFiles, compact }) {
   );
 }
 
+// Guía de instalación del backend. Vive en el repositorio porque es donde está el botón de
+// despliegue; desde la app solo se enlaza.
+const GUIA_URL = "https://github.com/lsantos44/MisFinanzas";
+
+// Primeros pasos. Enseña la progresión real de la app: lo que funciona sin montar nada y lo
+// que exige backend, con su coste declarado. Un usuario nuevo tiene que poder ver de un
+// vistazo dónde está y qué gana con el siguiente paso — y, sobre todo, que puede quedarse
+// donde está. Antes la portada ofrecía «conectar el banco» como primera opción recomendada:
+// cuarenta minutos de instalación antes de ver un solo gráfico.
+function PrimerosPasos({ tieneDatos, tieneSync, tieneBanco, tieneIA, onIr }) {
+  const pasos = [
+    { id: "datos", hecho: tieneDatos, titulo: "Trae tus movimientos", gana: "Verlo todo clasificado por categorías y por activos.",
+      coste: "Sin instalar nada", accion: tieneDatos ? null : { texto: "Importar un archivo", ir: "cerrar" } },
+    { id: "sync", hecho: tieneSync, titulo: "Sincroniza entre dispositivos", gana: "Los mismos datos en el móvil y en el ordenador, siempre al día.",
+      coste: "Requiere tu propio backend · ~20 min", accion: { texto: tieneSync ? "Ver ajustes" : "Cómo se monta", ir: tieneSync ? "sync" : "guia" } },
+    { id: "banco", hecho: tieneBanco, titulo: "Conecta tu banco", gana: "Los movimientos entran solos cada pocas horas, sin descargar extractos.",
+      coste: "Requiere backend y cuenta en Enable Banking · ~20 min más", accion: { texto: tieneBanco ? "Ver ajustes" : "Cómo se monta", ir: tieneBanco ? "banco" : "guia" } },
+    { id: "ia", hecho: tieneIA, titulo: "Deja que la IA te ayude a clasificar", gana: "Reconoce comercios que no sabes de qué son.",
+      coste: "Solo pegar tu clave de un proveedor", accion: { texto: tieneIA ? "Ver ajustes" : "Configurar", ir: "ia" } },
+  ];
+  return (
+    <div className="space-y-2">
+      <p className="text-xs leading-relaxed text-slate-500">
+        La app funciona entera sin instalar nada: importas el extracto de tu banco y ya está. Lo demás es opcional y puedes hacerlo cuando quieras — o nunca.
+      </p>
+      {pasos.map((x) => (
+        <div key={x.id} className="flex items-start gap-2.5 rounded-xl border p-2.5" style={{ borderColor: C.line, background: x.hecho ? C.surfaceAlt : C.surface }}>
+          <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold"
+            style={x.hecho ? { background: "#dcfce7", color: "#15803d" } : { background: C.surfaceAlt, color: C.faint, border: `1px solid ${C.lineStrong}` }}>
+            {x.hecho ? "✓" : ""}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-medium text-slate-800">{x.titulo}</span>
+            <span className="mt-0.5 block text-[11px] leading-relaxed text-slate-500">{x.gana}</span>
+            <span className="mt-0.5 block text-[11px] text-slate-400">{x.coste}</span>
+            {x.accion && (
+              <button type="button" onClick={() => onIr(x.accion.ir)}
+                className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-semibold hover:underline focus-visible:outline-none" style={{ color: C.accent }}>
+                {x.accion.texto} <ChevronRight size={11} />
+              </button>
+            )}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function EmptyState({ onFiles, onSample, error, parsing, onSettings }) {
   return (
     <div className="mx-auto max-w-2xl px-4 py-10 sm:py-14 anim-rise">
@@ -3397,37 +3445,39 @@ function EmptyState({ onFiles, onSample, error, parsing, onSettings }) {
         <Card className="mt-5 flex items-center justify-center p-10"><Spinner label="Leyendo el archivo…" /></Card>
       ) : (
         <>
+          {/* El orden importa más de lo que parece. Antes el banco iba primero y marcado como
+              recomendado, pero exige montar un backend y una cuenta en Enable Banking: cuarenta
+              minutos antes de ver un gráfico. Quien llega tiene que poder probar la app en un
+              minuto y decidir después si le compensa instalar algo. */}
           <div className="mt-5 grid gap-3 sm:grid-cols-2">
-            {/* Via principal: el banco. Se marca como recomendada porque es la que mantiene los
-                datos al dia sola; el CSV obliga a repetir la descarga cada mes. */}
-            <button type="button" onClick={onSettings}
-              className="group flex flex-col rounded-2xl border-2 bg-white p-5 text-left transition-all hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-              style={{ borderColor: C.accent }}>
+            <div className="flex flex-col rounded-2xl border-2 bg-white p-5" style={{ borderColor: C.accent }}>
               <span className="flex items-center gap-2">
                 <span className="flex h-10 w-10 items-center justify-center rounded-xl" style={{ background: C.accentSoft, color: C.accent }}>
-                  <Landmark size={20} />
+                  <FileText size={20} />
                 </span>
-                <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide" style={{ background: C.accentSoft, color: C.accent }}>Recomendado</span>
+                <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide" style={{ background: C.accentSoft, color: C.accent }}>Empieza aquí</span>
               </span>
-              <span className="mt-3 block text-base font-semibold">Conectar tu banco</span>
+              <span className="mt-3 block text-base font-semibold">Trae tu extracto</span>
               <span className="mt-1 block text-xs leading-relaxed text-slate-500">
-                Los movimientos entran solos y se mantienen al día. Sin descargar extractos cada mes.
-              </span>
-              <span className="mt-auto pt-3 inline-flex items-center gap-1 text-xs font-semibold" style={{ color: C.accent }}>
-                Empezar <ChevronRight size={13} className="transition-transform group-hover:translate-x-0.5" />
-              </span>
-            </button>
-
-            <div className="flex flex-col rounded-2xl border bg-white p-5" style={{ borderColor: C.line }}>
-              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-500">
-                <FileText size={20} />
-              </span>
-              <span className="mt-3 block text-base font-semibold">Importar un archivo</span>
-              <span className="mt-1 block text-xs leading-relaxed text-slate-500">
-                El extracto CSV de tu banco, o una copia de seguridad tuya. Útil para cargar histórico antiguo.
+                Descarga el Excel o el CSV desde la web de tu banco y arrástralo aquí. Un minuto, sin registrarte en nada.
               </span>
               <div className="mt-3"><DropZone onFiles={onFiles} compact /></div>
             </div>
+
+            <button type="button" onClick={onSettings}
+              className="group flex flex-col rounded-2xl border bg-white p-5 text-left transition-all hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              style={{ borderColor: C.line }}>
+              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-500">
+                <Landmark size={20} />
+              </span>
+              <span className="mt-3 block text-base font-semibold">Conectar tu banco</span>
+              <span className="mt-1 block text-xs leading-relaxed text-slate-500">
+                Los movimientos entran solos cada pocas horas, sin descargar nada. Más cómodo, pero hay que montar un backend propio: unos 20 minutos.
+              </span>
+              <span className="mt-auto pt-3 inline-flex items-center gap-1 text-xs font-semibold" style={{ color: C.accent }}>
+                Ver cómo <ChevronRight size={13} className="transition-transform group-hover:translate-x-0.5" />
+              </span>
+            </button>
           </div>
 
           <div className="mt-5 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-center">
@@ -6479,8 +6529,11 @@ function ReceiptTrendsCard({ trends, onDrill }) {
 // Grupo plegable de Ajustes. Enseña su estado en la cabecera (un punto de color y una frase)
 // para que quien llega nuevo vea de un vistazo qué tiene configurado y qué le falta, sin
 // abrirlos uno a uno. Solo el primero viene abierto.
-function Grupo({ titulo, estado, ok, abierto = false, children }) {
+function Grupo({ titulo, estado, ok, abierto = false, forzar = false, children }) {
   const [open, setOpen] = useState(abierto);
+  // `forzar` permite abrirlo desde Primeros pasos: sin esto, pulsar «Configurar» no haría
+  // nada visible porque el grupo guarda su propio estado.
+  useEffect(() => { if (forzar) setOpen(true); }, [forzar]);
   return (
     <section className="rounded-xl border" style={{ borderColor: C.line, background: C.surface }}>
       <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
@@ -6518,6 +6571,7 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
   const [snaps, setSnaps] = useState(null);
   const [snapsOpen, setSnapsOpen] = useState(false);
   const [dupes, setDupes] = useState(null); // null = sin buscar; [] = buscado y limpio
+  const [abrir, setAbrir] = useState(null);  // grupo al que saltar desde Primeros pasos
   const fileRef = useRef(null);
   const custom = ai.provider !== "claude";
   const setAiField = (k, v) => setAi((c) => ({ ...c, [k]: v }));
@@ -6538,7 +6592,21 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
         {/* Ajustes es también donde se orienta quien llega nuevo: cada grupo enseña su
             estado, de modo que de un vistazo se ve qué falta por configurar. Lo que se usa
             una vez al año deja de ocupar lo mismo que lo que se mira cada semana. */}
-        <Grupo titulo="Tus datos y sincronización" abierto
+        {/* Lo primero que ve quien abre Ajustes por primera vez: dónde está y qué puede ganar.
+            Se cierra solo cuando ya no queda nada por configurar, para no estorbar después. */}
+        <Grupo titulo="Primeros pasos" abierto={!(movsCount && sync?.version && bank?.connections?.length)}
+          estado={`${[movsCount > 0, !!sync?.version, !!(bank && bank.connections.length), aiOn].filter(Boolean).length} de 4 completados`}>
+          <PrimerosPasos
+            tieneDatos={movsCount > 0} tieneSync={!!sync?.version}
+            tieneBanco={!!(bank && bank.connections.length)} tieneIA={!!aiOn}
+            onIr={(destino) => {
+              if (destino === "guia") { try { window.open(GUIA_URL, "_blank", "noopener"); } catch { /* bloqueado */ } return; }
+              if (destino === "cerrar") { onClose(); return; }
+              setAbrir(destino); // despliega el grupo correspondiente
+            }} />
+        </Grupo>
+
+        <Grupo titulo="Tus datos y sincronización" abierto={abrir === "sync"} forzar={abrir === "sync"}
           estado={sync?.version ? `sincronizado · versión ${sync.version}` : "sin sincronizar"}
           ok={!!sync?.version}>
         <section>
@@ -6595,7 +6663,7 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
         )}
         </Grupo>
 
-        <Grupo titulo="Banco"
+        <Grupo titulo="Banco" abierto={abrir === "banco"} forzar={abrir === "banco"}
           estado={bank && bank.connections.length ? `${bank.connections.length} ${bank.connections.length === 1 ? "banco conectado" : "bancos conectados"}` : "sin conectar"}
           ok={!!(bank && bank.connections.length)}>
         {bank && (
@@ -6742,7 +6810,7 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
         )}
         </Grupo>
 
-        <Grupo titulo="Inteligencia artificial"
+        <Grupo titulo="Inteligencia artificial" abierto={abrir === "ia"} forzar={abrir === "ia"}
           estado={aiOn ? "activada" : "desactivada"} ok={aiOn}>
         <section>
           <h3 className="text-sm font-semibold">Inteligencia artificial</h3>
