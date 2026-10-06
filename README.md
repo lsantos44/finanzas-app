@@ -25,8 +25,9 @@ npm run build    # genera dist/
 Una sola aplicación React en `src/App.jsx`. Sin servidor: todo ocurre en el navegador, salvo
 lo que se delega en el Worker (almacenamiento, banco y proxy de IA).
 
-El despliegue lo hace Cloudflare Pages al recibir un push: compila con `npm run build` y
-publica `dist/`. Por eso `dist/` no se versiona.
+El despliegue lo hace Cloudflare al recibir un push: compila con `npm run build` y publica
+`dist/` como Worker con archivos estáticos, según `wrangler.jsonc`. Por eso `dist/` no se
+versiona: lo genera el servidor de compilación.
 
 ## Dónde se guardan los datos
 
