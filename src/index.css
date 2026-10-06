@@ -1,0 +1,16 @@
+@import "tailwindcss";
+
+/* Tailwind v4 pone el borde en currentColor. La app escribe `className="border"`
+   contando con el gris por defecto de v3, así que lo restauramos. */
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: #e4eaf2;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+}
