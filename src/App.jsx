@@ -2927,7 +2927,7 @@ function unlockBodyScroll() {
   if (--scrollLocks <= 0) { scrollLocks = 0; document.body.style.overflow = ""; }
 }
 
-function Modal({ title, subtitle, onClose, children, wide }) {
+function Modal({ title, subtitle, onClose, children, wide, footer }) {
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useEffect(() => {
@@ -2952,7 +2952,7 @@ function Modal({ title, subtitle, onClose, children, wide }) {
         </div>
         <div className="flex-1 overflow-y-auto overscroll-contain px-5 py-4">{children}</div>
         <div className="shrink-0 border-t bg-white px-5 py-3" style={{ borderColor: C.line, paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))" }}>
-          <Btn onClick={onClose} className="w-full justify-center sm:w-auto">Cerrar</Btn>
+          {footer || <Btn onClick={onClose} className="w-full justify-center sm:w-auto">Cerrar</Btn>}
         </div>
       </div>
     </div>
@@ -3422,7 +3422,153 @@ function PrimerosPasos({ tieneDatos, tieneSync, tieneBanco, tieneIA, onIr }) {
   );
 }
 
-function EmptyState({ onFiles, onSample, error, parsing, onSettings }) {
+// Asistente de conexión. La guía del repositorio explica los pasos, pero no puede decirte si
+// TE han salido bien: lees, haces, y descubres al final que algo falló. Aquí cada paso se
+// verifica contra tu propio backend en el momento, que es la diferencia entre diez minutos y
+// dos tardes. Lo que no puede hacer: crear tus cuentas. Eso es tuyo por definición.
+function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onIrBanco }) {
+  const [paso, setPaso] = useState(0);
+  const [url, setUrl] = useState(workerUrl || "");
+  const [tok, setTok] = useState(token || "");
+  const [probando, setProbando] = useState(false);
+  const [res, setRes] = useState(null); // { ok, texto, detalle }
+
+  const limpia = (u) => u.trim().replace(/\/+$/, "");
+
+  // Comprueba contra /store/status, que dice qué ve el Worker sin exponer ningún secreto.
+  const probar = async (conToken) => {
+    const base = limpia(url);
+    if (!/^https?:\/\//.test(base)) { setRes({ ok: false, texto: "La dirección debe empezar por https://" }); return false; }
+    setProbando(true); setRes(null);
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 20000);
+      const r = await fetch(base + "/store/status", {
+        headers: conToken && tok.trim() ? { Authorization: "Bearer " + tok.trim() } : {},
+        signal: ctrl.signal,
+      });
+      clearTimeout(t);
+      if (r.status === 401) {
+        setRes({ ok: false, texto: conToken ? "La contraseña no coincide con la del Worker." : "Tu backend responde, pero pide contraseña.", detalle: conToken ? "Revisa que la hayas pegado igual en Cloudflare, sin espacios ni saltos de línea." : null });
+        return false;
+      }
+      if (!r.ok) { setRes({ ok: false, texto: `Tu backend respondió ${r.status}.`, detalle: "Comprueba que la dirección es la correcta y que lo has desplegado." }); return false; }
+      const d = await r.json();
+      if (!d.bindingDB) {
+        setRes({ ok: false, texto: "Responde, pero le falta la base de datos.", detalle: "En Cloudflare: tu Worker → Settings → Bindings → añadir D1 con el nombre DB. Ojo: el botón de guardar queda fuera de la vista, baja dentro de la ventanita." });
+        return false;
+      }
+      setRes({ ok: true, texto: conToken ? "Todo correcto: responde, tiene contraseña y la base de datos funciona." : "Tu backend responde y la base de datos funciona.", detalle: !conToken && !d.tieneToken ? "Aún no tiene contraseña: la pondremos en el paso siguiente." : null });
+      return true;
+    } catch (e) {
+      setRes({ ok: false, texto: e.name === "AbortError" ? "No respondió en 20 segundos." : "No se pudo contactar con esa dirección.", detalle: "Comprueba que la has copiado entera, incluido el https://" });
+      return false;
+    } finally { setProbando(false); }
+  };
+
+  const generar = () => setTok(crypto.randomUUID() + "-" + crypto.randomUUID().slice(0, 8));
+
+  const Paso = ({ n, titulo, children }) => (
+    <div>
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide" style={{ color: C.accent }}>Paso {n} de 4</div>
+      <h3 className="text-base font-semibold">{titulo}</h3>
+      <div className="mt-3 space-y-3 text-sm leading-relaxed text-slate-600">{children}</div>
+    </div>
+  );
+
+  const Resultado = () => !res ? null : (
+    <div className="rounded-xl p-2.5 text-[12px] leading-relaxed" style={res.ok ? { background: "#dcfce7", color: "#15803d" } : { background: C.warnSoft, color: C.warn }}>
+      <strong>{res.ok ? "✓ " : "⚠ "}{res.texto}</strong>
+      {res.detalle && <span className="mt-0.5 block font-normal">{res.detalle}</span>}
+    </div>
+  );
+
+  return (
+    <Modal title="Conectar tu backend" subtitle="Unos 20 minutos, gratis" onClose={onClose}
+      footer={(
+        <div className="flex items-center justify-between gap-2">
+          <Btn onClick={() => (paso === 0 ? onClose() : (setRes(null), setPaso(paso - 1)))}>{paso === 0 ? "Ahora no" : "Atrás"}</Btn>
+          {paso < 3 ? (
+            <Btn kind="primary" disabled={(paso === 1 || paso === 2) && !(res && res.ok)}
+              onClick={() => { if (paso === 2) onGuardar(limpia(url), tok.trim()); setRes(null); setPaso(paso + 1); }}>
+              Siguiente <ChevronRight size={14} />
+            </Btn>
+          ) : (
+            <Btn kind="primary" onClick={onClose}>Terminar</Btn>
+          )}
+        </div>
+      )}>
+      <div className="space-y-5">
+        {paso === 0 && (
+          <Paso n={1} titulo="Lo que vas a conseguir">
+            <p>Tus datos sincronizados entre el móvil y el ordenador, y —si quieres— los movimientos del banco entrando solos cada pocas horas.</p>
+            <p>Todo vive en <strong>tu</strong> cuenta de Cloudflare. Ni yo ni nadie más tiene acceso.</p>
+            <div className="rounded-xl border p-3" style={{ borderColor: C.line, background: C.surfaceAlt }}>
+              <p className="text-[12px] font-medium text-slate-700">Necesitas una cuenta de Cloudflare</p>
+              <p className="mt-0.5 text-[12px]">Es gratis y no piden tarjeta. Si ya la tienes, pasa al siguiente paso.</p>
+              <a href="https://dash.cloudflare.com/sign-up" target="_blank" rel="noopener noreferrer"
+                className="mt-2 inline-flex items-center gap-1 text-[12px] font-semibold hover:underline" style={{ color: C.accent }}>
+                Crear cuenta <ChevronRight size={12} />
+              </a>
+            </div>
+          </Paso>
+        )}
+
+        {paso === 1 && (
+          <Paso n={2} titulo="Instala tu backend">
+            <p>Pulsa el botón de abajo: se abre Cloudflare, te pide permiso y lo instala solo, con su base de datos incluida.</p>
+            <a href={GUIA_URL} target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold text-white" style={{ background: C.accent }}>
+              Abrir la guía con el botón <ChevronRight size={14} />
+            </a>
+            <p className="text-[12px] text-slate-500">Cuando termine, Cloudflare te dará una dirección parecida a <code className="rounded bg-slate-100 px-1">https://finanzas.algo.workers.dev</code>. Cópiala y pégala aquí:</p>
+            <input value={url} onChange={(e) => { setUrl(e.target.value); setRes(null); }} placeholder="https://…workers.dev"
+              autoCapitalize="off" autoCorrect="off" spellCheck={false}
+              className="w-full rounded-lg border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ borderColor: C.lineStrong }} />
+            <Btn onClick={() => probar(false)} disabled={probando || !url.trim()}>{probando ? "Comprobando…" : "Comprobar"}</Btn>
+            <Resultado />
+          </Paso>
+        )}
+
+        {paso === 2 && (
+          <Paso n={3} titulo="Ponle una contraseña">
+            <p>Para que solo tú puedas usar tu backend. Te la genero yo, que es más segura que una inventada:</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <input value={tok} onChange={(e) => { setTok(e.target.value); setRes(null); }} placeholder="pulsa Generar"
+                autoCapitalize="off" autoCorrect="off" spellCheck={false}
+                className="min-w-0 flex-1 rounded-lg border px-3 py-2 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ borderColor: C.lineStrong }} />
+              <Btn size="sm" onClick={generar}>Generar</Btn>
+              <Btn size="sm" onClick={() => { try { navigator.clipboard.writeText(tok); } catch { /* sin permiso */ } }} disabled={!tok}>Copiar</Btn>
+            </div>
+            <div className="rounded-xl border p-3" style={{ borderColor: C.line, background: C.surfaceAlt }}>
+              <p className="text-[12px] font-medium text-slate-700">Pégala en Cloudflare</p>
+              <p className="mt-0.5 text-[12px]">Tu Worker → <strong>Settings</strong> → <strong>Variables and Secrets</strong> → <strong>Add</strong>. Tipo <strong>Secret</strong>, nombre exacto <code className="rounded bg-slate-100 px-1">PROXY_TOKEN</code>, y de valor esta contraseña. Luego pulsa <strong>Deploy</strong>.</p>
+              <p className="mt-1 text-[12px] font-medium" style={{ color: C.warn }}>El botón de guardar suele quedar fuera de la vista: baja dentro de la ventanita, no en la página.</p>
+            </div>
+            <Btn onClick={() => probar(true)} disabled={probando || !tok.trim()}>{probando ? "Comprobando…" : "Comprobar que coincide"}</Btn>
+            <Resultado />
+          </Paso>
+        )}
+
+        {paso === 3 && (
+          <Paso n={4} titulo="Listo">
+            <p>Tu backend está conectado. A partir de ahora tus datos se sincronizan entre dispositivos: en el otro, pega esta misma dirección y contraseña.</p>
+            <div className="rounded-xl border p-3" style={{ borderColor: C.line, background: C.surfaceAlt }}>
+              <p className="text-[12px] font-medium text-slate-700">¿Quieres que el banco entre solo?</p>
+              <p className="mt-0.5 text-[12px]">Hace falta además una cuenta en Enable Banking, gratuita para tus propias cuentas. Son otros 15 minutos y están explicados en la guía.</p>
+              <button type="button" onClick={() => { onClose(); onIrBanco?.(); }}
+                className="mt-2 inline-flex items-center gap-1 text-[12px] font-semibold hover:underline" style={{ color: C.accent }}>
+                Ir a la conexión bancaria <ChevronRight size={12} />
+              </button>
+            </div>
+          </Paso>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente }) {
   return (
     <div className="mx-auto max-w-2xl px-4 py-10 sm:py-14 anim-rise">
       {/* Portada. Antes esta pantalla solo ofrecia CSV, que dejo de ser la via principal en
@@ -3469,7 +3615,7 @@ function EmptyState({ onFiles, onSample, error, parsing, onSettings }) {
               <div className="mt-3"><DropZone onFiles={onFiles} compact /></div>
             </div>
 
-            <button type="button" onClick={onSettings}
+            <button type="button" onClick={onAsistente || onSettings}
               className="group flex flex-col rounded-2xl border bg-white p-5 text-left transition-all hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
               style={{ borderColor: C.line }}>
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-500">
@@ -6559,7 +6705,7 @@ function Grupo({ titulo, estado, ok, abierto = false, forzar = false, children }
   );
 }
 
-function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcoming, movsCount, aiOn, setAiOn, ai, setAi, aiDetail, setAiDetail, aiProfiles, onSaveAiProfile, onActivateAiProfile, onDeleteAiProfile, materialidad, setMaterialidad, onExport, onImportFile, onWipe, snapCount, snapTooBig, onListSnaps, onRestoreSnap, imports, onDeleteImport, trashed, onRestoreTrash, onPurgeTrash, onRulesAudit, onToggleRule, onRemoveRule, onUpdateRuleCat, onFindDupes, onTrashDupes, assetMem, onForgetAssetMem, onForgetAllAssetMem, onDrillIds, sync, bank }) {
+function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcoming, movsCount, aiOn, setAiOn, ai, setAi, aiDetail, setAiDetail, aiProfiles, onSaveAiProfile, onActivateAiProfile, onDeleteAiProfile, materialidad, setMaterialidad, onExport, onImportFile, onWipe, snapCount, snapTooBig, onListSnaps, onRestoreSnap, imports, onDeleteImport, trashed, onRestoreTrash, onPurgeTrash, onRulesAudit, onToggleRule, onRemoveRule, onUpdateRuleCat, onFindDupes, onTrashDupes, assetMem, onForgetAssetMem, onForgetAllAssetMem, onDrillIds, onAsistente, sync, bank }) {
   const [confirmWipe, setConfirmWipe] = useState(false);
   const [confirmDel, setConfirmDel] = useState(null); // archivo pendiente de confirmar borrado
   const [trashOpen, setTrashOpen] = useState(false);
@@ -6605,7 +6751,8 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
             tieneDatos={movsCount > 0} tieneSync={!!sync?.version}
             tieneBanco={!!(bank && bank.connections.length)} tieneIA={!!aiOn}
             onIr={(destino) => {
-              if (destino === "guia") { try { window.open(GUIA_URL, "_blank", "noopener"); } catch { /* bloqueado */ } return; }
+              // El asistente verifica cada paso contra tu propio backend; la guía solo explica.
+              if (destino === "guia") { onClose(); onAsistente(); return; }
               if (destino === "cerrar") { onClose(); return; }
               setAbrir(destino); // despliega el grupo correspondiente
             }} />
@@ -7824,6 +7971,7 @@ function AppMain() {
   const [bankAddCountry, setBankAddCountry] = useState("ES");
   const [bankAddSel, setBankAddSel] = useState("");          // banco elegido para añadir
   const [bankDiag, setBankDiag] = useState(null);            // salida cruda del diagnóstico
+  const [asistenteOpen, setAsistenteOpen] = useState(false); // asistente de conexión del backend
   const [bankAddPsu, setBankAddPsu] = useState("personal");  // titular: personal o empresa
 
   // Al volver del banco, ?bank_session=… : creamos una conexión con el banco que estaba pendiente.
@@ -9051,7 +9199,8 @@ function AppMain() {
       `}</style>
 
       {!hasData ? (
-        <EmptyState onFiles={handleFiles} onSample={loadSample} error={error} parsing={imp?.phase === "parsing"} onSettings={() => setSettingsOpen(true)} />
+        <EmptyState onFiles={handleFiles} onSample={loadSample} error={error} parsing={imp?.phase === "parsing"}
+          onSettings={() => setSettingsOpen(true)} onAsistente={() => setAsistenteOpen(true)} />
       ) : (
         <div className="mx-auto max-w-5xl px-4 pb-24 sm:pb-12">
           <header ref={headerRef} className="sticky top-0 z-20 -mx-4 mb-3 px-4 py-3 text-white shadow-md" style={{ background: `linear-gradient(135deg, ${C.navy} 0%, ${C.navy2} 100%)` }}>
@@ -9233,6 +9382,13 @@ function AppMain() {
           onEditMov={(m) => setMovEdit({ mode: "edit", mov: m })}
         />
       )}
+      {asistenteOpen && (
+        <AsistenteConexion
+          workerUrl={bankCfg.workerUrl || ""} token={bankCfg.token || ""}
+          onGuardar={(u, t) => persistBank({ workerUrl: u, token: t })}
+          onIrBanco={() => setSettingsOpen(true)}
+          onClose={() => setAsistenteOpen(false)} />
+      )}
       {settingsOpen && (
         <SettingsModal onClose={() => setSettingsOpen(false)} storeKind={STORE.kind} saveState={saveState}
           theme={theme} setTheme={setTheme} upcoming={upcoming}
@@ -9243,6 +9399,7 @@ function AppMain() {
           materialidad={materialidad} setMaterialidad={setMaterialidad}
           imports={imports} onDeleteImport={deleteImport}
           onFindDupes={findBankDupes} onTrashDupes={trashBankDupes}
+          onAsistente={() => setAsistenteOpen(true)}
           assetMem={assetMem} onForgetAssetMem={forgetAssetMem} onForgetAllAssetMem={forgetAllAssetMem}
           onDrillIds={(ids, label) => { setSettingsOpen(false); setDrill({ type: "ids", ids, label }); }}
           trashed={trashed} onRestoreTrash={restoreMovs} onPurgeTrash={purgeMovs}
