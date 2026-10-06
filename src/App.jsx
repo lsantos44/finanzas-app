@@ -7878,13 +7878,11 @@ function AppMain() {
         const alli = (curData?.payload?.movs?.movs || curData?.payload?.movs || []).length || 0;
         if (alli > 20 && aqui < alli / 2) {
           const seguir = window.confirm(
-            `Atención: en el servidor hay ${nfNum.format(alli)} movimientos y en este dispositivo solo ${nfNum.format(aqui)}.
-
-` +
-            "Si subes, los del servidor se reemplazan por los de aquí. ¿Es lo que quieres?
-
-" +
-            "Si estás probando en una ventana nueva o en otro dispositivo, lo que buscas es «Traer», no «Subir»."
+            [
+              `Atención: en el servidor hay ${nfNum.format(alli)} movimientos y en este dispositivo solo ${nfNum.format(aqui)}.`,
+              "Si subes, los del servidor se reemplazan por los de aquí. ¿Es lo que quieres?",
+              "Si estás probando en una ventana nueva o en otro dispositivo, lo que buscas es «Traer», no «Subir».",
+            ].join("\n\n")
           );
           if (!seguir) { setSyncMsg({ kind: "info", text: "Cancelado. No se ha subido nada." }); return; }
         }
