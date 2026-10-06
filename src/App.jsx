@@ -7869,7 +7869,25 @@ function AppMain() {
       let baseVersion = base;
       if (force) {
         const cur = await bankFetch("/store", 25000);
-        baseVersion = cur.ok ? (Number((await cur.json()).version) || 0) : 0;
+        const curData = cur.ok ? await cur.json() : null;
+        baseVersion = curData ? (Number(curData.version) || 0) : 0;
+        // Red de seguridad contra el accidente más caro: subir a la fuerza desde un dispositivo
+        // casi vacío (una ventana de incógnito, un móvil recién configurado) y arrasar la copia
+        // buena. El rechazo por versión no cubre este caso, porque forzar lo salta a propósito.
+        const aqui = stateRef.current?.movs?.length || 0;
+        const alli = (curData?.payload?.movs?.movs || curData?.payload?.movs || []).length || 0;
+        if (alli > 20 && aqui < alli / 2) {
+          const seguir = window.confirm(
+            `Atención: en el servidor hay ${nfNum.format(alli)} movimientos y en este dispositivo solo ${nfNum.format(aqui)}.
+
+` +
+            "Si subes, los del servidor se reemplazan por los de aquí. ¿Es lo que quieres?
+
+" +
+            "Si estás probando en una ventana nueva o en otro dispositivo, lo que buscas es «Traer», no «Subir»."
+          );
+          if (!seguir) { setSyncMsg({ kind: "info", text: "Cancelado. No se ha subido nada." }); return; }
+        }
       }
       const res = await fetch(url + "/store", {
         method: "PUT", headers: { ...bankHeaders(), "Content-Type": "application/json" },
