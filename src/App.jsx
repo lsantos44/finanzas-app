@@ -3426,51 +3426,132 @@ function PrimerosPasos({ tieneDatos, tieneSync, tieneBanco, tieneIA, onIr }) {
 // TE han salido bien: lees, haces, y descubres al final que algo falló. Aquí cada paso se
 // verifica contra tu propio backend en el momento, que es la diferencia entre diez minutos y
 // dos tardes. Lo que no puede hacer: crear tus cuentas. Eso es tuyo por definición.
-function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onIrBanco }) {
+//
+// Cubre el proceso entero, backend y banco. El tramo bancario es el que más cuesta: el error
+// típico (elegir mal el tipo de titular) no se manifiesta al configurar sino DESPUÉS de firmar
+// en el banco, con un mensaje que no dice nada. Por eso aquí se valida antes de mandarte allí.
+function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onConectarBanco }) {
   const [paso, setPaso] = useState(0);
   const [url, setUrl] = useState(workerUrl || "");
   const [tok, setTok] = useState(token || "");
+  const [quiereBanco, setQuiereBanco] = useState(null);
   const [probando, setProbando] = useState(false);
-  const [res, setRes] = useState(null); // { ok, texto, detalle }
+  const [res, setRes] = useState(null);            // { ok, texto, detalle }
+  const [bancos, setBancos] = useState([]);        // nombres del país
+  const [pais, setPais] = useState("ES");
+  const [banco, setBanco] = useState("");
+  const [ficha, setFicha] = useState(null);        // ficha del banco elegido en Enable Banking
+  const [psu, setPsu] = useState("personal");
 
   const limpia = (u) => u.trim().replace(/\/+$/, "");
+  const callback = limpia(url) + "/bank/callback";
+  const total = quiereBanco === false ? 4 : 6;
 
-  // Comprueba contra /store/status, que dice qué ve el Worker sin exponer ningún secreto.
-  const probar = async (conToken) => {
+  // Petición al backend con el token y un límite de tiempo: sin él, un backend que no responde
+  // deja el asistente colgado sin decir nada.
+  const pedir = async (ruta, ms = 25000) => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    try {
+      return await fetch(limpia(url) + ruta, {
+        headers: tok.trim() ? { Authorization: "Bearer " + tok.trim() } : {},
+        signal: ctrl.signal,
+      });
+    } finally { clearTimeout(t); }
+  };
+
+  const probarBackend = async (conToken) => {
     const base = limpia(url);
     if (!/^https?:\/\//.test(base)) { setRes({ ok: false, texto: "La dirección debe empezar por https://" }); return false; }
     setProbando(true); setRes(null);
     try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 20000);
-      const r = await fetch(base + "/store/status", {
-        headers: conToken && tok.trim() ? { Authorization: "Bearer " + tok.trim() } : {},
-        signal: ctrl.signal,
-      });
-      clearTimeout(t);
+      const r = await fetch(base + "/store/status", { headers: conToken && tok.trim() ? { Authorization: "Bearer " + tok.trim() } : {} });
       if (r.status === 401) {
-        setRes({ ok: false, texto: conToken ? "La contraseña no coincide con la del Worker." : "Tu backend responde, pero pide contraseña.", detalle: conToken ? "Revisa que la hayas pegado igual en Cloudflare, sin espacios ni saltos de línea." : null });
+        setRes({ ok: false,
+          texto: conToken ? "La contraseña no coincide con la del Worker." : "Tu backend responde, pero pide contraseña.",
+          detalle: conToken ? "Revisa que la hayas pegado igual en Cloudflare, sin espacios ni saltos de línea al final." : null });
         return false;
       }
-      if (!r.ok) { setRes({ ok: false, texto: `Tu backend respondió ${r.status}.`, detalle: "Comprueba que la dirección es la correcta y que lo has desplegado." }); return false; }
+      if (!r.ok) { setRes({ ok: false, texto: `Tu backend respondió ${r.status}.`, detalle: "Comprueba que la dirección es correcta y que lo has desplegado." }); return false; }
       const d = await r.json();
       if (!d.bindingDB) {
-        setRes({ ok: false, texto: "Responde, pero le falta la base de datos.", detalle: "En Cloudflare: tu Worker → Settings → Bindings → añadir D1 con el nombre DB. Ojo: el botón de guardar queda fuera de la vista, baja dentro de la ventanita." });
+        setRes({ ok: false, texto: "Responde, pero le falta la base de datos.",
+          detalle: "En Cloudflare: tu Worker → Settings → Bindings → añadir D1 con el nombre DB. Ojo: el botón de guardar queda fuera de la vista, baja dentro de la ventanita." });
         return false;
       }
-      setRes({ ok: true, texto: conToken ? "Todo correcto: responde, tiene contraseña y la base de datos funciona." : "Tu backend responde y la base de datos funciona.", detalle: !conToken && !d.tieneToken ? "Aún no tiene contraseña: la pondremos en el paso siguiente." : null });
+      setRes({ ok: true,
+        texto: conToken ? "Todo correcto: responde, la contraseña coincide y la base de datos funciona." : "Tu backend responde y la base de datos funciona.",
+        detalle: !conToken && !d.tieneToken ? "Aún no tiene contraseña: la pondremos en el paso siguiente." : null });
       return true;
     } catch (e) {
-      setRes({ ok: false, texto: e.name === "AbortError" ? "No respondió en 20 segundos." : "No se pudo contactar con esa dirección.", detalle: "Comprueba que la has copiado entera, incluido el https://" });
+      setRes({ ok: false, texto: e.name === "AbortError" ? "No respondió a tiempo." : "No se pudo contactar con esa dirección.",
+        detalle: "Comprueba que la has copiado entera, incluido el https://" });
       return false;
     } finally { setProbando(false); }
   };
 
+  // Valida las credenciales de Enable Banking ANTES de mandar a nadie al banco. /bank/ping
+  // devuelve los datos de la aplicación si la firma JWT funciona.
+  const probarBanco = async () => {
+    setProbando(true); setRes(null);
+    try {
+      const r = await pedir("/bank/ping");
+      const txt = await r.text();
+      if (!r.ok) {
+        setRes({ ok: false, texto: `Enable Banking respondió ${r.status}.`,
+          detalle: /Falta EB_/.test(txt) ? "Faltan credenciales en el Worker: revisa EB_APP_ID y EB_PRIVATE_KEY." : txt.slice(0, 200) });
+        return false;
+      }
+      const d = JSON.parse(txt);
+      const registrada = (d.redirect_urls || []).some((x) => String(x).replace(/\/+$/, "") === callback);
+      if (!registrada) {
+        setRes({ ok: false, texto: "Tus credenciales funcionan, pero falta la dirección de retorno.",
+          detalle: `En Enable Banking, tu aplicación debe tener registrada exactamente ${callback}. Ahora tiene: ${(d.redirect_urls || []).join(", ") || "ninguna"}.` });
+        return false;
+      }
+      setRes({ ok: true, texto: `Credenciales correctas: «${d.name}», entorno ${d.environment}.`,
+        detalle: "La dirección de retorno está bien registrada." });
+      return true;
+    } catch (e) {
+      setRes({ ok: false, texto: "No se pudo comprobar.", detalle: String(e.message || e).slice(0, 160) });
+      return false;
+    } finally { setProbando(false); }
+  };
+
+  const cargarBancos = async () => {
+    setProbando(true); setRes(null); setBancos([]); setBanco(""); setFicha(null);
+    try {
+      const r = await pedir(`/bank/aspsps?country=${encodeURIComponent(pais)}`);
+      if (!r.ok) throw new Error("el backend devolvió " + r.status);
+      const d = await r.json();
+      const nombres = [...new Set(((Array.isArray(d) ? d : d.aspsps) || []).map((a) => a.name).filter(Boolean))].sort((x, y) => x.localeCompare(y, "es"));
+      setBancos(nombres);
+      setRes(nombres.length ? { ok: true, texto: `${nombres.length} bancos disponibles en ${pais}.` } : { ok: false, texto: "No se han encontrado bancos para ese país." });
+    } catch (e) { setRes({ ok: false, texto: "No se pudieron cargar los bancos.", detalle: String(e.message || e).slice(0, 160) }); }
+    finally { setProbando(false); }
+  };
+
+  // La ficha dice qué tipos de titular admite el banco y cuánto puede durar el permiso. Es lo
+  // que permite avisar ANTES de firmar, en vez de descubrirlo con un error opaco después.
+  const cargarFicha = async (nombre) => {
+    setBanco(nombre); setFicha(null); setRes(null);
+    if (!nombre) return;
+    try {
+      const r = await pedir(`/bank/aspsp?name=${encodeURIComponent(nombre)}&country=${encodeURIComponent(pais)}`);
+      if (!r.ok) return;
+      const d = await r.json();
+      setFicha(d);
+      const tipos = Array.isArray(d.psu_types) ? d.psu_types : [];
+      if (tipos.length === 1) setPsu(tipos[0]);
+    } catch { /* la ficha es orientativa */ }
+  };
+
   const generar = () => setTok(crypto.randomUUID() + "-" + crypto.randomUUID().slice(0, 8));
+  const copiar = (t) => { try { navigator.clipboard.writeText(t); } catch { /* sin permiso */ } };
 
   const Paso = ({ n, titulo, children }) => (
     <div>
-      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide" style={{ color: C.accent }}>Paso {n} de 4</div>
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide" style={{ color: C.accent }}>Paso {n} de {total}</div>
       <h3 className="text-base font-semibold">{titulo}</h3>
       <div className="mt-3 space-y-3 text-sm leading-relaxed text-slate-600">{children}</div>
     </div>
@@ -3479,29 +3560,49 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onIrBanco }) 
   const Resultado = () => !res ? null : (
     <div className="rounded-xl p-2.5 text-[12px] leading-relaxed" style={res.ok ? { background: "#dcfce7", color: "#15803d" } : { background: C.warnSoft, color: C.warn }}>
       <strong>{res.ok ? "✓ " : "⚠ "}{res.texto}</strong>
-      {res.detalle && <span className="mt-0.5 block font-normal">{res.detalle}</span>}
+      {res.detalle && <span className="mt-0.5 block font-normal break-words">{res.detalle}</span>}
     </div>
   );
 
+  const Campo = ({ valor }) => (
+    <span className="mt-1 flex items-center gap-1.5">
+      <code className="min-w-0 flex-1 truncate rounded bg-slate-100 px-2 py-1 text-[11px]">{valor}</code>
+      <Btn size="sm" onClick={() => copiar(valor)}>Copiar</Btn>
+    </span>
+  );
+
+  // Siguiente solo se habilita cuando el paso está verificado: así nadie llega al final
+  // creyendo que funciona.
+  const puedeSeguir = () => {
+    if (paso === 1 || paso === 2 || paso === 4) return !!(res && res.ok);
+    if (paso === 3) return quiereBanco !== null;
+    if (paso === 5) return !!banco;
+    return true;
+  };
+
+  const avanzar = () => {
+    if (paso === 2) onGuardar(limpia(url), tok.trim());
+    if (paso === 3 && quiereBanco === false) { setPaso(99); return; }
+    if (paso === 5) { onConectarBanco?.(banco, pais, psu); return; } // navega al banco
+    setRes(null); setPaso(paso + 1);
+  };
+
   return (
-    <Modal title="Conectar tu backend" subtitle="Unos 20 minutos, gratis" onClose={onClose}
+    <Modal title="Conectar tu backend" subtitle={quiereBanco === false ? "Unos 20 minutos, gratis" : "Unos 35 minutos, gratis"} onClose={onClose}
       footer={(
         <div className="flex items-center justify-between gap-2">
-          <Btn onClick={() => (paso === 0 ? onClose() : (setRes(null), setPaso(paso - 1)))}>{paso === 0 ? "Ahora no" : "Atrás"}</Btn>
-          {paso < 3 ? (
-            <Btn kind="primary" disabled={(paso === 1 || paso === 2) && !(res && res.ok)}
-              onClick={() => { if (paso === 2) onGuardar(limpia(url), tok.trim()); setRes(null); setPaso(paso + 1); }}>
-              Siguiente <ChevronRight size={14} />
+          <Btn onClick={() => (paso === 0 ? onClose() : (setRes(null), setPaso(paso === 99 ? 3 : paso - 1)))}>{paso === 0 ? "Ahora no" : "Atrás"}</Btn>
+          {paso === 99 ? <Btn kind="primary" onClick={onClose}>Terminar</Btn> : (
+            <Btn kind="primary" disabled={probando || !puedeSeguir()} onClick={avanzar}>
+              {paso === 5 ? "Ir al banco" : "Siguiente"} <ChevronRight size={14} />
             </Btn>
-          ) : (
-            <Btn kind="primary" onClick={onClose}>Terminar</Btn>
           )}
         </div>
       )}>
       <div className="space-y-5">
         {paso === 0 && (
           <Paso n={1} titulo="Lo que vas a conseguir">
-            <p>Tus datos sincronizados entre el móvil y el ordenador, y —si quieres— los movimientos del banco entrando solos cada pocas horas.</p>
+            <p>Tus datos sincronizados entre el móvil y el ordenador, y —si quieres— los movimientos del banco entrando solos cada pocas horas, aunque no abras la app.</p>
             <p>Todo vive en <strong>tu</strong> cuenta de Cloudflare. Ni yo ni nadie más tiene acceso.</p>
             <div className="rounded-xl border p-3" style={{ borderColor: C.line, background: C.surfaceAlt }}>
               <p className="text-[12px] font-medium text-slate-700">Necesitas una cuenta de Cloudflare</p>
@@ -3516,16 +3617,16 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onIrBanco }) 
 
         {paso === 1 && (
           <Paso n={2} titulo="Instala tu backend">
-            <p>Pulsa el botón de abajo: se abre Cloudflare, te pide permiso y lo instala solo, con su base de datos incluida.</p>
+            <p>Pulsa el enlace: se abre Cloudflare, te pide permiso y lo instala solo, con su base de datos incluida.</p>
             <a href={GUIA_URL} target="_blank" rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold text-white" style={{ background: C.accent }}>
               Abrir la guía con el botón <ChevronRight size={14} />
             </a>
-            <p className="text-[12px] text-slate-500">Cuando termine, Cloudflare te dará una dirección parecida a <code className="rounded bg-slate-100 px-1">https://finanzas.algo.workers.dev</code>. Cópiala y pégala aquí:</p>
+            <p className="text-[12px] text-slate-500">Cuando termine, Cloudflare te dará una dirección parecida a <code className="rounded bg-slate-100 px-1">https://finanzas.algo.workers.dev</code>. Pégala aquí:</p>
             <input value={url} onChange={(e) => { setUrl(e.target.value); setRes(null); }} placeholder="https://…workers.dev"
               autoCapitalize="off" autoCorrect="off" spellCheck={false}
               className="w-full rounded-lg border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ borderColor: C.lineStrong }} />
-            <Btn onClick={() => probar(false)} disabled={probando || !url.trim()}>{probando ? "Comprobando…" : "Comprobar"}</Btn>
+            <Btn onClick={() => probarBackend(false)} disabled={probando || !url.trim()}>{probando ? "Comprobando…" : "Comprobar"}</Btn>
             <Resultado />
           </Paso>
         )}
@@ -3538,29 +3639,114 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onIrBanco }) 
                 autoCapitalize="off" autoCorrect="off" spellCheck={false}
                 className="min-w-0 flex-1 rounded-lg border px-3 py-2 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ borderColor: C.lineStrong }} />
               <Btn size="sm" onClick={generar}>Generar</Btn>
-              <Btn size="sm" onClick={() => { try { navigator.clipboard.writeText(tok); } catch { /* sin permiso */ } }} disabled={!tok}>Copiar</Btn>
+              <Btn size="sm" onClick={() => copiar(tok)} disabled={!tok}>Copiar</Btn>
             </div>
             <div className="rounded-xl border p-3" style={{ borderColor: C.line, background: C.surfaceAlt }}>
               <p className="text-[12px] font-medium text-slate-700">Pégala en Cloudflare</p>
-              <p className="mt-0.5 text-[12px]">Tu Worker → <strong>Settings</strong> → <strong>Variables and Secrets</strong> → <strong>Add</strong>. Tipo <strong>Secret</strong>, nombre exacto <code className="rounded bg-slate-100 px-1">PROXY_TOKEN</code>, y de valor esta contraseña. Luego pulsa <strong>Deploy</strong>.</p>
+              <p className="mt-0.5 text-[12px]">Tu Worker → <strong>Settings</strong> → <strong>Variables and Secrets</strong> → <strong>Add</strong>. Tipo <strong>Secret</strong>, nombre exacto <code className="rounded bg-slate-100 px-1">PROXY_TOKEN</code>, y de valor esta contraseña. Luego <strong>Deploy</strong>.</p>
               <p className="mt-1 text-[12px] font-medium" style={{ color: C.warn }}>El botón de guardar suele quedar fuera de la vista: baja dentro de la ventanita, no en la página.</p>
             </div>
-            <Btn onClick={() => probar(true)} disabled={probando || !tok.trim()}>{probando ? "Comprobando…" : "Comprobar que coincide"}</Btn>
+            <Btn onClick={() => probarBackend(true)} disabled={probando || !tok.trim()}>{probando ? "Comprobando…" : "Comprobar que coincide"}</Btn>
             <Resultado />
           </Paso>
         )}
 
         {paso === 3 && (
+          <Paso n={4} titulo="¿Quieres conectar tu banco?">
+            <p>Con el backend ya tienes sincronización entre dispositivos. Conectar el banco añade que los movimientos entren solos, sin descargar extractos.</p>
+            <p className="text-[12px]">Hace falta además una cuenta en <strong>Enable Banking</strong>, el proveedor autorizado que habla con los bancos. Es gratuita para tus propias cuentas y lleva unos 15 minutos más.</p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button type="button" onClick={() => setQuiereBanco(true)}
+                className="rounded-xl border-2 p-3 text-left text-[13px] font-medium focus-visible:outline-none"
+                style={{ borderColor: quiereBanco === true ? C.accent : C.line, background: quiereBanco === true ? C.accentSoft : C.surface }}>
+                Sí, seguir con el banco
+                <span className="mt-0.5 block text-[11px] font-normal text-slate-500">15 minutos más</span>
+              </button>
+              <button type="button" onClick={() => setQuiereBanco(false)}
+                className="rounded-xl border-2 p-3 text-left text-[13px] font-medium focus-visible:outline-none"
+                style={{ borderColor: quiereBanco === false ? C.accent : C.line, background: quiereBanco === false ? C.accentSoft : C.surface }}>
+                Ahora no
+                <span className="mt-0.5 block text-[11px] font-normal text-slate-500">Puedes hacerlo cuando quieras</span>
+              </button>
+            </div>
+          </Paso>
+        )}
+
+        {paso === 4 && (
+          <Paso n={5} titulo="Tu aplicación de Enable Banking">
+            <p>Entra en <a href="https://enablebanking.com" target="_blank" rel="noopener noreferrer" className="font-semibold hover:underline" style={{ color: C.accent }}>enablebanking.com</a>, regístrate y crea una aplicación con entorno <strong>producción</strong> y servicio <strong>AIS</strong>.</p>
+            <div className="rounded-xl border p-3" style={{ borderColor: C.line, background: C.surfaceAlt }}>
+              <p className="text-[12px] font-medium text-slate-700">Dirección de retorno</p>
+              <p className="mt-0.5 text-[12px]">Al crear la aplicación te pedirá una <em>redirect URL</em>. Tiene que ser <strong>exactamente</strong> ésta:</p>
+              <Campo valor={callback} />
+            </div>
+            <div className="rounded-xl border p-3" style={{ borderColor: C.line, background: C.surfaceAlt }}>
+              <p className="text-[12px] font-medium text-slate-700">Y dos secretos más en Cloudflare</p>
+              <p className="mt-0.5 text-[12px]">Mismo sitio que la contraseña, tipo <strong>Secret</strong>:</p>
+              <ul className="mt-1 space-y-0.5 text-[12px]">
+                <li><code className="rounded bg-slate-100 px-1">EB_APP_ID</code> — el Application ID que te da Enable Banking.</li>
+                <li><code className="rounded bg-slate-100 px-1">EB_PRIVATE_KEY</code> — el contenido entero del archivo <code className="rounded bg-slate-100 px-1">.pem</code> que descargas, incluidas las líneas BEGIN y END.</li>
+              </ul>
+              <p className="mt-1 text-[12px] font-medium" style={{ color: C.warn }}>El .pem solo se descarga una vez. Guárdalo bien.</p>
+            </div>
+            <Btn onClick={probarBanco} disabled={probando}>{probando ? "Comprobando…" : "Comprobar mis credenciales"}</Btn>
+            <Resultado />
+          </Paso>
+        )}
+
+        {paso === 5 && (
+          <Paso n={6} titulo="Elige tu banco">
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="text-[12px] text-slate-600">País
+                <input value={pais} onChange={(e) => setPais(e.target.value.toUpperCase().slice(0, 2))} maxLength={2}
+                  className="mt-0.5 block w-16 rounded-lg border px-2 py-1.5 text-sm uppercase focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ borderColor: C.lineStrong }} />
+              </label>
+              <Btn onClick={cargarBancos} disabled={probando}>{probando ? "Cargando…" : "Cargar bancos"}</Btn>
+            </div>
+            {bancos.length > 0 && (
+              <select value={banco} onChange={(e) => cargarFicha(e.target.value)}
+                className="w-full rounded-lg border bg-white px-2 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ borderColor: C.lineStrong }}>
+                <option value="">— Elige tu banco —</option>
+                {bancos.map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            )}
+            {banco && (
+              <div className="rounded-xl border p-3" style={{ borderColor: C.line, background: C.surfaceAlt }}>
+                <p className="text-[12px] font-medium text-slate-700">¿A nombre de quién están las cuentas?</p>
+                <p className="mt-0.5 text-[12px]">Equivocarse aquí es el error más caro de todo el proceso: el banco te deja entrar y firmar, y <strong>después</strong> rechaza todas las peticiones de datos con un mensaje que no explica nada.</p>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  {["personal", "business"].map((t) => {
+                    const admitido = !ficha || !Array.isArray(ficha.psu_types) || ficha.psu_types.includes(t);
+                    return (
+                      <button key={t} type="button" onClick={() => admitido && setPsu(t)} disabled={!admitido}
+                        className="rounded-lg border-2 p-2 text-left text-[12px] font-medium disabled:opacity-40 focus-visible:outline-none"
+                        style={{ borderColor: psu === t ? C.accent : C.line, background: psu === t ? C.accentSoft : C.surface }}>
+                        {t === "personal" ? "Personal" : "Empresa / autónomo"}
+                        {!admitido && <span className="mt-0.5 block text-[10px] font-normal">este banco no lo admite</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+                {ficha && typeof ficha.maximum_consent_validity === "number" && (
+                  <p className="mt-1.5 text-[11px] text-slate-400">El permiso durará como mucho {Math.round(ficha.maximum_consent_validity / 86400)} días; después habrá que renovarlo con un clic.</p>
+                )}
+              </div>
+            )}
+            <Resultado />
+            <p className="text-[11px] text-slate-400">Al pulsar «Ir al banco» saldrás de la app para identificarte. Al volver, elige la cuenta que quieres seguir y sincroniza.</p>
+          </Paso>
+        )}
+
+        {paso === 99 && (
           <Paso n={4} titulo="Listo">
             <p>Tu backend está conectado. A partir de ahora tus datos se sincronizan entre dispositivos: en el otro, pega esta misma dirección y contraseña.</p>
             <div className="rounded-xl border p-3" style={{ borderColor: C.line, background: C.surfaceAlt }}>
-              <p className="text-[12px] font-medium text-slate-700">¿Quieres que el banco entre solo?</p>
-              <p className="mt-0.5 text-[12px]">Hace falta además una cuenta en Enable Banking, gratuita para tus propias cuentas. Son otros 15 minutos y están explicados en la guía.</p>
-              <button type="button" onClick={() => { onClose(); onIrBanco?.(); }}
-                className="mt-2 inline-flex items-center gap-1 text-[12px] font-semibold hover:underline" style={{ color: C.accent }}>
-                Ir a la conexión bancaria <ChevronRight size={12} />
-              </button>
+              <p className="text-[12px] font-medium text-slate-700">Dirección</p>
+              <Campo valor={limpia(url)} />
+              <p className="mt-2 text-[12px] font-medium text-slate-700">Contraseña</p>
+              <Campo valor={tok.trim()} />
             </div>
+            <p className="text-[12px] text-slate-500">¿Cambias de idea con el banco? Vuelve a abrir este asistente desde Ajustes → Primeros pasos.</p>
           </Paso>
         )}
       </div>
@@ -9402,7 +9588,7 @@ function AppMain() {
         <AsistenteConexion
           workerUrl={bankCfg.workerUrl || ""} token={bankCfg.token || ""}
           onGuardar={(u, t) => persistBank({ workerUrl: u, token: t })}
-          onIrBanco={() => setSettingsOpen(true)}
+          onConectarBanco={(aspsp, pais, psu) => { setAsistenteOpen(false); bankStartAuth(aspsp, pais, null, psu); }}
           onClose={() => setAsistenteOpen(false)} />
       )}
       {settingsOpen && (
