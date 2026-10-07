@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import qrcode from "qrcode-generator";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell,
   PieChart, Pie, LineChart, Line, AreaChart, Area,
@@ -826,6 +827,27 @@ const loadBank = () => {
   }
 };
 const bankIsEmpty = (b) => !b || (!b.workerUrl && !b.token && !(b.connections || []).length);
+
+// Enlace de vinculación: lleva la URL del Worker y el token para que un dispositivo nuevo quede
+// configurado de un toque, sin buscar dónde estaba el Worker ni copiar el token a mano. Va en el
+// fragmento (#), que el navegador nunca envía al servidor: no queda en ningún log.
+const LINK_KEY = "vincular";
+const makeDeviceLink = (workerUrl, token) => {
+  const raw = JSON.stringify({ u: workerUrl, t: token });
+  const b64 = btoa(unescape(encodeURIComponent(raw))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return `${window.location.origin}${window.location.pathname}#${LINK_KEY}=${b64}`;
+};
+// Acepta el enlace entero o solo su fragmento. Devuelve { u, t } o null.
+const parseDeviceLink = (text) => {
+  try {
+    const m = String(text || "").match(new RegExp(LINK_KEY + "=([A-Za-z0-9_-]+)"));
+    if (!m) return null;
+    const b64 = m[1].replace(/-/g, "+").replace(/_/g, "/");
+    const j = JSON.parse(decodeURIComponent(escape(atob(b64 + "===".slice((b64.length + 3) % 4)))));
+    const u = String(j.u || "").trim().replace(/\/+$/, ""), t = String(j.t || "").trim();
+    return /^https?:\/\//.test(u) ? { u, t } : null;
+  } catch { return null; }
+};
 
 // Fusiona la config bancaria de una copia con la local. NO vale quedarse con "la más reciente":
 // en un dispositivo nuevo acabas de teclear la URL y el token, así que el sello local es
@@ -3422,6 +3444,90 @@ function PrimerosPasos({ tieneDatos, tieneSync, tieneBanco, tieneIA, onIr }) {
   );
 }
 
+// Añadir otro dispositivo. Antes, para meter tus datos en un móvil nuevo había que localizar
+// la URL del Worker, rescatar el token y acordarse de pulsar «Traer» y de activar la
+// sincronización. Aquí sale un QR: lo escaneas con el móvil nuevo y queda todo hecho.
+function EnlaceDispositivo({ workerUrl, token }) {
+  const [ver, setVer] = useState(false);
+  const [copiado, setCopiado] = useState(false);
+  const link = useMemo(() => (workerUrl && token ? makeDeviceLink(workerUrl, token) : ""), [workerUrl, token]);
+  const svg = useMemo(() => {
+    if (!ver || !link) return "";
+    const qr = qrcode(0, "M"); qr.addData(link); qr.make();
+    return qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+  }, [ver, link]);
+  if (!workerUrl) return null;
+  if (!token) return <p className="text-[11px] text-slate-400">Para vincular otro dispositivo con un QR, pon antes el token de tu backend en el grupo Banco.</p>;
+  const copiar = async () => { try { await navigator.clipboard.writeText(link); setCopiado(true); setTimeout(() => setCopiado(false), 2000); } catch { /* sin permiso */ } };
+  const compartir = async () => { try { await navigator.share({ title: "Mis Finanzas", url: link }); } catch { /* cancelado */ } };
+  return (
+    <section>
+      <h3 className="text-sm font-semibold">Añadir otro dispositivo</h3>
+      <p className="mt-1 text-xs text-slate-500">Escanea el código con la cámara del otro móvil: abre la app ya conectada a tu backend, trae tus datos y deja la sincronización activada. Sin teclear nada.</p>
+      {!ver ? (
+        <div className="mt-2"><Btn onClick={() => setVer(true)}>Mostrar código QR</Btn></div>
+      ) : (
+        <div className="mt-2 space-y-2">
+          <div className="mx-auto w-52 rounded-xl bg-white p-2" dangerouslySetInnerHTML={{ __html: svg }} />
+          <div className="flex flex-wrap justify-center gap-2">
+            <Btn size="sm" onClick={copiar}>{copiado ? <><Check size={13} /> Copiado</> : "Copiar enlace"}</Btn>
+            {typeof navigator !== "undefined" && navigator.share && <Btn size="sm" onClick={compartir}>Compartir…</Btn>}
+            <Btn size="sm" onClick={() => setVer(false)}>Ocultar</Btn>
+          </div>
+          <p className="rounded-lg px-2 py-1.5 text-[11px] leading-relaxed" style={{ background: C.warnSoft, color: C.warn }}>
+            El código lleva tu token: quien lo tenga entra en tus datos. Enséñalo solo a tu propio dispositivo y no lo mandes por chats de otros. Si se filtra, cambia el token del Worker.
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// Vincular ESTE dispositivo a un backend que ya usas en otro. Es el camino de quien ya tiene la
+// app montada y estrena móvil: no necesita el asistente (eso es para montar el backend), solo
+// decir dónde está y traer. Se llega por el QR/enlace o desde la portada.
+function VincularDispositivo({ inicial, onVincular, onClose }) {
+  const [enlace, setEnlace] = useState("");
+  const [url, setUrl] = useState(inicial?.u || "");
+  const [tok, setTok] = useState(inicial?.t || "");
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState(null);
+  const desdeEnlace = !!inicial;
+  const ir = async () => {
+    const p = enlace.trim() ? parseDeviceLink(enlace) : { u: url.trim().replace(/\/+$/, ""), t: tok.trim() };
+    if (!p || !/^https?:\/\//.test(p.u)) { setRes({ ok: false, text: enlace.trim() ? "Ese enlace no es de vinculación. Cópialo entero desde Ajustes del otro dispositivo." : "La dirección del backend debe empezar por https://" }); return; }
+    setBusy(true); setRes(null);
+    try { setRes(await onVincular(p.u, p.t)); } finally { setBusy(false); }
+  };
+  const campo = "w-full rounded-lg border px-2.5 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500";
+  return (
+    <Modal title="Usar mis datos en este dispositivo" onClose={onClose}
+      footer={res?.ok
+        ? <Btn kind="primary" onClick={onClose} className="w-full justify-center sm:w-auto">Ver mis datos</Btn>
+        : <div className="flex gap-2"><Btn kind="primary" onClick={ir} disabled={busy}>{busy ? "Conectando…" : "Vincular y traer mis datos"}</Btn><Btn onClick={onClose}>Cancelar</Btn></div>}>
+      <div className="space-y-3">
+        {desdeEnlace ? (
+          <p className="text-sm text-slate-600">Este enlace conecta el dispositivo a tu backend en <strong className="break-all">{(() => { try { return new URL(inicial.u).host; } catch { return inicial.u; } })()}</strong>. Si es el tuyo, pulsa el botón: traerá tus datos y dejará la sincronización activada.</p>
+        ) : (
+          <>
+            <p className="text-sm text-slate-600">Lo más rápido: en el dispositivo donde ya usas la app, abre <strong>Ajustes → Tus datos y sincronización → Añadir otro dispositivo</strong> y escanea el QR con la cámara de este. No hace falta nada más.</p>
+            <p className="text-xs text-slate-500">¿Sin el otro a mano? Pega aquí el enlace, o escribe la URL de tu Worker y su token.</p>
+            <input value={enlace} onChange={(e) => setEnlace(e.target.value)} placeholder="Enlace de vinculación (opcional)" autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
+            {!enlace.trim() && (
+              <>
+                <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…workers.dev" autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
+                <input value={tok} onChange={(e) => setTok(e.target.value)} placeholder="Token" type="password" autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
+              </>
+            )}
+          </>
+        )}
+        {res && <p className={`text-sm ${res.ok ? "text-emerald-700" : "text-rose-700"}`}>{res.text}</p>}
+        {res?.ok && <p className="text-xs text-slate-500">Los bancos conectados vienen con tus datos: no pulses «Reconectar» en este dispositivo salvo que el permiso haya caducado.</p>}
+      </div>
+    </Modal>
+  );
+}
+
 // Asistente de conexión. La guía del repositorio explica los pasos, pero no puede decirte si
 // TE han salido bien: lees, haces, y descubres al final que algo falló. Aquí cada paso se
 // verifica contra tu propio backend en el momento, que es la diferencia entre diez minutos y
@@ -3754,7 +3860,7 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onConectarBan
   );
 }
 
-function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente }) {
+function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente, onVincular }) {
   return (
     <div className="mx-auto max-w-2xl px-4 py-10 sm:py-14 anim-rise">
       {/* Portada. Antes esta pantalla solo ofrecia CSV, que dejo de ser la via principal en
@@ -3816,6 +3922,21 @@ function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente
               </span>
             </button>
           </div>
+
+          {/* Quien ya usa la app y estrena dispositivo no viene a montar nada: viene a por sus
+              datos. Antes tenía que entrar con los datos de ejemplo para llegar a Ajustes. */}
+          {onVincular && (
+            <button type="button" onClick={onVincular}
+              className="mt-3 flex w-full items-center gap-3 rounded-2xl border bg-white p-4 text-left transition-all hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              style={{ borderColor: C.line }}>
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ background: C.accentSoft, color: C.accent }}><RefreshCw size={18} /></span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold">Ya uso la app en otro dispositivo</span>
+                <span className="mt-0.5 block text-xs text-slate-500">Escanea el QR desde el otro o pon tu backend: tus datos y tus bancos llegan solos.</span>
+              </span>
+              <ChevronRight size={16} className="shrink-0 text-slate-400" />
+            </button>
+          )}
 
           <div className="mt-5 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-center">
             <button type="button" onClick={onSample} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
@@ -6999,6 +7120,7 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
           </div>
         </section>
         )}
+        {bank && <EnlaceDispositivo workerUrl={bank.workerUrl} token={bank.token} />}
         </Grupo>
 
         <Grupo titulo="Banco" abierto={abrir === "banco"} forzar={abrir === "banco"}
@@ -8099,18 +8221,19 @@ function AppMain() {
       const res = await bankFetch("/store", 30000);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "el backend devolvió " + res.status);
-      if (data.empty) { if (!silent) setSyncMsg({ kind: "info", text: "Tu Worker aún no tiene copia. Pulsa «Guardar» para crear la primera." }); return; }
+      if (data.empty) { if (!silent) setSyncMsg({ kind: "info", text: "Tu Worker aún no tiene copia. Pulsa «Guardar» para crear la primera." }); return { ok: false, empty: true, text: "Tu backend responde, pero aún no tiene ninguna copia. Guárdala primero desde el dispositivo donde tienes tus datos." }; }
       // Traer REEMPLAZA lo local: se confirma siempre que haya algo que perder.
       const locales = stateRef.current?.movs?.length || 0;
       if (confirmReplace && locales && !window.confirm(`Vas a reemplazar los ${nfNum.format(locales)} movimientos de este dispositivo por la copia del servidor (versión ${data.version}).\n\n¿Continuar?`)) {
         setSyncMsg({ kind: "info", text: "Cancelado. No se ha tocado nada." });
-        return;
+        return { ok: false, text: "Cancelado. No se ha tocado nada." };
       }
       const n = applyBackupPayload(data.payload);
       persistSync({ version: data.version, lastPull: Date.now() });
       setSyncConflict(null);
       if (!silent) setSyncMsg({ kind: "ok", text: `Traídos ${nfNum.format(n)} movimientos (versión ${data.version}).` });
-    } catch (e) { if (!silent) setSyncMsg({ kind: "err", text: "No se pudo traer: " + e.message }); }
+      return { ok: true, n, version: data.version };
+    } catch (e) { if (!silent) setSyncMsg({ kind: "err", text: "No se pudo traer: " + e.message }); return { ok: false, text: "No se pudo traer: " + e.message }; }
     finally { setSyncBusy(false); }
   }, [applyBackupPayload, persistSync]);
 
@@ -8158,6 +8281,41 @@ function AppMain() {
 
   /* ---------- Conexión bancaria (Enable Banking, vía el Worker) — MULTI-BANCO ---------- */
   const [bankCfg, setBankCfg] = useState(loadBank);
+
+  // Vincular este dispositivo: guarda URL y token, trae la copia y deja la sincronización
+  // automática encendida. Es lo que antes había que hacer en cuatro sitios distintos, y lo que
+  // se olvidaba (la casilla de «automático» es de cada dispositivo y no viaja con los datos).
+  const [vincularOpen, setVincularOpen] = useState(null); // null | { inicial: {u,t} | null }
+  const vincular = useCallback(async (u, t) => {
+    const prev = loadBank();
+    // A disco ANTES de traer: syncPull lee la URL y el token de ahí, no del estado de React.
+    saveBank({ ...prev, workerUrl: u, token: t || prev.token || "" });
+    setBankCfg(loadBank());
+    try {
+      const st = await bankFetch("/store/status", 20000);
+      if (st.status === 401) return { ok: false, text: "El backend responde, pero el token no es correcto." };
+      if (!st.ok) return { ok: false, text: `El backend devolvió ${st.status}. Revisa la dirección.` };
+    } catch (e) { return { ok: false, text: "No se pudo contactar con el backend: " + e.message }; }
+    // Que el «traer al abrir» no dispare otro traer en paralelo al activar la casilla.
+    syncBootRef.current = true;
+    syncSuppressRef.current = Date.now() + 6000;
+    const r = await syncPull({ confirmReplace: true });
+    if (!r?.ok) return r || { ok: false, text: "No se pudo traer la copia." };
+    persistSync({ auto: true });
+    const nb = (loadBank().connections || []).length;
+    return { ok: true, text: `Listo: ${nfNum.format(r.n)} movimientos traídos${nb ? ` y ${nb} ${nb === 1 ? "banco heredado" : "bancos heredados"}` : ""}. La sincronización automática queda activada en este dispositivo.` };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncPull, persistSync]);
+
+  // Abrir un enlace de vinculación (el QR de otro dispositivo). Se borra del historial al
+  // momento: lleva el token y no debe quedarse en la barra de direcciones.
+  useEffect(() => {
+    if (!booted) return;
+    const p = parseDeviceLink(window.location.hash);
+    if (!p) return;
+    try { window.history.replaceState({}, "", window.location.pathname + window.location.search); } catch { /* noop */ }
+    setVincularOpen({ inicial: p });
+  }, [booted]);
   // persistBank acepta un patch { ... } o una función (b) => nuevoEstado.
   const persistBank = useCallback((patchOrFn) => setBankCfg((b) => { const n = typeof patchOrFn === "function" ? patchOrFn(b) : { ...b, ...patchOrFn }; saveBank(n); return n; }), []);
   useEffect(() => { if (settingsOpen) setBankCfg(loadBank()); }, [settingsOpen]);
@@ -8264,6 +8422,12 @@ function AppMain() {
   const bankReconnect = useCallback((connId) => {
     const c = (loadBank().connections || []).find((x) => x.id === connId);
     if (!c) { setBankMsg({ kind: "err", text: "Conexión no válida." }); return; }
+    // Reconectar renueva el permiso pasando otra vez por el banco y obliga a volver a elegir
+    // la cuenta. En un dispositivo recién vinculado parece el botón de «conectar aquí», y no
+    // lo es: la conexión ya viene heredada. Con una conexión sana, se pregunta antes.
+    if (!c.expired && !c.lastError && c.accountUid && !window.confirm(
+      `La conexión con ${c.aspsp} funciona y ya está disponible en este dispositivo: no hace falta reconectar.\n\nReconectar solo sirve cuando el permiso ha caducado (unos 90 días). Te llevará al banco a firmar otra vez y tendrás que volver a elegir la cuenta.\n\n¿Reconectar de todos modos?`
+    )) return;
     bankStartAuth(c.aspsp, c.country, connId, c.psu || "");
   }, [bankStartAuth]);
   // Cambiar el tipo de titular de una conexión ya creada, para que Reconectar renueve bien.
@@ -9402,7 +9566,8 @@ function AppMain() {
 
       {!hasData ? (
         <EmptyState onFiles={handleFiles} onSample={loadSample} error={error} parsing={imp?.phase === "parsing"}
-          onSettings={() => setSettingsOpen(true)} onAsistente={() => setAsistenteOpen(true)} />
+          onSettings={() => setSettingsOpen(true)} onAsistente={() => setAsistenteOpen(true)}
+          onVincular={() => setVincularOpen({ inicial: null })} />
       ) : (
         <div className="mx-auto max-w-5xl px-4 pb-24 sm:pb-12">
           <header ref={headerRef} className="sticky top-0 z-20 -mx-4 mb-3 px-4 py-3 text-white shadow-md" style={{ background: `linear-gradient(135deg, ${C.navy} 0%, ${C.navy2} 100%)` }}>
@@ -9583,6 +9748,9 @@ function AppMain() {
           onToggleGroup={toggleGroup} onCreateGroup={createGroupFromMov} onNote={setNote} onDelete={deleteMovs} onSetAmount={setAmount}
           onEditMov={(m) => setMovEdit({ mode: "edit", mov: m })}
         />
+      )}
+      {vincularOpen && (
+        <VincularDispositivo inicial={vincularOpen.inicial} onVincular={vincular} onClose={() => setVincularOpen(null)} />
       )}
       {asistenteOpen && (
         <AsistenteConexion

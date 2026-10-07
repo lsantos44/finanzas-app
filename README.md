@@ -14,6 +14,11 @@ quedan en tu navegador.
 Necesitas tu propio backend. La guía de instalación, pensada para quien no programa, está en
 el repositorio del Worker: **https://github.com/lsantos44/MisFinanzas**
 
+**Para estrenar dispositivo** no hace falta volver a configurar nada: en el que ya usas, abre
+Ajustes → Tus datos y sincronización → *Añadir otro dispositivo* y escanea el QR con el nuevo.
+Trae tus datos y tus bancos y deja la sincronización activada. Sin el otro a mano, en la
+portada del nuevo pulsa *Ya uso la app en otro dispositivo* y pon la URL y el token.
+
 ## Desarrollo
 
 ```bash
