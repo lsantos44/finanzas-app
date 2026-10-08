@@ -838,6 +838,29 @@ async function recordarAcceso(workerUrl, token) {
     return true;
   } catch { return false; }
 }
+// Enlace personal de acceso: la dirección y el token metidos en un enlace que te mandas a ti
+// mismo (email, WhatsApp, notas). Abrirlo en cualquier dispositivo = entrar. Es la versión sin
+// servidor del «enlace mágico» por email: tu bandeja de entrada ya está en todos tus aparatos.
+// Va en el fragmento (#), que el navegador no envía nunca a ningún servidor.
+const ACCESS_KEY = "acceso";
+const makeAccessLink = (workerUrl, token) => {
+  const b64 = btoa(unescape(encodeURIComponent(JSON.stringify({ u: workerUrl, t: token }))))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return `${window.location.origin}/#${ACCESS_KEY}=${b64}`;
+};
+// Acepta el enlace entero o solo su fragmento. Devuelve { u, t } o null.
+const parseAccessLink = (text) => {
+  try {
+    const m = String(text || "").match(new RegExp(ACCESS_KEY + "=([A-Za-z0-9_-]+)"));
+    if (!m) return null;
+    const b64 = m[1].replace(/-/g, "+").replace(/_/g, "/");
+    const j = JSON.parse(decodeURIComponent(escape(atob(b64 + "===".slice((b64.length + 3) % 4)))));
+    const u = String(j.u || "").trim().replace(/\/+$/, ""), t = String(j.t || "").trim();
+    return /^https?:\/\//.test(u) && t ? { u, t } : null;
+  } catch { return null; }
+};
+// Se mira al cargar el módulo, antes de que nadie limpie la barra de direcciones.
+const LLEGA_CON_ENLACE = typeof window !== "undefined" && new RegExp(ACCESS_KEY + "=").test(window.location.hash);
 async function leerAccesoGuardado() {
   try {
     if (!window.PasswordCredential || !navigator.credentials?.get) return null;
@@ -3491,24 +3514,60 @@ function PrimerosPasos({ tieneDatos, tieneSync, tieneBanco, tieneIA, onIr }) {
   );
 }
 
-// Entrar desde otro navegador o dispositivo. Es un login de verdad (usuario = URL del Worker,
-// contraseña = token) para que el gestor de contraseñas lo reconozca, lo guarde y lo rellene
-// solo la próxima vez. Antes había que entrar con datos de ejemplo para llegar a Ajustes.
-function EntrarModal({ onEntrar, onClose }) {
-  const [url, setUrl] = useState("");
-  const [tok, setTok] = useState("");
+// Botones para guardarte el acceso donde ya lo tienes todo: tu email, tus chats contigo mismo,
+// tu gestor de contraseñas. Es lo que evita tener que memorizar la dirección y el token.
+function CompartirAcceso({ workerUrl, token, compacto }) {
+  const [msg, setMsg] = useState(null);
+  if (!workerUrl || !token) return null;
+  const link = makeAccessLink(workerUrl, token);
+  const asunto = "Mi acceso a Mis Finanzas";
+  const cuerpo = `Abre este enlace en cualquier móvil u ordenador para entrar con tus datos:\n\n${link}\n\nEs como tu contraseña: no lo reenvíes a nadie.`;
+  const copiar = async () => { try { await navigator.clipboard.writeText(link); setMsg("Enlace copiado."); } catch { setMsg("No se pudo copiar."); } };
+  const compartir = async () => { try { await navigator.share({ title: asunto, text: cuerpo }); } catch { /* cancelado */ } };
+  const gestor = async () => setMsg(await recordarAcceso(workerUrl, token)
+    ? "Guardado en tu gestor de contraseñas (si te lo ha preguntado)." : "Este navegador no deja guardarlo desde aquí.");
+  return (
+    <div>
+      <div className="flex flex-wrap gap-2">
+        <a href={`mailto:?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`}
+          className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ background: C.accent }}>
+          Enviármelo por email
+        </a>
+        {typeof navigator !== "undefined" && navigator.share && <Btn size="sm" onClick={compartir}>Compartir…</Btn>}
+        <Btn size="sm" onClick={copiar}>Copiar enlace</Btn>
+        {!compacto && typeof window !== "undefined" && window.PasswordCredential && <Btn size="sm" onClick={gestor}>Gestor de contraseñas</Btn>}
+      </div>
+      {msg && <p className="mt-1.5 text-xs text-slate-500">{msg}</p>}
+    </div>
+  );
+}
+
+// Entrar desde otro navegador o dispositivo. Tres formas, de más a menos cómoda: abrir el enlace
+// personal (llega aquí ya relleno), dejar que el gestor de contraseñas rellene, o pegar el
+// enlace / escribir los datos. Es un formulario de login de verdad para que el gestor lo vea.
+function EntrarModal({ inicial, auto, onEntrar, onClose }) {
+  const [url, setUrl] = useState(inicial?.u || "");
+  const [tok, setTok] = useState(inicial?.t || "");
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState(null);
-  // Si el navegador ya tiene el acceso guardado (Chrome lo ofrece con un toque), se rellena.
-  useEffect(() => { leerAccesoGuardado().then((c) => { if (c) { setUrl((v) => v || c.u); setTok((v) => v || c.t); } }); }, []);
-  const enviar = async (e) => {
-    e.preventDefault();
-    const u = url.trim().replace(/\/+$/, ""), t = tok.trim();
-    if (!/^https?:\/\//.test(u)) { setRes({ ok: false, text: "La dirección de tu backend empieza por https:// (la encuentras en Cloudflare → Workers)." }); return; }
+  const [hecho, setHecho] = useState(null); // { u, t } con el que se entró
+  useEffect(() => {
+    if (inicial) return;
+    leerAccesoGuardado().then((c) => { if (c) { setUrl((v) => v || c.u); setTok((v) => v || c.t); } });
+  }, [inicial]);
+  const ir = async (u0, t0) => {
+    const u = u0.trim().replace(/\/+$/, ""), t = t0.trim();
+    if (!/^https?:\/\//.test(u)) { setRes({ ok: false, text: "Pega tu enlace de acceso, o la dirección de tu backend (empieza por https://)." }); return; }
     if (!t) { setRes({ ok: false, text: "Falta el token." }); return; }
     setBusy(true); setRes(null);
-    try { setRes(await onEntrar(u, t)); } finally { setBusy(false); }
+    try { const r = await onEntrar(u, t); setRes(r); if (r?.ok) setHecho({ u, t }); } finally { setBusy(false); }
   };
+  // Al llegar desde el gestor de contraseñas ya has elegido cuenta: no se pide otro toque.
+  const autoRef = useRef(false);
+  useEffect(() => { if (auto && inicial && !autoRef.current) { autoRef.current = true; ir(inicial.u, inicial.t); } }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Pegar el enlace en el primer campo vale igual que abrirlo.
+  const onUrl = (v) => { const p = parseAccessLink(v); if (p) { setUrl(p.u); setTok(p.t); } else setUrl(v); };
+  const host = (() => { try { return new URL(url).host; } catch { return url; } })();
   const campo = "mt-1 w-full rounded-lg border px-2.5 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500";
   return (
     <Modal title="Entrar con mi cuenta" onClose={onClose}
@@ -3516,23 +3575,37 @@ function EntrarModal({ onEntrar, onClose }) {
         ? <Btn kind="primary" onClick={onClose} className="w-full justify-center sm:w-auto">Ver mis datos</Btn>
         : <div className="flex gap-2"><Btn kind="primary" onClick={() => document.getElementById("finz-entrar")?.requestSubmit()} disabled={busy}>{busy ? "Entrando…" : "Entrar"}</Btn><Btn onClick={onClose}>Cancelar</Btn></div>}>
       {res?.ok ? (
-        <div className="space-y-2">
+        <div className="space-y-3">
           <p className="text-sm text-emerald-700">{res.text}</p>
-          <p className="text-xs text-slate-500">Si el navegador te ofrece guardar la contraseña, acepta: la próxima vez, aquí o en otro navegador, solo tendrás que pulsar «Entrar».</p>
+          {/* El momento de cerrar el círculo: acabas de entrar, así que es cuando más fácil es
+              dejarte el acceso guardado para la próxima vez. */}
+          {!inicial && (
+            <div className="rounded-xl border p-3" style={{ borderColor: C.line, background: C.surfaceAlt }}>
+              <p className="text-sm font-medium text-slate-700">Que la próxima vez sea un toque</p>
+              <p className="mt-0.5 text-xs text-slate-500">Mándate tu enlace de acceso. En cualquier otro móvil u ordenador, ábrelo desde tu email y entrarás directamente.</p>
+              <div className="mt-2"><CompartirAcceso workerUrl={hecho?.u} token={hecho?.t} compacto /></div>
+            </div>
+          )}
           <p className="text-xs text-slate-500">Los bancos conectados vienen con tus datos: no pulses «Reconectar» salvo que el permiso haya caducado.</p>
         </div>
       ) : (
-        <form id="finz-entrar" onSubmit={enviar} className="space-y-3" autoComplete="on">
-          <p className="text-sm text-slate-600">Para quien ya usa la app en otro navegador o dispositivo. Tus datos y tus bancos llegan solos.</p>
-          <label className="block text-xs font-medium text-slate-600">Dirección de tu backend
-            <input name="username" autoComplete="username" inputMode="url" value={url} onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://…workers.dev" autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
-          </label>
-          <label className="block text-xs font-medium text-slate-600">Token
-            <input name="password" type="password" autoComplete="current-password" value={tok} onChange={(e) => setTok(e.target.value)}
-              autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
-          </label>
-          <p className="text-[11px] leading-relaxed text-slate-400">¿No los tienes? En el navegador donde ya usas la app: Ajustes → Banco. O en Cloudflare → Workers (la dirección) y en la variable del token del Worker.</p>
+        <form id="finz-entrar" onSubmit={(e) => { e.preventDefault(); ir(url, tok); }} className="space-y-3" autoComplete="on">
+          {inicial ? (
+            <p className="text-sm text-slate-600">Vas a entrar con tu backend en <strong className="break-all">{host}</strong>. Llegarán tus datos y tus bancos, y la sincronización quedará activada en este navegador.</p>
+          ) : (
+            <p className="text-sm text-slate-600">La forma más rápida: abre <strong>tu enlace de acceso</strong> (búscalo en tu email: «Mi acceso a Mis Finanzas») o pégalo aquí abajo.</p>
+          )}
+          <div className={inicial ? "hidden" : "space-y-3"}>
+            <label className="block text-xs font-medium text-slate-600">Enlace de acceso o dirección de tu backend
+              <input name="username" autoComplete="username" inputMode="url" value={url} onChange={(e) => onUrl(e.target.value)}
+                placeholder="Pega aquí tu enlace" autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
+            </label>
+            <label className="block text-xs font-medium text-slate-600">Token
+              <input name="password" type="password" autoComplete="current-password" value={tok} onChange={(e) => setTok(e.target.value)}
+                placeholder="Se rellena solo si pegas el enlace" autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
+            </label>
+            <p className="text-[11px] leading-relaxed text-slate-400">¿No tienes el enlace? En el navegador donde ya usas la app: Ajustes → Tus datos y sincronización → «Tu acceso en otros dispositivos».</p>
+          </div>
           {res && <p className="text-sm text-rose-700">{res.text}</p>}
           <button type="submit" className="hidden" aria-hidden="true" tabIndex={-1} />
         </form>
@@ -3541,21 +3614,17 @@ function EntrarModal({ onEntrar, onClose }) {
   );
 }
 
-// En Ajustes, para el navegador donde ya está todo: deja el acceso guardado en el gestor de
-// contraseñas, que es lo que luego permite «Entrar» en otro navegador sin buscar nada.
+// En Ajustes, para el navegador donde ya está todo configurado.
 function AccesoOtroNavegador({ workerUrl, token }) {
-  const [msg, setMsg] = useState(null);
   if (!workerUrl || !token) return null;
-  const puede = typeof window !== "undefined" && !!window.PasswordCredential;
-  const guardar = async () => setMsg(await recordarAcceso(workerUrl, token)
-    ? "Hecho. Si el navegador te ha pedido confirmación, el acceso ya está en tu gestor de contraseñas."
-    : "Este navegador no deja guardarlo desde aquí. Apunta la dirección y el token en tu gestor de contraseñas.");
   return (
     <section>
-      <h3 className="text-sm font-semibold">Usar en otro navegador o dispositivo</h3>
-      <p className="mt-1 text-xs text-slate-500">Abre la app allí y pulsa <strong>Entrar</strong> en la portada. Te pedirá la dirección de tu backend y el token; si están en tu gestor de contraseñas, se rellenan solos.</p>
-      {puede && <div className="mt-2"><Btn size="sm" onClick={guardar}>Guardar el acceso en el gestor de contraseñas</Btn></div>}
-      {msg && <p className="mt-1.5 text-xs text-slate-500">{msg}</p>}
+      <h3 className="text-sm font-semibold">Tu acceso en otros dispositivos</h3>
+      <p className="mt-1 text-xs text-slate-500">Mándate tu enlace de acceso una vez. Desde cualquier móvil, ordenador o navegador, abrirlo es entrar: llegan tus datos y tus bancos, sin teclear nada.</p>
+      <div className="mt-2"><CompartirAcceso workerUrl={workerUrl} token={token} /></div>
+      <p className="mt-2 rounded-lg px-2 py-1.5 text-[11px] leading-relaxed" style={{ background: C.warnSoft, color: C.warn }}>
+        El enlace funciona como tu contraseña: guárdalo solo en sitios tuyos. Si se filtra, cambia el token del Worker y el enlace viejo deja de valer.
+      </p>
     </section>
   );
 }
@@ -3915,7 +3984,7 @@ function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente
           <h1 className="mt-4 text-2xl font-semibold tracking-tight sm:text-3xl">Tus finanzas, claras</h1>
           <p className="mt-2 max-w-lg text-sm leading-relaxed text-white/70">
             Descubre en qué se va tu dinero: por categoría, por activo y por etiquetas transversales.
-            Todo se procesa y se guarda <strong className="font-semibold text-white/90">solo en tu dispositivo</strong>.
+            Tus datos se guardan en tu dispositivo y, si quieres, en tu propio servidor. <strong className="font-semibold text-white/90">Nunca en el nuestro</strong>.
           </p>
         </div>
       </div>
@@ -3968,40 +4037,33 @@ function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente
             </button>
           </div>
 
-          {onEntrar && (
-            <>
-              <h2 className="mt-6 text-xs font-semibold uppercase tracking-wide text-slate-500">Ya uso la app</h2>
+          <h2 className="mt-6 text-xs font-semibold uppercase tracking-wide text-slate-500">Ya uso la app</h2>
+          <div className="mt-2 rounded-2xl border bg-white p-4" style={{ borderColor: C.line }}>
+            {onEntrar && (
               <button type="button" onClick={onEntrar}
-                className="group mt-2 flex w-full items-center gap-3 rounded-2xl border bg-white p-4 text-left transition-all hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-                style={{ borderColor: C.line }}>
+                className="group flex w-full items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-xl">
                 <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ background: C.accentSoft, color: C.accent }}><RefreshCw size={18} /></span>
                 <span className="min-w-0 flex-1">
                   <span className="block text-base font-semibold">Entrar con mi cuenta</span>
-                  <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">En otro navegador o dispositivo: pon tu backend y tu token (o deja que el gestor de contraseñas los rellene) y llegan tus datos y tus bancos.</span>
+                  <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">Abre tu enlace de acceso (está en tu email) o pégalo aquí. Llegan tus datos y tus bancos.</span>
                 </span>
                 <ChevronRight size={16} className="shrink-0 text-slate-400 transition-transform group-hover:translate-x-0.5" />
               </button>
-            </>
-          )}
-
-          <div className="mt-5 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-center">
-            <button type="button" onClick={onSample} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
-              <Sparkles size={14} /> Probar con datos de ejemplo
-            </button>
+            )}
+            {/* Sin backend, la copia .json es la única forma de llevarse los datos: es el mismo
+                caso (ya uso la app), solo que por otro camino. */}
             {onSettings && (
-              <button type="button" onClick={onSettings} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
-                <History size={14} /> Restaurar una copia
-              </button>
+              <p className="mt-3 border-t pt-2.5 text-xs text-slate-500" style={{ borderColor: C.line }}>
+                ¿Sin backend? <button type="button" onClick={onSettings} className="font-semibold hover:underline focus-visible:outline-none" style={{ color: C.accent }}>Restaura una copia (.json)</button>
+              </p>
             )}
           </div>
-          <p className="mt-1 text-center text-xs text-slate-400">Los datos de ejemplo son 14 meses ficticios de un banco español, con dos maratones para ver las etiquetas.</p>
 
-          <div className="mt-8 grid grid-cols-3 gap-3 text-center text-xs text-slate-500">
-            {["Conecta o importa", "Explora panel, activos y etiquetas", "Pregunta al asistente"].map((t, i) => (
-              <div key={i} className="rounded-xl border bg-white p-3" style={{ borderColor: C.line }}>
-                <div className="mb-1 font-semibold text-slate-700">{i + 1}</div>{t}
-              </div>
-            ))}
+          <div className="mt-6 text-center">
+            <button type="button" onClick={onSample} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+              <Sparkles size={14} /> Ver una demo con datos de ejemplo
+            </button>
+            <p className="mt-1 text-xs text-slate-400">14 meses ficticios de un banco español, para ver cómo funciona antes de traer los tuyos.</p>
           </div>
         </>
       )}
@@ -8332,7 +8394,7 @@ function AppMain() {
   // sincronización automática encendida. Es lo que antes había que hacer en cuatro sitios
   // distintos, y lo que se olvidaba (la casilla de «automático» es de cada navegador y no
   // viaja con los datos). Al acabar, ofrece guardar el acceso en el gestor de contraseñas.
-  const [entrarOpen, setEntrarOpen] = useState(false);
+  const [entrarOpen, setEntrarOpen] = useState(null); // null | { inicial?: {u,t}, auto?: bool }
   const entrar = useCallback(async (u, t) => {
     const prev = loadBank();
     // A disco ANTES de traer: syncPull lee la URL y el token de ahí, no del estado de React.
@@ -8354,6 +8416,26 @@ function AppMain() {
     return { ok: true, text: `Listo: ${nfNum.format(r.n)} ${r.n === 1 ? "movimiento traído" : "movimientos traídos"}${nb ? ` y ${nb} ${nb === 1 ? "banco heredado" : "bancos heredados"}` : ""}. La sincronización automática queda activada en este navegador.` };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syncPull, persistSync]);
+  // Abrir el enlace personal de acceso. Se borra de la barra al momento: lleva el token.
+  // Si este navegador ya está conectado a ese mismo backend, no hay nada que hacer.
+  useEffect(() => {
+    if (!booted) return;
+    const p = parseAccessLink(window.location.hash);
+    if (!p) return;
+    try { window.history.replaceState({}, "", window.location.pathname + window.location.search); } catch { /* noop */ }
+    const b = loadBank();
+    if (b.workerUrl === p.u && b.token === p.t && loadSync().version) return;
+    setEntrarOpen({ inicial: p });
+  }, [booted]);
+  // En un navegador vacío, si el gestor de contraseñas ya guarda tu acceso, se ofrece entrar con
+  // un toque, como el «Continuar como…» de otras webs. Solo donde no hay nada que perder (sin
+  // datos ni backend) y una vez por sesión, para no insistir a quien lo descarta.
+  useEffect(() => {
+    if (!booted || movs.length || loadBank().workerUrl || LLEGA_CON_ENLACE) return;
+    try { if (sessionStorage.getItem("finz:onetap")) return; sessionStorage.setItem("finz:onetap", "1"); } catch { /* noop */ }
+    leerAccesoGuardado().then((c) => { if (c) setEntrarOpen({ inicial: c, auto: true }); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [booted]);
   // persistBank acepta un patch { ... } o una función (b) => nuevoEstado.
   const persistBank = useCallback((patchOrFn) => setBankCfg((b) => { const n = typeof patchOrFn === "function" ? patchOrFn(b) : { ...b, ...patchOrFn }; saveBank(n); return n; }), []);
   useEffect(() => { if (settingsOpen) setBankCfg(loadBank()); }, [settingsOpen]);
@@ -9610,7 +9692,7 @@ function AppMain() {
       {!hasData ? (
         <EmptyState onFiles={handleFiles} onSample={loadSample} error={error} parsing={imp?.phase === "parsing"}
           onSettings={() => setSettingsOpen(true)} onAsistente={() => setAsistenteOpen(true)}
-          onEntrar={() => setEntrarOpen(true)} />
+          onEntrar={() => setEntrarOpen({})} />
       ) : (
         <div className="mx-auto max-w-5xl px-4 pb-24 sm:pb-12">
           <header ref={headerRef} className="sticky top-0 z-20 -mx-4 mb-3 px-4 py-3 text-white shadow-md" style={{ background: `linear-gradient(135deg, ${C.navy} 0%, ${C.navy2} 100%)` }}>
@@ -9792,7 +9874,7 @@ function AppMain() {
           onEditMov={(m) => setMovEdit({ mode: "edit", mov: m })}
         />
       )}
-      {entrarOpen && <EntrarModal onEntrar={entrar} onClose={() => setEntrarOpen(false)} />}
+      {entrarOpen && <EntrarModal inicial={entrarOpen.inicial} auto={entrarOpen.auto} onEntrar={entrar} onClose={() => setEntrarOpen(null)} />}
       {asistenteOpen && (
         <AsistenteConexion
           workerUrl={bankCfg.workerUrl || ""} token={bankCfg.token || ""}

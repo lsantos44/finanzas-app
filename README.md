@@ -14,10 +14,11 @@ quedan en tu navegador.
 Necesitas tu propio backend. La guía de instalación, pensada para quien no programa, está en
 el repositorio del Worker: **https://github.com/lsantos44/MisFinanzas**
 
-**En otro navegador o dispositivo** no hace falta volver a configurar nada: en la portada, pulsa
-*Entrar* y pon la dirección de tu Worker y el token. Trae tus datos y tus bancos y deja la
-sincronización activada. Si aceptas guardarlos en el gestor de contraseñas, la próxima vez se
-rellenan solos (en Android, también en otros navegadores).
+**En otro navegador o dispositivo** no hace falta memorizar nada. En el que ya usas, abre
+Ajustes → Tus datos y sincronización → *Tu acceso en otros dispositivos* y mándate el enlace por
+email (o guárdalo en tus notas). Abrirlo en cualquier móvil u ordenador es entrar: llegan tus
+datos y tus bancos y la sincronización queda activada. También puedes pegarlo en *Entrar*, y si
+el gestor de contraseñas guarda el acceso, en un navegador nuevo te ofrece entrar con un toque.
 
 ## Desarrollo
 
