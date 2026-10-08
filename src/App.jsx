@@ -7480,6 +7480,21 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
                   <input type="checkbox" checked={!!bank.auto} onChange={(e) => bank.onToggleAuto(e.target.checked)} className="h-3.5 w-3.5" />
                   Sincronización automática al abrir <span className="text-slate-400">(una vez cada 12 h; baja lo reciente sin duplicar)</span>
                 </label>
+                {/* Lo que hace el servidor por su cuenta, con la app cerrada. */}
+                {bank.cron && (() => {
+                  const c = bank.cron;
+                  const viejo = c.at && Date.now() - c.at > 7 * 3600000;
+                  const mal = c.viejo || viejo || (c.errores || []).length;
+                  return (
+                    <p className="mt-1 rounded-lg px-2 py-1.5 text-[11px] leading-relaxed" style={mal ? { background: C.warnSoft, color: C.warn } : { background: C.surfaceAlt, color: C.muted }}>
+                      {c.viejo ? "Tu backend no informa de sus revisiones automáticas. Redespliégalo en Cloudflare para verlas aquí."
+                        : !c.at ? "El servidor aún no ha hecho ninguna revisión automática. La primera llegará en menos de 3 horas."
+                        : <>Servidor: última revisión el {fmtCuando(c.at)}{c.origen === "manual" ? " (forzada)" : ""} · {nfNum.format(c.nuevos || 0)} {c.nuevos === 1 ? "movimiento nuevo" : "movimientos nuevos"}.
+                          {viejo && " Lleva más de 7 horas sin revisar: comprueba en Cloudflare que el disparador programado sigue activo."}
+                          {(c.errores || []).length > 0 && <span className="block">Errores: {c.errores.join(" · ")}</span>}</>}
+                    </p>
+                  );
+                })()}
               </div>
             )}
 
@@ -8605,6 +8620,17 @@ function AppMain() {
   // persistBank acepta un patch { ... } o una función (b) => nuevoEstado.
   const persistBank = useCallback((patchOrFn) => setBankCfg((b) => { const n = typeof patchOrFn === "function" ? patchOrFn(b) : { ...b, ...patchOrFn }; saveBank(n); return n; }), []);
   useEffect(() => { if (settingsOpen) setBankCfg(loadBank()); }, [settingsOpen]);
+  // Última revisión automática del servidor (el cron del Worker). Se pregunta al abrir Ajustes:
+  // es la única forma de saber si los movimientos siguen entrando con la app cerrada.
+  const [cronInfo, setCronInfo] = useState(null); // null | { at, nuevos, errores, cuentas } | { viejo: true }
+  useEffect(() => {
+    if (!settingsOpen || !bankBase() || !(loadBank().connections || []).length) return;
+    bankFetch("/store/cron", 15000).then((r) => (r.ok ? r.json() : null))
+      // Un backend sin actualizar no conoce /store/cron y devuelve la copia de tus datos.
+      .then((d) => setCronInfo(d && "at" in d ? d : { viejo: true }))
+      .catch(() => setCronInfo(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsOpen]);
   useEffect(() => {
     const h = () => setBankCfg(loadBank());
     window.addEventListener("finz-bank-updated", h);
@@ -10100,7 +10126,7 @@ function AppMain() {
             onToggleAuto: (v) => { persistSync({ auto: v }); setSyncMsg({ kind: "info", text: v ? "Sincronización automática activada." : "Sincronización automática desactivada." }); } }}
           bank={{ workerUrl: bankCfg.workerUrl || "", token: bankCfg.token || "", connections: bankCfg.connections || [],
             aspsps: bankAspsps, accountsByConn: bankAccountsByConn, addCountry: bankAddCountry, addSel: bankAddSel, busy: bankBusy, msg: bankMsg,
-            auto: !!bankCfg.auto,
+            auto: !!bankCfg.auto, cron: cronInfo,
             onChange: persistBank, onSetAddCountry: setBankAddCountry, onSetAddSel: setBankAddSel, onLoadAspsps: bankLoadAspsps, onAddConnect: bankAddConnect,
             onToggleAuto: (v) => persistBank((b) => ({ ...b, auto: v })),
             diag: bankDiag, onDiagnose: bankDiagnose, onReconnect: bankReconnect,
