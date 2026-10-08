@@ -3517,8 +3517,13 @@ function PrimerosPasos({ tieneDatos, tieneSync, tieneBanco, tieneIA, onIr }) {
 // Botones para guardarte el acceso donde ya lo tienes todo: tu email, tus chats contigo mismo,
 // tu gestor de contraseñas. Es lo que evita tener que memorizar la dirección y el token.
 const ACCESO_GUARDADO_KEY = "finz:acceso-guardado";
-const marcarAccesoGuardado = () => { try { localStorage.setItem(ACCESO_GUARDADO_KEY, String(Date.now())); } catch { /* noop */ } };
-const accesoGuardado = () => { try { return !!localStorage.getItem(ACCESO_GUARDADO_KEY); } catch { return false; } };
+const marcarAccesoGuardado = () => {
+  try { localStorage.setItem(ACCESO_GUARDADO_KEY, String(Date.now())); } catch { /* noop */ }
+  try { window.dispatchEvent(new Event("finz-acceso-guardado")); } catch { /* noop */ }
+};
+// Devuelve el momento (ms) en que se copió o envió el enlace por última vez, o 0.
+const accesoGuardado = () => { try { return Number(localStorage.getItem(ACCESO_GUARDADO_KEY)) || 0; } catch { return 0; } };
+const fmtCuando = (ms) => new Date(ms).toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 function CompartirAcceso({ workerUrl, token, compacto }) {
   const [msg, setMsg] = useState(null);
   if (!workerUrl || !token) return null;
@@ -3625,11 +3630,20 @@ function EntrarModal({ inicial, auto, onEntrar, onClose }) {
 
 // En Ajustes, para el navegador donde ya está todo configurado.
 function AccesoOtroNavegador({ workerUrl, token }) {
+  // En estado, no leído en cada render: si no, el aviso seguía en amarillo después de copiarlo.
+  const [guardado, setGuardado] = useState(accesoGuardado);
+  useEffect(() => {
+    const h = () => setGuardado(accesoGuardado());
+    window.addEventListener("finz-acceso-guardado", h);
+    return () => window.removeEventListener("finz-acceso-guardado", h);
+  }, []);
   if (!workerUrl || !token) return null;
   return (
     <section>
       <h3 className="text-sm font-semibold">Tu acceso en otros dispositivos</h3>
-      {!accesoGuardado() && <p className="mt-1 rounded-lg px-2 py-1.5 text-[11px] font-medium" style={{ background: C.warnSoft, color: C.warn }}>Aún no te lo has guardado. Hazlo ahora: si pierdes este dispositivo, es lo que te deja volver a entrar.</p>}
+      {guardado
+        ? <p className="mt-1 rounded-lg px-2 py-1.5 text-[11px] font-medium" style={{ background: "#dcfce7", color: "#15803d" }}>✓ Te lo guardaste el {fmtCuando(guardado)}. Para usarlo en otro navegador, pégalo allí en «Entrar».</p>
+        : <p className="mt-1 rounded-lg px-2 py-1.5 text-[11px] font-medium" style={{ background: C.warnSoft, color: C.warn }}>Aún no te lo has guardado. Hazlo ahora: si pierdes este dispositivo, es lo que te deja volver a entrar.</p>}
       <p className="mt-1 text-xs text-slate-500">Mándate tu enlace de acceso una vez. Desde cualquier móvil, ordenador o navegador, abrirlo es entrar: llegan tus datos y tus bancos, sin teclear nada.</p>
       <div className="mt-2"><CompartirAcceso workerUrl={workerUrl} token={token} /></div>
       <p className="mt-2 rounded-lg px-2 py-1.5 text-[11px] leading-relaxed" style={{ background: C.warnSoft, color: C.warn }}>
@@ -3975,7 +3989,7 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onConectarBan
               <p className="mt-2 text-[12px] font-medium text-slate-700">Contraseña</p>
               <Campo valor={tok.trim()} />
             </div>
-            <p className="text-[12px] text-slate-500">¿Cambias de idea con el banco? Vuelve a abrir este asistente desde Ajustes → Primeros pasos.</p>
+            <p className="text-[12px] text-slate-500">¿Cambias de idea con el banco? Vuelve a abrir este asistente desde Ajustes → Banco.</p>
           </Paso>
         )}
       </div>
@@ -7160,6 +7174,7 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
   const [snapsOpen, setSnapsOpen] = useState(false);
   const [dupes, setDupes] = useState(null); // null = sin buscar; [] = buscado y limpio
   const [abrir, setAbrir] = useState(null);  // grupo al que saltar desde Primeros pasos
+  const [primerosOcultos, setPrimerosOcultos] = useState(() => { try { return !!localStorage.getItem("finz:primeros-ocultos"); } catch { return false; } });
   const fileRef = useRef(null);
   const custom = ai.provider !== "claude";
   const setAiField = (k, v) => setAi((c) => ({ ...c, [k]: v }));
@@ -7182,6 +7197,9 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
             una vez al año deja de ocupar lo mismo que lo que se mira cada semana. */}
         {/* Lo primero que ve quien abre Ajustes por primera vez: dónde está y qué puede ganar.
             Se cierra solo cuando ya no queda nada por configurar, para no estorbar después. */}
+        {/* Cuando ya está todo hecho, o la persona lo descarta, deja de existir: si no, estorbaría
+            en Ajustes toda la vida de la app. */}
+        {!primerosOcultos && [movsCount > 0, !!sync?.version, !!(bank && bank.connections.length), aiOn].some((x) => !x) && (
         <Grupo titulo="Primeros pasos" abierto={!(movsCount && sync?.version && bank?.connections?.length)}
           estado={`${[movsCount > 0, !!sync?.version, !!(bank && bank.connections.length), aiOn].filter(Boolean).length} de 4 completados`}>
           <PrimerosPasos
@@ -7193,7 +7211,12 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
               if (destino === "cerrar") { onClose(); return; }
               setAbrir(destino); // despliega el grupo correspondiente
             }} />
+          <button type="button" onClick={() => { try { localStorage.setItem("finz:primeros-ocultos", "1"); } catch { /* noop */ } setPrimerosOcultos(true); }}
+            className="text-[11px] font-medium text-slate-400 hover:text-slate-600 hover:underline focus-visible:outline-none">
+            No volver a mostrar
+          </button>
         </Grupo>
+        )}
 
         <Grupo titulo="Tus datos y sincronización" abierto={abrir === "sync"} forzar={abrir === "sync"}
           estado={sync?.version ? `sincronizado · versión ${sync.version}` : "sin sincronizar"}
@@ -7203,13 +7226,21 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
           {/* Saber qué build está sirviendo el navegador: sin esto, ante un fallo no se distingue
               "el arreglo no funciona" de "no se ha subido / está cacheado", y se gastan despliegues. */}
           <p className="mt-1 text-[11px] text-slate-400" style={tnum}>
-            Versión {BUILD_STAMP}
+            Versión de la app: {BUILD_STAMP} <span className="text-slate-300">(la fecha en que se publicó; sirve para saber si tienes la última)</span>
             <span className="block">Origen: {typeof window !== "undefined" ? window.location.host : "?"}</span>
           </p>
           <p className="mt-1 text-sm text-slate-600">
             {nfNum.format(movsCount)} movimientos guardados en <strong>{storeKind}</strong>, solo accesibles para ti.
             {" "}Estado: {saveState === "saving" ? "guardando…" : saveState === "error" ? "no se pudo guardar el último cambio" : "todo guardado"}.
           </p>
+          {/* Lo local se guarda al instante; lo que interesa saber es cuándo llegó a tu backend,
+              que es lo que verá otro dispositivo. */}
+          {sync && (sync.lastPush || sync.lastPull) && (
+            <p className="mt-1 text-xs text-slate-500" style={tnum}>
+              {sync.lastPush ? <>Último guardado en tu backend: <strong>{fmtCuando(sync.lastPush)}</strong>.</> : null}
+              {sync.lastPull ? <> Última descarga: {fmtCuando(sync.lastPull)}.</> : null}
+            </p>
+          )}
         </section>
         {sync && (
         <section>
@@ -7260,6 +7291,7 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
         <section>
           <h3 className="text-sm font-semibold">Conexión bancaria (Enable Banking)</h3>
           <p className="mt-1 text-xs text-slate-500">Conecta tus bancos y baja los movimientos automáticamente, sin CSV. Puedes conectar varios.</p>
+          {onAsistente && <button type="button" onClick={() => { onClose(); onAsistente(); }} className="mt-1 text-xs font-semibold hover:underline focus-visible:outline-none" style={{ color: C.accent }}>Abrir el asistente de conexión paso a paso</button>}
           <div className="mt-2 space-y-2">
             <label className="block text-xs text-slate-600">URL del backend (tu Worker)
               <input value={bank.workerUrl} onChange={(e) => bank.onChange({ workerUrl: e.target.value })} placeholder="https://…workers.dev" autoCapitalize="off" autoCorrect="off" spellCheck={false}
@@ -9944,7 +9976,7 @@ function AppMain() {
           onDrillIds={(ids, label) => { setSettingsOpen(false); setDrill({ type: "ids", ids, label }); }}
           trashed={trashed} onRestoreTrash={restoreMovs} onPurgeTrash={purgeMovs}
           onRulesAudit={rulesAudit} onToggleRule={toggleRule} onRemoveRule={removeCustomRule} onUpdateRuleCat={updateRuleCat}
-          sync={{ busy: syncBusy, msg: syncMsg, conflict: syncConflict, auto: !!syncCfg.auto, version: syncCfg.version || 0,
+          sync={{ busy: syncBusy, msg: syncMsg, conflict: syncConflict, auto: !!syncCfg.auto, version: syncCfg.version || 0, lastPush: syncCfg.lastPush || 0, lastPull: syncCfg.lastPull || 0,
             onPush: (o) => syncPush(o), onPull: (o) => syncPull({ confirmReplace: true, ...o }),
             onToggleAuto: (v) => { persistSync({ auto: v }); setSyncMsg({ kind: "info", text: v ? "Sincronización automática activada." : "Sincronización automática desactivada." }); } }}
           bank={{ workerUrl: bankCfg.workerUrl || "", token: bankCfg.token || "", connections: bankCfg.connections || [],
