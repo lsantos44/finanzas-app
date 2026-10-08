@@ -827,6 +827,49 @@ const loadBank = () => {
 };
 const bankIsEmpty = (b) => !b || (!b.workerUrl && !b.token && !(b.connections || []).length);
 
+// La URL del Worker y el token son, a efectos prácticos, el usuario y la contraseña de tu
+// cuenta. Se guardan en el gestor de contraseñas del navegador para que en otro navegador u
+// otro dispositivo baste con «Entrar»: Google y iCloud los sincronizan, y en Android el
+// autorrelleno de Google sirve también en Firefox, Samsung Internet o Edge. Sin servidor nuestro.
+async function recordarAcceso(workerUrl, token) {
+  try {
+    if (!workerUrl || !token || !window.PasswordCredential || !navigator.credentials?.store) return false;
+    await navigator.credentials.store(new window.PasswordCredential({ id: workerUrl, password: token, name: "Mis Finanzas" }));
+    return true;
+  } catch { return false; }
+}
+// Enlace personal de acceso: la dirección y el token metidos en un enlace que te mandas a ti
+// mismo (email, WhatsApp, notas). Abrirlo en cualquier dispositivo = entrar. Es la versión sin
+// servidor del «enlace mágico» por email: tu bandeja de entrada ya está en todos tus aparatos.
+// Va en el fragmento (#), que el navegador no envía nunca a ningún servidor.
+const ACCESS_KEY = "acceso";
+const makeAccessLink = (workerUrl, token) => {
+  const b64 = btoa(unescape(encodeURIComponent(JSON.stringify({ u: workerUrl, t: token }))))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return `${window.location.origin}/#${ACCESS_KEY}=${b64}`;
+};
+// Acepta el enlace entero o solo su fragmento. Devuelve { u, t } o null.
+const parseAccessLink = (text) => {
+  try {
+    const m = String(text || "").match(new RegExp(ACCESS_KEY + "=([A-Za-z0-9_-]+)"));
+    if (!m) return null;
+    const b64 = m[1].replace(/-/g, "+").replace(/_/g, "/");
+    const j = JSON.parse(decodeURIComponent(escape(atob(b64 + "===".slice((b64.length + 3) % 4)))));
+    const u = String(j.u || "").trim().replace(/\/+$/, ""), t = String(j.t || "").trim();
+    return /^https?:\/\//.test(u) && t ? { u, t } : null;
+  } catch { return null; }
+};
+// Se mira al cargar el módulo, antes de que nadie limpie la barra de direcciones.
+const LLEGA_CON_ENLACE = typeof window !== "undefined" && new RegExp(ACCESS_KEY + "=").test(window.location.hash);
+async function leerAccesoGuardado() {
+  try {
+    if (!window.PasswordCredential || !navigator.credentials?.get) return null;
+    const c = await navigator.credentials.get({ password: true, mediation: "optional" });
+    return c && c.id && c.password ? { u: c.id, t: c.password } : null;
+  } catch { return null; }
+}
+
+
 // Fusiona la config bancaria de una copia con la local. NO vale quedarse con "la más reciente":
 // en un dispositivo nuevo acabas de teclear la URL y el token, así que el sello local es
 // posterior aunque no tenga ninguna conexión dentro. Con ese criterio se rechazaba la copia
@@ -1079,6 +1122,54 @@ function decodeBuffer(buf) {
   const utf = new TextDecoder("utf-8").decode(slice);
   if (!utf.includes("\uFFFD")) return utf;
   try { return new TextDecoder("windows-1252").decode(slice); } catch { return utf; }
+}
+// Excel (.xlsx, .xls, .ods; también los «.xls» que en realidad son una tabla HTML, que es
+// lo que exportan varios bancos). Devuelve las filas como las daría el lector de CSV, para que
+// todo lo demás (detección de cabecera, columnas, importes) sea idéntico. La librería pesa,
+// así que solo se descarga cuando alguien trae un Excel.
+const isSpreadsheetFile = (file) => /\.(xlsx|xlsm|xls|ods)$/i.test(file.name)
+  || /spreadsheetml|opendocument\.spreadsheet/.test(file.type || "");
+async function spreadsheetToRows(buf) {
+  const XLSX = await import("xlsx");
+  // `raw`: en los «.xls» que son HTML, el texto se deja tal cual. Si no, la librería lee
+  // «3/1/2026» como 1 de marzo y «1234,5» como 12345; el lector de CSV ya sabe hacerlo bien.
+  const wb = XLSX.read(new Uint8Array(buf), { type: "array", cellDates: false, cellNF: true, raw: true });
+  // La hoja con más filas: algunos bancos ponen una portada o un resumen delante.
+  let best = null, bestN = -1;
+  for (const name of wb.SheetNames) {
+    const ws = wb.Sheets[name];
+    const ref = ws && ws["!ref"];
+    if (!ref) continue;
+    const r = XLSX.utils.decode_range(ref);
+    const n = r.e.r - r.s.r + 1;
+    if (n > bestN) { bestN = n; best = ws; }
+  }
+  if (!best) return [];
+  const range = XLSX.utils.decode_range(best["!ref"]);
+  const pad = (n) => String(n).padStart(2, "0");
+  const rows = [];
+  for (let R = range.s.r; R <= range.e.r; R++) {
+    const row = [];
+    for (let Cc = range.s.c; Cc <= range.e.c; Cc++) {
+      const cell = best[XLSX.utils.encode_cell({ r: R, c: Cc })];
+      if (!cell || cell.v == null) { row.push(""); continue; }
+      if (cell.t === "n" && cell.z && XLSX.SSF.is_date(cell.z)) {
+        // Las fechas de Excel son un número de días. Se pasan a dd/mm/aaaa: el texto formateado
+        // depende del formato del archivo y el 14 por defecto sale como m/d/aa, al revés.
+        const d = XLSX.SSF.parse_date_code(cell.v);
+        row.push(d ? `${pad(d.d)}/${pad(d.m)}/${d.y}` : String(cell.w || cell.v));
+      } else if (cell.t === "d" && cell.v instanceof Date) {
+        row.push(`${pad(cell.v.getDate())}/${pad(cell.v.getMonth() + 1)}/${cell.v.getFullYear()}`);
+      } else if (cell.t === "n") {
+        // Coma decimal: con punto, «1.234» se leería como mil doscientos treinta y cuatro.
+        row.push(String(cell.v).replace(".", ","));
+      } else {
+        row.push(String(cell.v).trim());
+      }
+    }
+    if (row.some((x) => x !== "")) rows.push(row);
+  }
+  return rows;
 }
 function detectDelimiter(text) {
   const sample = text.slice(0, 6000);
@@ -3361,14 +3452,15 @@ function DropZone({ onFiles, compact }) {
       className={`flex flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed text-center transition-all ${compact ? "p-5" : "p-10"}`}
       style={{ borderColor: over ? C.accent : C.lineStrong, background: over ? C.accentSoft : C.surfaceAlt }}>
       <div className="flex h-11 w-11 items-center justify-center rounded-xl" style={{ background: C.accentSoft }}><Upload size={20} style={{ color: C.accent }} /></div>
-      <p className="text-sm font-medium">Arrastra aquí el CSV de tu banco</p>
-      <p className="text-[11px] text-slate-400">o púlsalo para buscarlo en tu dispositivo</p>
+      <p className="text-sm font-medium">Arrastra aquí el extracto de tu banco</p>
+      <p className="text-[11px] text-slate-400">CSV o Excel (.xlsx, .xls)</p>
+      <p className="text-[11px] text-slate-400">o búscalo en tu dispositivo</p>
       <Btn onClick={() => inputRef.current?.click()} kind="primary">Seleccionar archivo</Btn>
       {/* El `accept` estricto escondía el archivo en el móvil: los selectores de Android e iOS
           reportan el CSV con tipos dispares (vnd.ms-excel, comma-separated-values, y
           octet-stream cuando viene de Drive). Se amplía para que no quede nunca en gris. */}
       <input ref={inputRef} type="file" multiple className="hidden"
-        accept=".csv,.txt,.tsv,.json,text/csv,text/plain,text/tab-separated-values,application/json,application/vnd.ms-excel,text/comma-separated-values,application/octet-stream"
+        accept=".csv,.txt,.tsv,.xlsx,.xls,.xlsm,.ods,.json,text/csv,text/plain,text/tab-separated-values,application/json,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.oasis.opendocument.spreadsheet,text/comma-separated-values,application/octet-stream"
         onChange={(e) => { if (e.target.files.length) onFiles(e.target.files); e.target.value = ""; }} />
     </div>
   );
@@ -3419,6 +3511,131 @@ function PrimerosPasos({ tieneDatos, tieneSync, tieneBanco, tieneIA, onIr }) {
         </div>
       ))}
     </div>
+  );
+}
+
+// Botones para guardarte el acceso donde ya lo tienes todo: tu email, tus chats contigo mismo,
+// tu gestor de contraseñas. Es lo que evita tener que memorizar la dirección y el token.
+const ACCESO_GUARDADO_KEY = "finz:acceso-guardado";
+const marcarAccesoGuardado = () => { try { localStorage.setItem(ACCESO_GUARDADO_KEY, String(Date.now())); } catch { /* noop */ } };
+const accesoGuardado = () => { try { return !!localStorage.getItem(ACCESO_GUARDADO_KEY); } catch { return false; } };
+function CompartirAcceso({ workerUrl, token, compacto }) {
+  const [msg, setMsg] = useState(null);
+  if (!workerUrl || !token) return null;
+  const link = makeAccessLink(workerUrl, token);
+  const asunto = "Mi acceso a Mis Finanzas";
+  const cuerpo = `Abre este enlace en cualquier móvil u ordenador para entrar con tus datos:\n\n${link}\n\nEs como tu contraseña: no lo reenvíes a nadie.`;
+  const copiar = async () => { try { await navigator.clipboard.writeText(link); marcarAccesoGuardado(); setMsg("Enlace copiado. Guárdalo en tus notas o mándatelo."); } catch { setMsg("No se pudo copiar."); } };
+  const compartir = async () => { try { await navigator.share({ title: asunto, text: cuerpo }); marcarAccesoGuardado(); } catch { /* cancelado */ } };
+  const gestor = async () => { const ok = await recordarAcceso(workerUrl, token); if (ok) marcarAccesoGuardado();
+    setMsg(ok ? "Guardado en tu gestor de contraseñas (si te lo ha preguntado)." : "Este navegador no deja guardarlo desde aquí."); };
+  return (
+    <div>
+      <div className="flex flex-wrap gap-2">
+        <a href={`mailto:?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`} onClick={marcarAccesoGuardado}
+          className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ background: C.accent }}>
+          Enviármelo por email
+        </a>
+        {typeof navigator !== "undefined" && navigator.share && <Btn size="sm" onClick={compartir}>Compartir…</Btn>}
+        <Btn size="sm" onClick={copiar}>Copiar enlace</Btn>
+        {!compacto && typeof window !== "undefined" && window.PasswordCredential && <Btn size="sm" onClick={gestor}>Gestor de contraseñas</Btn>}
+      </div>
+      {msg && <p className="mt-1.5 text-xs text-slate-500">{msg}</p>}
+    </div>
+  );
+}
+
+// Entrar desde otro navegador o dispositivo. Tres formas, de más a menos cómoda: abrir el enlace
+// personal (llega aquí ya relleno), dejar que el gestor de contraseñas rellene, o pegar el
+// enlace / escribir los datos. Es un formulario de login de verdad para que el gestor lo vea.
+function EntrarModal({ inicial, auto, onEntrar, onClose }) {
+  const [url, setUrl] = useState(inicial?.u || "");
+  const [tok, setTok] = useState(inicial?.t || "");
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState(null);
+  const [hecho, setHecho] = useState(null); // { u, t } con el que se entró
+  useEffect(() => {
+    if (inicial) return;
+    leerAccesoGuardado().then((c) => { if (c) { setUrl((v) => v || c.u); setTok((v) => v || c.t); } });
+  }, [inicial]);
+  const ir = async (u0, t0) => {
+    const u = u0.trim().replace(/\/+$/, ""), t = t0.trim();
+    if (!/^https?:\/\//.test(u)) { setRes({ ok: false, text: "Pega tu enlace de acceso, o la dirección de tu backend (empieza por https://)." }); return; }
+    if (!t) { setRes({ ok: false, text: "Falta el token." }); return; }
+    setBusy(true); setRes(null);
+    try { const r = await onEntrar(u, t); setRes(r); if (r?.ok) setHecho({ u, t }); } finally { setBusy(false); }
+  };
+  // Al llegar desde el gestor de contraseñas ya has elegido cuenta: no se pide otro toque.
+  const autoRef = useRef(false);
+  useEffect(() => { if (auto && inicial && !autoRef.current) { autoRef.current = true; ir(inicial.u, inicial.t); } }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Pegar el enlace en el primer campo vale igual que abrirlo.
+  const onUrl = (v) => { const p = parseAccessLink(v); if (p) { setUrl(p.u); setTok(p.t); } else setUrl(v); };
+  const host = (() => { try { return new URL(url).host; } catch { return url; } })();
+  const campo = "mt-1 w-full rounded-lg border px-2.5 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500";
+  return (
+    <Modal title="Entrar con mi cuenta" onClose={onClose}
+      footer={res?.ok
+        ? <Btn kind="primary" onClick={onClose} className="w-full justify-center sm:w-auto">Ver mis datos</Btn>
+        : <div className="flex gap-2"><Btn kind="primary" onClick={() => document.getElementById("finz-entrar")?.requestSubmit()} disabled={busy}>{busy ? "Entrando…" : "Entrar"}</Btn><Btn onClick={onClose}>Cancelar</Btn></div>}>
+      {res?.ok ? (
+        <div className="space-y-3">
+          <p className="text-sm text-emerald-700">{res.text}</p>
+          {/* El momento de cerrar el círculo: acabas de entrar, así que es cuando más fácil es
+              dejarte el acceso guardado para la próxima vez. */}
+          {!inicial && (
+            <div className="rounded-xl border p-3" style={{ borderColor: C.line, background: C.surfaceAlt }}>
+              <p className="text-sm font-medium text-slate-700">Que la próxima vez sea un toque</p>
+              <p className="mt-0.5 text-xs text-slate-500">Mándate tu enlace de acceso. En cualquier otro móvil u ordenador, ábrelo desde tu email y entrarás directamente.</p>
+              <div className="mt-2"><CompartirAcceso workerUrl={hecho?.u} token={hecho?.t} compacto /></div>
+            </div>
+          )}
+          <p className="text-xs text-slate-500">Los bancos conectados vienen con tus datos: no pulses «Reconectar» salvo que el permiso haya caducado.</p>
+        </div>
+      ) : (
+        <form id="finz-entrar" onSubmit={(e) => { e.preventDefault(); ir(url, tok); }} className="space-y-3" autoComplete="on">
+          {inicial ? (
+            <p className="text-sm text-slate-600">Vas a entrar con tu backend en <strong className="break-all">{host}</strong>. Llegarán tus datos y tus bancos, y la sincronización quedará activada en este navegador.</p>
+          ) : (
+            <p className="text-sm text-slate-600">La forma más rápida: abre <strong>tu enlace de acceso</strong> (búscalo en tu email: «Mi acceso a Mis Finanzas») o pégalo aquí abajo.</p>
+          )}
+          <div className={inicial ? "hidden" : "space-y-3"}>
+            <label className="block text-xs font-medium text-slate-600">Enlace de acceso o dirección de tu backend
+              <input name="username" autoComplete="username" inputMode="url" value={url} onChange={(e) => onUrl(e.target.value)}
+                placeholder="Pega aquí tu enlace" autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
+            </label>
+            <label className="block text-xs font-medium text-slate-600">Token
+              <input name="password" type="password" autoComplete="current-password" value={tok} onChange={(e) => setTok(e.target.value)}
+                placeholder="Se rellena solo si pegas el enlace" autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
+            </label>
+            <details className="text-[11px] leading-relaxed text-slate-500">
+              <summary className="cursor-pointer font-medium text-slate-600">No tengo el enlace</summary>
+              <div className="mt-1.5 space-y-1.5">
+                <p><strong>Si tienes a mano el otro dispositivo:</strong> allí, Ajustes → Tus datos y sincronización → «Tu acceso en otros dispositivos» → «Enviármelo por email».</p>
+                <p><strong>Si no:</strong> recupéralo en Cloudflare, que es donde vive tu backend. Entra en dash.cloudflare.com → Workers. La <strong>dirección</strong> es la que acaba en <code>.workers.dev</code>. El <strong>token</strong> no se puede leer (es un secreto), así que pon uno nuevo: tu Worker → Settings → Variables and Secrets → <code>PROXY_TOKEN</code> → Edit, pega uno que te inventes y Deploy. Escríbelo aquí y, al entrar, mándate el enlace nuevo. Tus otros dispositivos te lo pedirán también, porque el antiguo deja de valer.</p>
+              </div>
+            </details>
+          </div>
+          {res && <p className="text-sm text-rose-700">{res.text}</p>}
+          <button type="submit" className="hidden" aria-hidden="true" tabIndex={-1} />
+        </form>
+      )}
+    </Modal>
+  );
+}
+
+// En Ajustes, para el navegador donde ya está todo configurado.
+function AccesoOtroNavegador({ workerUrl, token }) {
+  if (!workerUrl || !token) return null;
+  return (
+    <section>
+      <h3 className="text-sm font-semibold">Tu acceso en otros dispositivos</h3>
+      {!accesoGuardado() && <p className="mt-1 rounded-lg px-2 py-1.5 text-[11px] font-medium" style={{ background: C.warnSoft, color: C.warn }}>Aún no te lo has guardado. Hazlo ahora: si pierdes este dispositivo, es lo que te deja volver a entrar.</p>}
+      <p className="mt-1 text-xs text-slate-500">Mándate tu enlace de acceso una vez. Desde cualquier móvil, ordenador o navegador, abrirlo es entrar: llegan tus datos y tus bancos, sin teclear nada.</p>
+      <div className="mt-2"><CompartirAcceso workerUrl={workerUrl} token={token} /></div>
+      <p className="mt-2 rounded-lg px-2 py-1.5 text-[11px] leading-relaxed" style={{ background: C.warnSoft, color: C.warn }}>
+        El enlace funciona como tu contraseña: guárdalo solo en sitios tuyos. Si se filtra, cambia el token del Worker y el enlace viejo deja de valer.
+      </p>
+    </section>
   );
 }
 
@@ -3648,6 +3865,16 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onConectarBan
             </div>
             <Btn onClick={() => probarBackend(true)} disabled={probando || !tok.trim()}>{probando ? "Comprobando…" : "Comprobar que coincide"}</Btn>
             <Resultado />
+            {/* La contraseña es aleatoria a propósito (segura), así que nadie la recuerda. Este es
+                el único momento en que la tienes delante: o te la guardas ahora, o el día que
+                cambies de móvil tendrás que generar otra en Cloudflare. */}
+            {res?.ok && (
+              <div className="rounded-xl border p-3" style={{ borderColor: C.accent, background: C.accentSoft }}>
+                <p className="text-[12px] font-semibold text-slate-800">Guárdate el acceso antes de seguir</p>
+                <p className="mt-0.5 text-[12px] text-slate-600">No tienes que recordar ni la dirección ni la contraseña: mándate este enlace. En cualquier otro móvil u ordenador, abrirlo es entrar con tus datos.</p>
+                <div className="mt-2"><CompartirAcceso workerUrl={limpia(url)} token={tok.trim()} /></div>
+              </div>
+            )}
           </Paso>
         )}
 
@@ -3739,7 +3966,9 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onConectarBan
 
         {paso === 99 && (
           <Paso n={4} titulo="Listo">
-            <p>Tu backend está conectado. A partir de ahora tus datos se sincronizan entre dispositivos: en el otro, pega esta misma dirección y contraseña.</p>
+            <p>Tu backend está conectado. Para usar tus datos en otro móvil u ordenador, abre allí tu enlace de acceso. Si aún no te lo has mandado:</p>
+            <CompartirAcceso workerUrl={limpia(url)} token={tok.trim()} />
+            <p className="text-[12px] text-slate-500">Por si lo prefieres a mano:</p>
             <div className="rounded-xl border p-3" style={{ borderColor: C.line, background: C.surfaceAlt }}>
               <p className="text-[12px] font-medium text-slate-700">Dirección</p>
               <Campo valor={limpia(url)} />
@@ -3754,20 +3983,30 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onConectarBan
   );
 }
 
-function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente }) {
+function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente, onEntrar }) {
   return (
     <div className="mx-auto max-w-2xl px-4 py-10 sm:py-14 anim-rise">
       {/* Portada. Antes esta pantalla solo ofrecia CSV, que dejo de ser la via principal en
           cuanto la app aprendio a conectarse al banco: quien llegaba nuevo no se enteraba. */}
       <div className="overflow-hidden rounded-3xl text-white shadow-lg" style={{ background: `linear-gradient(135deg, ${C.navy} 0%, ${C.navy2} 100%)` }}>
         <div className="px-6 py-8 sm:px-9 sm:py-10">
-          <span className="flex h-12 w-12 items-center justify-center rounded-2xl" style={{ background: "rgba(255,255,255,.14)" }}>
-            <Wallet size={24} />
-          </span>
+          <div className="flex items-start justify-between gap-3">
+            <span className="flex h-12 w-12 items-center justify-center rounded-2xl" style={{ background: "rgba(255,255,255,.14)" }}>
+              <Wallet size={24} />
+            </span>
+            {/* Quien vuelve no tiene que leerse la portada: el acceso está donde se busca. */}
+            {onEntrar && (
+              <button type="button" onClick={onEntrar}
+                className="rounded-full px-4 py-2 text-sm font-semibold text-white hover:bg-white/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                style={{ background: "rgba(255,255,255,.16)" }}>
+                Entrar
+              </button>
+            )}
+          </div>
           <h1 className="mt-4 text-2xl font-semibold tracking-tight sm:text-3xl">Tus finanzas, claras</h1>
           <p className="mt-2 max-w-lg text-sm leading-relaxed text-white/70">
             Descubre en qué se va tu dinero: por categoría, por activo y por etiquetas transversales.
-            Todo se procesa y se guarda <strong className="font-semibold text-white/90">solo en tu dispositivo</strong>.
+            Tus datos se guardan en tu dispositivo y, si quieres, en tu propio servidor. <strong className="font-semibold text-white/90">Nunca en el nuestro</strong>.
           </p>
         </div>
       </div>
@@ -3786,7 +4025,10 @@ function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente
               recomendado, pero exige montar un backend y una cuenta en Enable Banking: cuarenta
               minutos antes de ver un gráfico. Quien llega tiene que poder probar la app en un
               minuto y decidir después si le compensa instalar algo. */}
-          <div className="mt-5 grid gap-3 sm:grid-cols-2">
+          {/* Tres puntos de partida: dos para quien empieza (extracto o banco) y uno para quien
+              ya tiene cuenta y abre la app en otro navegador o dispositivo. */}
+          <h2 className="mt-6 text-xs font-semibold uppercase tracking-wide text-slate-500">Es mi primera vez</h2>
+          <div className="mt-2 grid gap-3 sm:grid-cols-2">
             <div className="flex flex-col rounded-2xl border-2 bg-white p-5" style={{ borderColor: C.accent }}>
               <span className="flex items-center gap-2">
                 <span className="flex h-10 w-10 items-center justify-center rounded-xl" style={{ background: C.accentSoft, color: C.accent }}>
@@ -3796,7 +4038,7 @@ function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente
               </span>
               <span className="mt-3 block text-base font-semibold">Trae tu extracto</span>
               <span className="mt-1 block text-xs leading-relaxed text-slate-500">
-                Descárgalo en <strong>formato CSV</strong> desde la web de tu banco y tráelo aquí. Un minuto, sin registrarte en nada. Si solo te lo da en Excel, ábrelo y guárdalo como CSV.
+                Descárgalo desde la web de tu banco, en <strong>CSV o Excel</strong>, y tráelo aquí. Un minuto, sin registrarte en nada.
               </span>
               <div className="mt-3"><DropZone onFiles={onFiles} compact /></div>
             </div>
@@ -3817,24 +4059,33 @@ function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente
             </button>
           </div>
 
-          <div className="mt-5 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-center">
-            <button type="button" onClick={onSample} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
-              <Sparkles size={14} /> Probar con datos de ejemplo
-            </button>
-            {onSettings && (
-              <button type="button" onClick={onSettings} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
-                <History size={14} /> Restaurar una copia
+          <h2 className="mt-6 text-xs font-semibold uppercase tracking-wide text-slate-500">Ya uso la app</h2>
+          <div className="mt-2 rounded-2xl border bg-white p-4" style={{ borderColor: C.line }}>
+            {onEntrar && (
+              <button type="button" onClick={onEntrar}
+                className="group flex w-full items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-xl">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ background: C.accentSoft, color: C.accent }}><RefreshCw size={18} /></span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-base font-semibold">Entrar con mi cuenta</span>
+                  <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">Abre tu enlace de acceso (está en tu email) o pégalo aquí. Llegan tus datos y tus bancos.</span>
+                </span>
+                <ChevronRight size={16} className="shrink-0 text-slate-400 transition-transform group-hover:translate-x-0.5" />
               </button>
             )}
+            {/* Sin backend, la copia .json es la única forma de llevarse los datos: es el mismo
+                caso (ya uso la app), solo que por otro camino. */}
+            {onSettings && (
+              <p className="mt-3 border-t pt-2.5 text-xs text-slate-500" style={{ borderColor: C.line }}>
+                ¿Sin backend? <button type="button" onClick={onSettings} className="font-semibold hover:underline focus-visible:outline-none" style={{ color: C.accent }}>Restaura una copia (.json)</button>
+              </p>
+            )}
           </div>
-          <p className="mt-1 text-center text-xs text-slate-400">Los datos de ejemplo son 14 meses ficticios de un banco español, con dos maratones para ver las etiquetas.</p>
 
-          <div className="mt-8 grid grid-cols-3 gap-3 text-center text-xs text-slate-500">
-            {["Conecta o importa", "Explora panel, activos y etiquetas", "Pregunta al asistente"].map((t, i) => (
-              <div key={i} className="rounded-xl border bg-white p-3" style={{ borderColor: C.line }}>
-                <div className="mb-1 font-semibold text-slate-700">{i + 1}</div>{t}
-              </div>
-            ))}
+          <div className="mt-6 text-center">
+            <button type="button" onClick={onSample} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+              <Sparkles size={14} /> Ver una demo con datos de ejemplo
+            </button>
+            <p className="mt-1 text-xs text-slate-400">14 meses ficticios de un banco español, para ver cómo funciona antes de traer los tuyos.</p>
           </div>
         </>
       )}
@@ -6999,6 +7250,7 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
           </div>
         </section>
         )}
+        {bank && <AccesoOtroNavegador workerUrl={bank.workerUrl} token={bank.token} />}
         </Grupo>
 
         <Grupo titulo="Banco" abierto={abrir === "banco"} forzar={abrir === "banco"}
@@ -8099,18 +8351,19 @@ function AppMain() {
       const res = await bankFetch("/store", 30000);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "el backend devolvió " + res.status);
-      if (data.empty) { if (!silent) setSyncMsg({ kind: "info", text: "Tu Worker aún no tiene copia. Pulsa «Guardar» para crear la primera." }); return; }
+      if (data.empty) { if (!silent) setSyncMsg({ kind: "info", text: "Tu Worker aún no tiene copia. Pulsa «Guardar» para crear la primera." }); return { ok: false, empty: true, text: "Tu backend responde, pero aún no tiene ninguna copia. Guárdala primero desde el dispositivo donde tienes tus datos." }; }
       // Traer REEMPLAZA lo local: se confirma siempre que haya algo que perder.
       const locales = stateRef.current?.movs?.length || 0;
       if (confirmReplace && locales && !window.confirm(`Vas a reemplazar los ${nfNum.format(locales)} movimientos de este dispositivo por la copia del servidor (versión ${data.version}).\n\n¿Continuar?`)) {
         setSyncMsg({ kind: "info", text: "Cancelado. No se ha tocado nada." });
-        return;
+        return { ok: false, text: "Cancelado. No se ha tocado nada." };
       }
       const n = applyBackupPayload(data.payload);
       persistSync({ version: data.version, lastPull: Date.now() });
       setSyncConflict(null);
       if (!silent) setSyncMsg({ kind: "ok", text: `Traídos ${nfNum.format(n)} movimientos (versión ${data.version}).` });
-    } catch (e) { if (!silent) setSyncMsg({ kind: "err", text: "No se pudo traer: " + e.message }); }
+      return { ok: true, n, version: data.version };
+    } catch (e) { if (!silent) setSyncMsg({ kind: "err", text: "No se pudo traer: " + e.message }); return { ok: false, text: "No se pudo traer: " + e.message }; }
     finally { setSyncBusy(false); }
   }, [applyBackupPayload, persistSync]);
 
@@ -8158,6 +8411,53 @@ function AppMain() {
 
   /* ---------- Conexión bancaria (Enable Banking, vía el Worker) — MULTI-BANCO ---------- */
   const [bankCfg, setBankCfg] = useState(loadBank);
+
+  // Entrar con una cuenta que ya existe: guarda URL y token, trae la copia y deja la
+  // sincronización automática encendida. Es lo que antes había que hacer en cuatro sitios
+  // distintos, y lo que se olvidaba (la casilla de «automático» es de cada navegador y no
+  // viaja con los datos). Al acabar, ofrece guardar el acceso en el gestor de contraseñas.
+  const [entrarOpen, setEntrarOpen] = useState(null); // null | { inicial?: {u,t}, auto?: bool }
+  const entrar = useCallback(async (u, t) => {
+    const prev = loadBank();
+    // A disco ANTES de traer: syncPull lee la URL y el token de ahí, no del estado de React.
+    saveBank({ ...prev, workerUrl: u, token: t || prev.token || "" });
+    setBankCfg(loadBank());
+    try {
+      const st = await bankFetch("/store/status", 20000);
+      if (st.status === 401) return { ok: false, text: "El backend responde, pero el token no es correcto." };
+      if (!st.ok) return { ok: false, text: `El backend devolvió ${st.status}. Revisa la dirección.` };
+    } catch (e) { return { ok: false, text: "No se pudo contactar con el backend: " + e.message }; }
+    // Que el «traer al abrir» no dispare otro traer en paralelo al activar la casilla.
+    syncBootRef.current = true;
+    syncSuppressRef.current = Date.now() + 6000;
+    const r = await syncPull({ confirmReplace: true });
+    if (!r?.ok) return r || { ok: false, text: "No se pudo traer la copia." };
+    persistSync({ auto: true });
+    recordarAcceso(u, t);
+    const nb = (loadBank().connections || []).length;
+    return { ok: true, text: `Listo: ${nfNum.format(r.n)} ${r.n === 1 ? "movimiento traído" : "movimientos traídos"}${nb ? ` y ${nb} ${nb === 1 ? "banco heredado" : "bancos heredados"}` : ""}. La sincronización automática queda activada en este navegador.` };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncPull, persistSync]);
+  // Abrir el enlace personal de acceso. Se borra de la barra al momento: lleva el token.
+  // Si este navegador ya está conectado a ese mismo backend, no hay nada que hacer.
+  useEffect(() => {
+    if (!booted) return;
+    const p = parseAccessLink(window.location.hash);
+    if (!p) return;
+    try { window.history.replaceState({}, "", window.location.pathname + window.location.search); } catch { /* noop */ }
+    const b = loadBank();
+    if (b.workerUrl === p.u && b.token === p.t && loadSync().version) return;
+    setEntrarOpen({ inicial: p });
+  }, [booted]);
+  // En un navegador vacío, si el gestor de contraseñas ya guarda tu acceso, se ofrece entrar con
+  // un toque, como el «Continuar como…» de otras webs. Solo donde no hay nada que perder (sin
+  // datos ni backend) y una vez por sesión, para no insistir a quien lo descarta.
+  useEffect(() => {
+    if (!booted || movs.length || loadBank().workerUrl || LLEGA_CON_ENLACE) return;
+    try { if (sessionStorage.getItem("finz:onetap")) return; sessionStorage.setItem("finz:onetap", "1"); } catch { /* noop */ }
+    leerAccesoGuardado().then((c) => { if (c) setEntrarOpen({ inicial: c, auto: true }); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [booted]);
   // persistBank acepta un patch { ... } o una función (b) => nuevoEstado.
   const persistBank = useCallback((patchOrFn) => setBankCfg((b) => { const n = typeof patchOrFn === "function" ? patchOrFn(b) : { ...b, ...patchOrFn }; saveBank(n); return n; }), []);
   useEffect(() => { if (settingsOpen) setBankCfg(loadBank()); }, [settingsOpen]);
@@ -8264,6 +8564,12 @@ function AppMain() {
   const bankReconnect = useCallback((connId) => {
     const c = (loadBank().connections || []).find((x) => x.id === connId);
     if (!c) { setBankMsg({ kind: "err", text: "Conexión no válida." }); return; }
+    // Reconectar renueva el permiso pasando otra vez por el banco y obliga a volver a elegir
+    // la cuenta. En un dispositivo recién vinculado parece el botón de «conectar aquí», y no
+    // lo es: la conexión ya viene heredada. Con una conexión sana, se pregunta antes.
+    if (!c.expired && !c.lastError && c.accountUid && !window.confirm(
+      `La conexión con ${c.aspsp} funciona y ya está disponible en este dispositivo: no hace falta reconectar.\n\nReconectar solo sirve cuando el permiso ha caducado (unos 90 días). Te llevará al banco a firmar otra vez y tendrás que volver a elegir la cuenta.\n\n¿Reconectar de todos modos?`
+    )) return;
     bankStartAuth(c.aspsp, c.country, connId, c.psu || "");
   }, [bankStartAuth]);
   // Cambiar el tipo de titular de una conexión ya creada, para que Reconectar renueve bien.
@@ -8634,16 +8940,16 @@ function AppMain() {
     setImp({ phase: "parsing", fileName });
     setTimeout(() => {
       try {
-        const delim = detectDelimiter(text);
-        const rows = tokenizeCSV(text, delim);
-        if (rows.length < 2) throw new Error("El archivo está vacío o no parece un CSV.");
+        // Un Excel llega ya convertido en filas; un CSV hay que trocearlo.
+        const rows = Array.isArray(text) ? text : tokenizeCSV(text, detectDelimiter(text));
+        if (rows.length < 2) throw new Error("El archivo está vacío o no tiene movimientos.");
         const analysis = analyzeRows(rows);
         if (analysis.error) throw new Error(analysis.error);
         if (!analysis.ok) { setImp({ phase: "mapping", fileName, rows, analysis }); return; }
         finishParse(rows, analysis.dataStart, analysis.cols, fileName, analysis);
       } catch (e) {
         setImp(null);
-        setError(e.message + " Prueba a exportar de nuevo el extracto en formato CSV o usa el mapeo manual.");
+        setError(e.message + " Prueba a exportar de nuevo el extracto (CSV o Excel) o usa el mapeo manual.");
       }
     }, 30);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -8689,8 +8995,13 @@ function AppMain() {
     setImp({ phase: "parsing", fileName: file.name });
     try {
       const buf = await file.arrayBuffer();
-      const text = decodeBuffer(buf);
-      startImport(text, file.name, false);
+      if (isSpreadsheetFile(file)) {
+        const rows = await spreadsheetToRows(buf);
+        if (!rows.length) throw new Error("el Excel no tiene ninguna hoja con datos");
+        startImport(rows, file.name, false);
+      } else {
+        startImport(decodeBuffer(buf), file.name, false);
+      }
     } catch (e) {
       setImp(null);
       setError("No se pudo leer el archivo: " + e.message);
@@ -9402,7 +9713,8 @@ function AppMain() {
 
       {!hasData ? (
         <EmptyState onFiles={handleFiles} onSample={loadSample} error={error} parsing={imp?.phase === "parsing"}
-          onSettings={() => setSettingsOpen(true)} onAsistente={() => setAsistenteOpen(true)} />
+          onSettings={() => setSettingsOpen(true)} onAsistente={() => setAsistenteOpen(true)}
+          onEntrar={() => setEntrarOpen({})} />
       ) : (
         <div className="mx-auto max-w-5xl px-4 pb-24 sm:pb-12">
           <header ref={headerRef} className="sticky top-0 z-20 -mx-4 mb-3 px-4 py-3 text-white shadow-md" style={{ background: `linear-gradient(135deg, ${C.navy} 0%, ${C.navy2} 100%)` }}>
@@ -9432,7 +9744,7 @@ function AppMain() {
                 </button>
                 <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-white/10 focus-within:ring-2 focus-within:ring-white/60" style={{ background: "rgba(255,255,255,.14)" }}>
                   <Plus size={15} /> <span className="hidden sm:inline">Añadir CSV</span><span className="sm:hidden">CSV</span>
-                  <input type="file" accept=".csv,.txt,text/csv" className="sr-only" onChange={(e) => { if (e.target.files.length) handleFiles(e.target.files); e.target.value = ""; }} />
+                  <input type="file" accept=".csv,.txt,.tsv,.xlsx,.xls,.xlsm,.ods,.json,text/csv,text/plain,text/tab-separated-values,application/json,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.oasis.opendocument.spreadsheet,text/comma-separated-values,application/octet-stream" className="sr-only" onChange={(e) => { if (e.target.files.length) handleFiles(e.target.files); e.target.value = ""; }} />
                 </label>
                 {movsPend.length > 0 && (
                   <button type="button" onClick={() => setPendingOpen(true)} aria-label="Movimientos por clasificar"
@@ -9584,6 +9896,7 @@ function AppMain() {
           onEditMov={(m) => setMovEdit({ mode: "edit", mov: m })}
         />
       )}
+      {entrarOpen && <EntrarModal inicial={entrarOpen.inicial} auto={entrarOpen.auto} onEntrar={entrar} onClose={() => setEntrarOpen(null)} />}
       {asistenteOpen && (
         <AsistenteConexion
           workerUrl={bankCfg.workerUrl || ""} token={bankCfg.token || ""}
