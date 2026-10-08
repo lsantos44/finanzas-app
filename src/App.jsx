@@ -3516,20 +3516,23 @@ function PrimerosPasos({ tieneDatos, tieneSync, tieneBanco, tieneIA, onIr }) {
 
 // Botones para guardarte el acceso donde ya lo tienes todo: tu email, tus chats contigo mismo,
 // tu gestor de contraseñas. Es lo que evita tener que memorizar la dirección y el token.
+const ACCESO_GUARDADO_KEY = "finz:acceso-guardado";
+const marcarAccesoGuardado = () => { try { localStorage.setItem(ACCESO_GUARDADO_KEY, String(Date.now())); } catch { /* noop */ } };
+const accesoGuardado = () => { try { return !!localStorage.getItem(ACCESO_GUARDADO_KEY); } catch { return false; } };
 function CompartirAcceso({ workerUrl, token, compacto }) {
   const [msg, setMsg] = useState(null);
   if (!workerUrl || !token) return null;
   const link = makeAccessLink(workerUrl, token);
   const asunto = "Mi acceso a Mis Finanzas";
   const cuerpo = `Abre este enlace en cualquier móvil u ordenador para entrar con tus datos:\n\n${link}\n\nEs como tu contraseña: no lo reenvíes a nadie.`;
-  const copiar = async () => { try { await navigator.clipboard.writeText(link); setMsg("Enlace copiado."); } catch { setMsg("No se pudo copiar."); } };
-  const compartir = async () => { try { await navigator.share({ title: asunto, text: cuerpo }); } catch { /* cancelado */ } };
-  const gestor = async () => setMsg(await recordarAcceso(workerUrl, token)
-    ? "Guardado en tu gestor de contraseñas (si te lo ha preguntado)." : "Este navegador no deja guardarlo desde aquí.");
+  const copiar = async () => { try { await navigator.clipboard.writeText(link); marcarAccesoGuardado(); setMsg("Enlace copiado. Guárdalo en tus notas o mándatelo."); } catch { setMsg("No se pudo copiar."); } };
+  const compartir = async () => { try { await navigator.share({ title: asunto, text: cuerpo }); marcarAccesoGuardado(); } catch { /* cancelado */ } };
+  const gestor = async () => { const ok = await recordarAcceso(workerUrl, token); if (ok) marcarAccesoGuardado();
+    setMsg(ok ? "Guardado en tu gestor de contraseñas (si te lo ha preguntado)." : "Este navegador no deja guardarlo desde aquí."); };
   return (
     <div>
       <div className="flex flex-wrap gap-2">
-        <a href={`mailto:?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`}
+        <a href={`mailto:?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`} onClick={marcarAccesoGuardado}
           className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ background: C.accent }}>
           Enviármelo por email
         </a>
@@ -3604,7 +3607,13 @@ function EntrarModal({ inicial, auto, onEntrar, onClose }) {
               <input name="password" type="password" autoComplete="current-password" value={tok} onChange={(e) => setTok(e.target.value)}
                 placeholder="Se rellena solo si pegas el enlace" autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
             </label>
-            <p className="text-[11px] leading-relaxed text-slate-400">¿No tienes el enlace? En el navegador donde ya usas la app: Ajustes → Tus datos y sincronización → «Tu acceso en otros dispositivos».</p>
+            <details className="text-[11px] leading-relaxed text-slate-500">
+              <summary className="cursor-pointer font-medium text-slate-600">No tengo el enlace</summary>
+              <div className="mt-1.5 space-y-1.5">
+                <p><strong>Si tienes a mano el otro dispositivo:</strong> allí, Ajustes → Tus datos y sincronización → «Tu acceso en otros dispositivos» → «Enviármelo por email».</p>
+                <p><strong>Si no:</strong> recupéralo en Cloudflare, que es donde vive tu backend. Entra en dash.cloudflare.com → Workers. La <strong>dirección</strong> es la que acaba en <code>.workers.dev</code>. El <strong>token</strong> no se puede leer (es un secreto), así que pon uno nuevo: tu Worker → Settings → Variables and Secrets → <code>PROXY_TOKEN</code> → Edit, pega uno que te inventes y Deploy. Escríbelo aquí y, al entrar, mándate el enlace nuevo. Tus otros dispositivos te lo pedirán también, porque el antiguo deja de valer.</p>
+              </div>
+            </details>
           </div>
           {res && <p className="text-sm text-rose-700">{res.text}</p>}
           <button type="submit" className="hidden" aria-hidden="true" tabIndex={-1} />
@@ -3620,6 +3629,7 @@ function AccesoOtroNavegador({ workerUrl, token }) {
   return (
     <section>
       <h3 className="text-sm font-semibold">Tu acceso en otros dispositivos</h3>
+      {!accesoGuardado() && <p className="mt-1 rounded-lg px-2 py-1.5 text-[11px] font-medium" style={{ background: C.warnSoft, color: C.warn }}>Aún no te lo has guardado. Hazlo ahora: si pierdes este dispositivo, es lo que te deja volver a entrar.</p>}
       <p className="mt-1 text-xs text-slate-500">Mándate tu enlace de acceso una vez. Desde cualquier móvil, ordenador o navegador, abrirlo es entrar: llegan tus datos y tus bancos, sin teclear nada.</p>
       <div className="mt-2"><CompartirAcceso workerUrl={workerUrl} token={token} /></div>
       <p className="mt-2 rounded-lg px-2 py-1.5 text-[11px] leading-relaxed" style={{ background: C.warnSoft, color: C.warn }}>
@@ -3855,6 +3865,16 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onConectarBan
             </div>
             <Btn onClick={() => probarBackend(true)} disabled={probando || !tok.trim()}>{probando ? "Comprobando…" : "Comprobar que coincide"}</Btn>
             <Resultado />
+            {/* La contraseña es aleatoria a propósito (segura), así que nadie la recuerda. Este es
+                el único momento en que la tienes delante: o te la guardas ahora, o el día que
+                cambies de móvil tendrás que generar otra en Cloudflare. */}
+            {res?.ok && (
+              <div className="rounded-xl border p-3" style={{ borderColor: C.accent, background: C.accentSoft }}>
+                <p className="text-[12px] font-semibold text-slate-800">Guárdate el acceso antes de seguir</p>
+                <p className="mt-0.5 text-[12px] text-slate-600">No tienes que recordar ni la dirección ni la contraseña: mándate este enlace. En cualquier otro móvil u ordenador, abrirlo es entrar con tus datos.</p>
+                <div className="mt-2"><CompartirAcceso workerUrl={limpia(url)} token={tok.trim()} /></div>
+              </div>
+            )}
           </Paso>
         )}
 
@@ -3946,7 +3966,9 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onConectarBan
 
         {paso === 99 && (
           <Paso n={4} titulo="Listo">
-            <p>Tu backend está conectado. A partir de ahora tus datos se sincronizan entre dispositivos: en el otro, pega esta misma dirección y contraseña.</p>
+            <p>Tu backend está conectado. Para usar tus datos en otro móvil u ordenador, abre allí tu enlace de acceso. Si aún no te lo has mandado:</p>
+            <CompartirAcceso workerUrl={limpia(url)} token={tok.trim()} />
+            <p className="text-[12px] text-slate-500">Por si lo prefieres a mano:</p>
             <div className="rounded-xl border p-3" style={{ borderColor: C.line, background: C.surfaceAlt }}>
               <p className="text-[12px] font-medium text-slate-700">Dirección</p>
               <Campo valor={limpia(url)} />
