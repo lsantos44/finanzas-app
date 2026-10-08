@@ -6,7 +6,7 @@ categorías y por activos (cada piso, cada coche).
 
 **En marcha:** https://misfinanzas.cc
 
-Funciona sin instalar nada: arrastras el Excel o el CSV de tu banco y listo. Los datos se
+Funciona sin instalar nada: arrastras el CSV o el Excel (.xlsx, .xls) de tu banco y listo. Los datos se
 quedan en tu navegador.
 
 ## Si quieres sincronizar entre dispositivos o conectar el banco
@@ -14,10 +14,10 @@ quedan en tu navegador.
 Necesitas tu propio backend. La guía de instalación, pensada para quien no programa, está en
 el repositorio del Worker: **https://github.com/lsantos44/MisFinanzas**
 
-**Para estrenar dispositivo** no hace falta volver a configurar nada: en el que ya usas, abre
-Ajustes → Tus datos y sincronización → *Añadir otro dispositivo* y escanea el QR con el nuevo.
-Trae tus datos y tus bancos y deja la sincronización activada. Sin el otro a mano, en la
-portada del nuevo pulsa *Ya uso la app en otro dispositivo* y pon la URL y el token.
+**En otro navegador o dispositivo** no hace falta volver a configurar nada: en la portada, pulsa
+*Entrar* y pon la dirección de tu Worker y el token. Trae tus datos y tus bancos y deja la
+sincronización activada. Si aceptas guardarlos en el gestor de contraseñas, la próxima vez se
+rellenan solos (en Android, también en otros navegadores).
 
 ## Desarrollo
 

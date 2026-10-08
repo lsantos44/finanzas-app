@@ -1,5 +1,4 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
-import qrcode from "qrcode-generator";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell,
   PieChart, Pie, LineChart, Line, AreaChart, Area,
@@ -828,26 +827,25 @@ const loadBank = () => {
 };
 const bankIsEmpty = (b) => !b || (!b.workerUrl && !b.token && !(b.connections || []).length);
 
-// Enlace de vinculación: lleva la URL del Worker y el token para que un dispositivo nuevo quede
-// configurado de un toque, sin buscar dónde estaba el Worker ni copiar el token a mano. Va en el
-// fragmento (#), que el navegador nunca envía al servidor: no queda en ningún log.
-const LINK_KEY = "vincular";
-const makeDeviceLink = (workerUrl, token) => {
-  const raw = JSON.stringify({ u: workerUrl, t: token });
-  const b64 = btoa(unescape(encodeURIComponent(raw))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  return `${window.location.origin}${window.location.pathname}#${LINK_KEY}=${b64}`;
-};
-// Acepta el enlace entero o solo su fragmento. Devuelve { u, t } o null.
-const parseDeviceLink = (text) => {
+// La URL del Worker y el token son, a efectos prácticos, el usuario y la contraseña de tu
+// cuenta. Se guardan en el gestor de contraseñas del navegador para que en otro navegador u
+// otro dispositivo baste con «Entrar»: Google y iCloud los sincronizan, y en Android el
+// autorrelleno de Google sirve también en Firefox, Samsung Internet o Edge. Sin servidor nuestro.
+async function recordarAcceso(workerUrl, token) {
   try {
-    const m = String(text || "").match(new RegExp(LINK_KEY + "=([A-Za-z0-9_-]+)"));
-    if (!m) return null;
-    const b64 = m[1].replace(/-/g, "+").replace(/_/g, "/");
-    const j = JSON.parse(decodeURIComponent(escape(atob(b64 + "===".slice((b64.length + 3) % 4)))));
-    const u = String(j.u || "").trim().replace(/\/+$/, ""), t = String(j.t || "").trim();
-    return /^https?:\/\//.test(u) ? { u, t } : null;
+    if (!workerUrl || !token || !window.PasswordCredential || !navigator.credentials?.store) return false;
+    await navigator.credentials.store(new window.PasswordCredential({ id: workerUrl, password: token, name: "Mis Finanzas" }));
+    return true;
+  } catch { return false; }
+}
+async function leerAccesoGuardado() {
+  try {
+    if (!window.PasswordCredential || !navigator.credentials?.get) return null;
+    const c = await navigator.credentials.get({ password: true, mediation: "optional" });
+    return c && c.id && c.password ? { u: c.id, t: c.password } : null;
   } catch { return null; }
-};
+}
+
 
 // Fusiona la config bancaria de una copia con la local. NO vale quedarse con "la más reciente":
 // en un dispositivo nuevo acabas de teclear la URL y el token, así que el sello local es
@@ -1101,6 +1099,54 @@ function decodeBuffer(buf) {
   const utf = new TextDecoder("utf-8").decode(slice);
   if (!utf.includes("\uFFFD")) return utf;
   try { return new TextDecoder("windows-1252").decode(slice); } catch { return utf; }
+}
+// Excel (.xlsx, .xls, .ods; también los «.xls» que en realidad son una tabla HTML, que es
+// lo que exportan varios bancos). Devuelve las filas como las daría el lector de CSV, para que
+// todo lo demás (detección de cabecera, columnas, importes) sea idéntico. La librería pesa,
+// así que solo se descarga cuando alguien trae un Excel.
+const isSpreadsheetFile = (file) => /\.(xlsx|xlsm|xls|ods)$/i.test(file.name)
+  || /spreadsheetml|opendocument\.spreadsheet/.test(file.type || "");
+async function spreadsheetToRows(buf) {
+  const XLSX = await import("xlsx");
+  // `raw`: en los «.xls» que son HTML, el texto se deja tal cual. Si no, la librería lee
+  // «3/1/2026» como 1 de marzo y «1234,5» como 12345; el lector de CSV ya sabe hacerlo bien.
+  const wb = XLSX.read(new Uint8Array(buf), { type: "array", cellDates: false, cellNF: true, raw: true });
+  // La hoja con más filas: algunos bancos ponen una portada o un resumen delante.
+  let best = null, bestN = -1;
+  for (const name of wb.SheetNames) {
+    const ws = wb.Sheets[name];
+    const ref = ws && ws["!ref"];
+    if (!ref) continue;
+    const r = XLSX.utils.decode_range(ref);
+    const n = r.e.r - r.s.r + 1;
+    if (n > bestN) { bestN = n; best = ws; }
+  }
+  if (!best) return [];
+  const range = XLSX.utils.decode_range(best["!ref"]);
+  const pad = (n) => String(n).padStart(2, "0");
+  const rows = [];
+  for (let R = range.s.r; R <= range.e.r; R++) {
+    const row = [];
+    for (let Cc = range.s.c; Cc <= range.e.c; Cc++) {
+      const cell = best[XLSX.utils.encode_cell({ r: R, c: Cc })];
+      if (!cell || cell.v == null) { row.push(""); continue; }
+      if (cell.t === "n" && cell.z && XLSX.SSF.is_date(cell.z)) {
+        // Las fechas de Excel son un número de días. Se pasan a dd/mm/aaaa: el texto formateado
+        // depende del formato del archivo y el 14 por defecto sale como m/d/aa, al revés.
+        const d = XLSX.SSF.parse_date_code(cell.v);
+        row.push(d ? `${pad(d.d)}/${pad(d.m)}/${d.y}` : String(cell.w || cell.v));
+      } else if (cell.t === "d" && cell.v instanceof Date) {
+        row.push(`${pad(cell.v.getDate())}/${pad(cell.v.getMonth() + 1)}/${cell.v.getFullYear()}`);
+      } else if (cell.t === "n") {
+        // Coma decimal: con punto, «1.234» se leería como mil doscientos treinta y cuatro.
+        row.push(String(cell.v).replace(".", ","));
+      } else {
+        row.push(String(cell.v).trim());
+      }
+    }
+    if (row.some((x) => x !== "")) rows.push(row);
+  }
+  return rows;
 }
 function detectDelimiter(text) {
   const sample = text.slice(0, 6000);
@@ -3383,14 +3429,15 @@ function DropZone({ onFiles, compact }) {
       className={`flex flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed text-center transition-all ${compact ? "p-5" : "p-10"}`}
       style={{ borderColor: over ? C.accent : C.lineStrong, background: over ? C.accentSoft : C.surfaceAlt }}>
       <div className="flex h-11 w-11 items-center justify-center rounded-xl" style={{ background: C.accentSoft }}><Upload size={20} style={{ color: C.accent }} /></div>
-      <p className="text-sm font-medium">Arrastra aquí el CSV de tu banco</p>
-      <p className="text-[11px] text-slate-400">o púlsalo para buscarlo en tu dispositivo</p>
+      <p className="text-sm font-medium">Arrastra aquí el extracto de tu banco</p>
+      <p className="text-[11px] text-slate-400">CSV o Excel (.xlsx, .xls)</p>
+      <p className="text-[11px] text-slate-400">o búscalo en tu dispositivo</p>
       <Btn onClick={() => inputRef.current?.click()} kind="primary">Seleccionar archivo</Btn>
       {/* El `accept` estricto escondía el archivo en el móvil: los selectores de Android e iOS
           reportan el CSV con tipos dispares (vnd.ms-excel, comma-separated-values, y
           octet-stream cuando viene de Drive). Se amplía para que no quede nunca en gris. */}
       <input ref={inputRef} type="file" multiple className="hidden"
-        accept=".csv,.txt,.tsv,.json,text/csv,text/plain,text/tab-separated-values,application/json,application/vnd.ms-excel,text/comma-separated-values,application/octet-stream"
+        accept=".csv,.txt,.tsv,.xlsx,.xls,.xlsm,.ods,.json,text/csv,text/plain,text/tab-separated-values,application/json,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.oasis.opendocument.spreadsheet,text/comma-separated-values,application/octet-stream"
         onChange={(e) => { if (e.target.files.length) onFiles(e.target.files); e.target.value = ""; }} />
     </div>
   );
@@ -3444,87 +3491,72 @@ function PrimerosPasos({ tieneDatos, tieneSync, tieneBanco, tieneIA, onIr }) {
   );
 }
 
-// Añadir otro dispositivo. Antes, para meter tus datos en un móvil nuevo había que localizar
-// la URL del Worker, rescatar el token y acordarse de pulsar «Traer» y de activar la
-// sincronización. Aquí sale un QR: lo escaneas con el móvil nuevo y queda todo hecho.
-function EnlaceDispositivo({ workerUrl, token }) {
-  const [ver, setVer] = useState(false);
-  const [copiado, setCopiado] = useState(false);
-  const link = useMemo(() => (workerUrl && token ? makeDeviceLink(workerUrl, token) : ""), [workerUrl, token]);
-  const svg = useMemo(() => {
-    if (!ver || !link) return "";
-    const qr = qrcode(0, "M"); qr.addData(link); qr.make();
-    return qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
-  }, [ver, link]);
-  if (!workerUrl) return null;
-  if (!token) return <p className="text-[11px] text-slate-400">Para vincular otro dispositivo con un QR, pon antes el token de tu backend en el grupo Banco.</p>;
-  const copiar = async () => { try { await navigator.clipboard.writeText(link); setCopiado(true); setTimeout(() => setCopiado(false), 2000); } catch { /* sin permiso */ } };
-  const compartir = async () => { try { await navigator.share({ title: "Mis Finanzas", url: link }); } catch { /* cancelado */ } };
+// Entrar desde otro navegador o dispositivo. Es un login de verdad (usuario = URL del Worker,
+// contraseña = token) para que el gestor de contraseñas lo reconozca, lo guarde y lo rellene
+// solo la próxima vez. Antes había que entrar con datos de ejemplo para llegar a Ajustes.
+function EntrarModal({ onEntrar, onClose }) {
+  const [url, setUrl] = useState("");
+  const [tok, setTok] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState(null);
+  // Si el navegador ya tiene el acceso guardado (Chrome lo ofrece con un toque), se rellena.
+  useEffect(() => { leerAccesoGuardado().then((c) => { if (c) { setUrl((v) => v || c.u); setTok((v) => v || c.t); } }); }, []);
+  const enviar = async (e) => {
+    e.preventDefault();
+    const u = url.trim().replace(/\/+$/, ""), t = tok.trim();
+    if (!/^https?:\/\//.test(u)) { setRes({ ok: false, text: "La dirección de tu backend empieza por https:// (la encuentras en Cloudflare → Workers)." }); return; }
+    if (!t) { setRes({ ok: false, text: "Falta el token." }); return; }
+    setBusy(true); setRes(null);
+    try { setRes(await onEntrar(u, t)); } finally { setBusy(false); }
+  };
+  const campo = "mt-1 w-full rounded-lg border px-2.5 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500";
   return (
-    <section>
-      <h3 className="text-sm font-semibold">Añadir otro dispositivo</h3>
-      <p className="mt-1 text-xs text-slate-500">Escanea el código con la cámara del otro móvil: abre la app ya conectada a tu backend, trae tus datos y deja la sincronización activada. Sin teclear nada.</p>
-      {!ver ? (
-        <div className="mt-2"><Btn onClick={() => setVer(true)}>Mostrar código QR</Btn></div>
-      ) : (
-        <div className="mt-2 space-y-2">
-          <div className="mx-auto w-52 rounded-xl bg-white p-2" dangerouslySetInnerHTML={{ __html: svg }} />
-          <div className="flex flex-wrap justify-center gap-2">
-            <Btn size="sm" onClick={copiar}>{copiado ? <><Check size={13} /> Copiado</> : "Copiar enlace"}</Btn>
-            {typeof navigator !== "undefined" && navigator.share && <Btn size="sm" onClick={compartir}>Compartir…</Btn>}
-            <Btn size="sm" onClick={() => setVer(false)}>Ocultar</Btn>
-          </div>
-          <p className="rounded-lg px-2 py-1.5 text-[11px] leading-relaxed" style={{ background: C.warnSoft, color: C.warn }}>
-            El código lleva tu token: quien lo tenga entra en tus datos. Enséñalo solo a tu propio dispositivo y no lo mandes por chats de otros. Si se filtra, cambia el token del Worker.
-          </p>
+    <Modal title="Entrar con mi cuenta" onClose={onClose}
+      footer={res?.ok
+        ? <Btn kind="primary" onClick={onClose} className="w-full justify-center sm:w-auto">Ver mis datos</Btn>
+        : <div className="flex gap-2"><Btn kind="primary" onClick={() => document.getElementById("finz-entrar")?.requestSubmit()} disabled={busy}>{busy ? "Entrando…" : "Entrar"}</Btn><Btn onClick={onClose}>Cancelar</Btn></div>}>
+      {res?.ok ? (
+        <div className="space-y-2">
+          <p className="text-sm text-emerald-700">{res.text}</p>
+          <p className="text-xs text-slate-500">Si el navegador te ofrece guardar la contraseña, acepta: la próxima vez, aquí o en otro navegador, solo tendrás que pulsar «Entrar».</p>
+          <p className="text-xs text-slate-500">Los bancos conectados vienen con tus datos: no pulses «Reconectar» salvo que el permiso haya caducado.</p>
         </div>
+      ) : (
+        <form id="finz-entrar" onSubmit={enviar} className="space-y-3" autoComplete="on">
+          <p className="text-sm text-slate-600">Para quien ya usa la app en otro navegador o dispositivo. Tus datos y tus bancos llegan solos.</p>
+          <label className="block text-xs font-medium text-slate-600">Dirección de tu backend
+            <input name="username" autoComplete="username" inputMode="url" value={url} onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://…workers.dev" autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
+          </label>
+          <label className="block text-xs font-medium text-slate-600">Token
+            <input name="password" type="password" autoComplete="current-password" value={tok} onChange={(e) => setTok(e.target.value)}
+              autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
+          </label>
+          <p className="text-[11px] leading-relaxed text-slate-400">¿No los tienes? En el navegador donde ya usas la app: Ajustes → Banco. O en Cloudflare → Workers (la dirección) y en la variable del token del Worker.</p>
+          {res && <p className="text-sm text-rose-700">{res.text}</p>}
+          <button type="submit" className="hidden" aria-hidden="true" tabIndex={-1} />
+        </form>
       )}
-    </section>
+    </Modal>
   );
 }
 
-// Vincular ESTE dispositivo a un backend que ya usas en otro. Es el camino de quien ya tiene la
-// app montada y estrena móvil: no necesita el asistente (eso es para montar el backend), solo
-// decir dónde está y traer. Se llega por el QR/enlace o desde la portada.
-function VincularDispositivo({ inicial, onVincular, onClose }) {
-  const [enlace, setEnlace] = useState("");
-  const [url, setUrl] = useState(inicial?.u || "");
-  const [tok, setTok] = useState(inicial?.t || "");
-  const [busy, setBusy] = useState(false);
-  const [res, setRes] = useState(null);
-  const desdeEnlace = !!inicial;
-  const ir = async () => {
-    const p = enlace.trim() ? parseDeviceLink(enlace) : { u: url.trim().replace(/\/+$/, ""), t: tok.trim() };
-    if (!p || !/^https?:\/\//.test(p.u)) { setRes({ ok: false, text: enlace.trim() ? "Ese enlace no es de vinculación. Cópialo entero desde Ajustes del otro dispositivo." : "La dirección del backend debe empezar por https://" }); return; }
-    setBusy(true); setRes(null);
-    try { setRes(await onVincular(p.u, p.t)); } finally { setBusy(false); }
-  };
-  const campo = "w-full rounded-lg border px-2.5 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500";
+// En Ajustes, para el navegador donde ya está todo: deja el acceso guardado en el gestor de
+// contraseñas, que es lo que luego permite «Entrar» en otro navegador sin buscar nada.
+function AccesoOtroNavegador({ workerUrl, token }) {
+  const [msg, setMsg] = useState(null);
+  if (!workerUrl || !token) return null;
+  const puede = typeof window !== "undefined" && !!window.PasswordCredential;
+  const guardar = async () => setMsg(await recordarAcceso(workerUrl, token)
+    ? "Hecho. Si el navegador te ha pedido confirmación, el acceso ya está en tu gestor de contraseñas."
+    : "Este navegador no deja guardarlo desde aquí. Apunta la dirección y el token en tu gestor de contraseñas.");
   return (
-    <Modal title="Usar mis datos en este dispositivo" onClose={onClose}
-      footer={res?.ok
-        ? <Btn kind="primary" onClick={onClose} className="w-full justify-center sm:w-auto">Ver mis datos</Btn>
-        : <div className="flex gap-2"><Btn kind="primary" onClick={ir} disabled={busy}>{busy ? "Conectando…" : "Vincular y traer mis datos"}</Btn><Btn onClick={onClose}>Cancelar</Btn></div>}>
-      <div className="space-y-3">
-        {desdeEnlace ? (
-          <p className="text-sm text-slate-600">Este enlace conecta el dispositivo a tu backend en <strong className="break-all">{(() => { try { return new URL(inicial.u).host; } catch { return inicial.u; } })()}</strong>. Si es el tuyo, pulsa el botón: traerá tus datos y dejará la sincronización activada.</p>
-        ) : (
-          <>
-            <p className="text-sm text-slate-600">Lo más rápido: en el dispositivo donde ya usas la app, abre <strong>Ajustes → Tus datos y sincronización → Añadir otro dispositivo</strong> y escanea el QR con la cámara de este. No hace falta nada más.</p>
-            <p className="text-xs text-slate-500">¿Sin el otro a mano? Pega aquí el enlace, o escribe la URL de tu Worker y su token.</p>
-            <input value={enlace} onChange={(e) => setEnlace(e.target.value)} placeholder="Enlace de vinculación (opcional)" autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
-            {!enlace.trim() && (
-              <>
-                <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…workers.dev" autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
-                <input value={tok} onChange={(e) => setTok(e.target.value)} placeholder="Token" type="password" autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
-              </>
-            )}
-          </>
-        )}
-        {res && <p className={`text-sm ${res.ok ? "text-emerald-700" : "text-rose-700"}`}>{res.text}</p>}
-        {res?.ok && <p className="text-xs text-slate-500">Los bancos conectados vienen con tus datos: no pulses «Reconectar» en este dispositivo salvo que el permiso haya caducado.</p>}
-      </div>
-    </Modal>
+    <section>
+      <h3 className="text-sm font-semibold">Usar en otro navegador o dispositivo</h3>
+      <p className="mt-1 text-xs text-slate-500">Abre la app allí y pulsa <strong>Entrar</strong> en la portada. Te pedirá la dirección de tu backend y el token; si están en tu gestor de contraseñas, se rellenan solos.</p>
+      {puede && <div className="mt-2"><Btn size="sm" onClick={guardar}>Guardar el acceso en el gestor de contraseñas</Btn></div>}
+      {msg && <p className="mt-1.5 text-xs text-slate-500">{msg}</p>}
+    </section>
   );
 }
 
@@ -3860,16 +3892,26 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onConectarBan
   );
 }
 
-function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente, onVincular }) {
+function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente, onEntrar }) {
   return (
     <div className="mx-auto max-w-2xl px-4 py-10 sm:py-14 anim-rise">
       {/* Portada. Antes esta pantalla solo ofrecia CSV, que dejo de ser la via principal en
           cuanto la app aprendio a conectarse al banco: quien llegaba nuevo no se enteraba. */}
       <div className="overflow-hidden rounded-3xl text-white shadow-lg" style={{ background: `linear-gradient(135deg, ${C.navy} 0%, ${C.navy2} 100%)` }}>
         <div className="px-6 py-8 sm:px-9 sm:py-10">
-          <span className="flex h-12 w-12 items-center justify-center rounded-2xl" style={{ background: "rgba(255,255,255,.14)" }}>
-            <Wallet size={24} />
-          </span>
+          <div className="flex items-start justify-between gap-3">
+            <span className="flex h-12 w-12 items-center justify-center rounded-2xl" style={{ background: "rgba(255,255,255,.14)" }}>
+              <Wallet size={24} />
+            </span>
+            {/* Quien vuelve no tiene que leerse la portada: el acceso está donde se busca. */}
+            {onEntrar && (
+              <button type="button" onClick={onEntrar}
+                className="rounded-full px-4 py-2 text-sm font-semibold text-white hover:bg-white/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                style={{ background: "rgba(255,255,255,.16)" }}>
+                Entrar
+              </button>
+            )}
+          </div>
           <h1 className="mt-4 text-2xl font-semibold tracking-tight sm:text-3xl">Tus finanzas, claras</h1>
           <p className="mt-2 max-w-lg text-sm leading-relaxed text-white/70">
             Descubre en qué se va tu dinero: por categoría, por activo y por etiquetas transversales.
@@ -3892,7 +3934,10 @@ function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente
               recomendado, pero exige montar un backend y una cuenta en Enable Banking: cuarenta
               minutos antes de ver un gráfico. Quien llega tiene que poder probar la app en un
               minuto y decidir después si le compensa instalar algo. */}
-          <div className="mt-5 grid gap-3 sm:grid-cols-2">
+          {/* Tres puntos de partida: dos para quien empieza (extracto o banco) y uno para quien
+              ya tiene cuenta y abre la app en otro navegador o dispositivo. */}
+          <h2 className="mt-6 text-xs font-semibold uppercase tracking-wide text-slate-500">Es mi primera vez</h2>
+          <div className="mt-2 grid gap-3 sm:grid-cols-2">
             <div className="flex flex-col rounded-2xl border-2 bg-white p-5" style={{ borderColor: C.accent }}>
               <span className="flex items-center gap-2">
                 <span className="flex h-10 w-10 items-center justify-center rounded-xl" style={{ background: C.accentSoft, color: C.accent }}>
@@ -3902,7 +3947,7 @@ function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente
               </span>
               <span className="mt-3 block text-base font-semibold">Trae tu extracto</span>
               <span className="mt-1 block text-xs leading-relaxed text-slate-500">
-                Descárgalo en <strong>formato CSV</strong> desde la web de tu banco y tráelo aquí. Un minuto, sin registrarte en nada. Si solo te lo da en Excel, ábrelo y guárdalo como CSV.
+                Descárgalo desde la web de tu banco, en <strong>CSV o Excel</strong>, y tráelo aquí. Un minuto, sin registrarte en nada.
               </span>
               <div className="mt-3"><DropZone onFiles={onFiles} compact /></div>
             </div>
@@ -3923,19 +3968,20 @@ function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente
             </button>
           </div>
 
-          {/* Quien ya usa la app y estrena dispositivo no viene a montar nada: viene a por sus
-              datos. Antes tenía que entrar con los datos de ejemplo para llegar a Ajustes. */}
-          {onVincular && (
-            <button type="button" onClick={onVincular}
-              className="mt-3 flex w-full items-center gap-3 rounded-2xl border bg-white p-4 text-left transition-all hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-              style={{ borderColor: C.line }}>
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ background: C.accentSoft, color: C.accent }}><RefreshCw size={18} /></span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-semibold">Ya uso la app en otro dispositivo</span>
-                <span className="mt-0.5 block text-xs text-slate-500">Escanea el QR desde el otro o pon tu backend: tus datos y tus bancos llegan solos.</span>
-              </span>
-              <ChevronRight size={16} className="shrink-0 text-slate-400" />
-            </button>
+          {onEntrar && (
+            <>
+              <h2 className="mt-6 text-xs font-semibold uppercase tracking-wide text-slate-500">Ya uso la app</h2>
+              <button type="button" onClick={onEntrar}
+                className="group mt-2 flex w-full items-center gap-3 rounded-2xl border bg-white p-4 text-left transition-all hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                style={{ borderColor: C.line }}>
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ background: C.accentSoft, color: C.accent }}><RefreshCw size={18} /></span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-base font-semibold">Entrar con mi cuenta</span>
+                  <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">En otro navegador o dispositivo: pon tu backend y tu token (o deja que el gestor de contraseñas los rellene) y llegan tus datos y tus bancos.</span>
+                </span>
+                <ChevronRight size={16} className="shrink-0 text-slate-400 transition-transform group-hover:translate-x-0.5" />
+              </button>
+            </>
           )}
 
           <div className="mt-5 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-center">
@@ -7120,7 +7166,7 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
           </div>
         </section>
         )}
-        {bank && <EnlaceDispositivo workerUrl={bank.workerUrl} token={bank.token} />}
+        {bank && <AccesoOtroNavegador workerUrl={bank.workerUrl} token={bank.token} />}
         </Grupo>
 
         <Grupo titulo="Banco" abierto={abrir === "banco"} forzar={abrir === "banco"}
@@ -8282,11 +8328,12 @@ function AppMain() {
   /* ---------- Conexión bancaria (Enable Banking, vía el Worker) — MULTI-BANCO ---------- */
   const [bankCfg, setBankCfg] = useState(loadBank);
 
-  // Vincular este dispositivo: guarda URL y token, trae la copia y deja la sincronización
-  // automática encendida. Es lo que antes había que hacer en cuatro sitios distintos, y lo que
-  // se olvidaba (la casilla de «automático» es de cada dispositivo y no viaja con los datos).
-  const [vincularOpen, setVincularOpen] = useState(null); // null | { inicial: {u,t} | null }
-  const vincular = useCallback(async (u, t) => {
+  // Entrar con una cuenta que ya existe: guarda URL y token, trae la copia y deja la
+  // sincronización automática encendida. Es lo que antes había que hacer en cuatro sitios
+  // distintos, y lo que se olvidaba (la casilla de «automático» es de cada navegador y no
+  // viaja con los datos). Al acabar, ofrece guardar el acceso en el gestor de contraseñas.
+  const [entrarOpen, setEntrarOpen] = useState(false);
+  const entrar = useCallback(async (u, t) => {
     const prev = loadBank();
     // A disco ANTES de traer: syncPull lee la URL y el token de ahí, no del estado de React.
     saveBank({ ...prev, workerUrl: u, token: t || prev.token || "" });
@@ -8302,20 +8349,11 @@ function AppMain() {
     const r = await syncPull({ confirmReplace: true });
     if (!r?.ok) return r || { ok: false, text: "No se pudo traer la copia." };
     persistSync({ auto: true });
+    recordarAcceso(u, t);
     const nb = (loadBank().connections || []).length;
-    return { ok: true, text: `Listo: ${nfNum.format(r.n)} movimientos traídos${nb ? ` y ${nb} ${nb === 1 ? "banco heredado" : "bancos heredados"}` : ""}. La sincronización automática queda activada en este dispositivo.` };
+    return { ok: true, text: `Listo: ${nfNum.format(r.n)} ${r.n === 1 ? "movimiento traído" : "movimientos traídos"}${nb ? ` y ${nb} ${nb === 1 ? "banco heredado" : "bancos heredados"}` : ""}. La sincronización automática queda activada en este navegador.` };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syncPull, persistSync]);
-
-  // Abrir un enlace de vinculación (el QR de otro dispositivo). Se borra del historial al
-  // momento: lleva el token y no debe quedarse en la barra de direcciones.
-  useEffect(() => {
-    if (!booted) return;
-    const p = parseDeviceLink(window.location.hash);
-    if (!p) return;
-    try { window.history.replaceState({}, "", window.location.pathname + window.location.search); } catch { /* noop */ }
-    setVincularOpen({ inicial: p });
-  }, [booted]);
   // persistBank acepta un patch { ... } o una función (b) => nuevoEstado.
   const persistBank = useCallback((patchOrFn) => setBankCfg((b) => { const n = typeof patchOrFn === "function" ? patchOrFn(b) : { ...b, ...patchOrFn }; saveBank(n); return n; }), []);
   useEffect(() => { if (settingsOpen) setBankCfg(loadBank()); }, [settingsOpen]);
@@ -8798,16 +8836,16 @@ function AppMain() {
     setImp({ phase: "parsing", fileName });
     setTimeout(() => {
       try {
-        const delim = detectDelimiter(text);
-        const rows = tokenizeCSV(text, delim);
-        if (rows.length < 2) throw new Error("El archivo está vacío o no parece un CSV.");
+        // Un Excel llega ya convertido en filas; un CSV hay que trocearlo.
+        const rows = Array.isArray(text) ? text : tokenizeCSV(text, detectDelimiter(text));
+        if (rows.length < 2) throw new Error("El archivo está vacío o no tiene movimientos.");
         const analysis = analyzeRows(rows);
         if (analysis.error) throw new Error(analysis.error);
         if (!analysis.ok) { setImp({ phase: "mapping", fileName, rows, analysis }); return; }
         finishParse(rows, analysis.dataStart, analysis.cols, fileName, analysis);
       } catch (e) {
         setImp(null);
-        setError(e.message + " Prueba a exportar de nuevo el extracto en formato CSV o usa el mapeo manual.");
+        setError(e.message + " Prueba a exportar de nuevo el extracto (CSV o Excel) o usa el mapeo manual.");
       }
     }, 30);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -8853,8 +8891,13 @@ function AppMain() {
     setImp({ phase: "parsing", fileName: file.name });
     try {
       const buf = await file.arrayBuffer();
-      const text = decodeBuffer(buf);
-      startImport(text, file.name, false);
+      if (isSpreadsheetFile(file)) {
+        const rows = await spreadsheetToRows(buf);
+        if (!rows.length) throw new Error("el Excel no tiene ninguna hoja con datos");
+        startImport(rows, file.name, false);
+      } else {
+        startImport(decodeBuffer(buf), file.name, false);
+      }
     } catch (e) {
       setImp(null);
       setError("No se pudo leer el archivo: " + e.message);
@@ -9567,7 +9610,7 @@ function AppMain() {
       {!hasData ? (
         <EmptyState onFiles={handleFiles} onSample={loadSample} error={error} parsing={imp?.phase === "parsing"}
           onSettings={() => setSettingsOpen(true)} onAsistente={() => setAsistenteOpen(true)}
-          onVincular={() => setVincularOpen({ inicial: null })} />
+          onEntrar={() => setEntrarOpen(true)} />
       ) : (
         <div className="mx-auto max-w-5xl px-4 pb-24 sm:pb-12">
           <header ref={headerRef} className="sticky top-0 z-20 -mx-4 mb-3 px-4 py-3 text-white shadow-md" style={{ background: `linear-gradient(135deg, ${C.navy} 0%, ${C.navy2} 100%)` }}>
@@ -9597,7 +9640,7 @@ function AppMain() {
                 </button>
                 <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-white/10 focus-within:ring-2 focus-within:ring-white/60" style={{ background: "rgba(255,255,255,.14)" }}>
                   <Plus size={15} /> <span className="hidden sm:inline">Añadir CSV</span><span className="sm:hidden">CSV</span>
-                  <input type="file" accept=".csv,.txt,text/csv" className="sr-only" onChange={(e) => { if (e.target.files.length) handleFiles(e.target.files); e.target.value = ""; }} />
+                  <input type="file" accept=".csv,.txt,.tsv,.xlsx,.xls,.xlsm,.ods,.json,text/csv,text/plain,text/tab-separated-values,application/json,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.oasis.opendocument.spreadsheet,text/comma-separated-values,application/octet-stream" className="sr-only" onChange={(e) => { if (e.target.files.length) handleFiles(e.target.files); e.target.value = ""; }} />
                 </label>
                 {movsPend.length > 0 && (
                   <button type="button" onClick={() => setPendingOpen(true)} aria-label="Movimientos por clasificar"
@@ -9749,9 +9792,7 @@ function AppMain() {
           onEditMov={(m) => setMovEdit({ mode: "edit", mov: m })}
         />
       )}
-      {vincularOpen && (
-        <VincularDispositivo inicial={vincularOpen.inicial} onVincular={vincular} onClose={() => setVincularOpen(null)} />
-      )}
+      {entrarOpen && <EntrarModal onEntrar={entrar} onClose={() => setEntrarOpen(false)} />}
       {asistenteOpen && (
         <AsistenteConexion
           workerUrl={bankCfg.workerUrl || ""} token={bankCfg.token || ""}
