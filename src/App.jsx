@@ -8689,7 +8689,7 @@ function AppMain() {
     try {
       return await fetch(bankBase() + path, { headers: bankHeaders(), signal: ac.signal });
     } catch (e) {
-      if (e.name === "AbortError") throw new Error(`el backend no respondió en ${Math.round(ms / 1000)} s`);
+      if (e.name === "AbortError") throw new Error(`no hubo respuesta en ${Math.round(ms / 1000)} s; vuelve a intentarlo en un rato`);
       throw e;
     } finally { clearTimeout(t); }
   };
@@ -8932,10 +8932,13 @@ function AppMain() {
         bankPickAccount(connId, match.uid, match.name || match.iban, match.iban);
       }
       const acc = accUid ? `&account=${encodeURIComponent(accUid)}` : "";
-      // Ventana reciente para el auto-sync (barato); en la sincronización manual, histórico completo.
+      // Ventana reciente (barata) siempre que ya haya llegado algo; histórico completo (dos años)
+      // solo la primera vez. Antes el botón Sincronizar pedía siempre los dos años: con un banco
+      // lento eso pasa del minuto y acababa en «el backend no respondió en 60 s» para traer, en
+      // realidad, los movimientos de los últimos días. Lo ya bajado no se pierde: está en local.
       // Si la conexión lleva tiempo rota, 90 días fijos dejarían un agujero: ampliamos la ventana
       // hasta una semana antes del último movimiento que sí llegó.
-      let days = opts.recentDays || 0;
+      let days = opts.recentDays || (conn.lastNewest ? 90 : 0);
       if (days && conn.lastNewest) {
         const gap = Math.ceil((Date.now() - new Date(conn.lastNewest + "T12:00:00").getTime()) / 86400000) + 7;
         if (gap > days) days = gap;
