@@ -7278,7 +7278,7 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
                   return (
                     <div key={c.id} className="rounded-xl border p-2.5" style={{ borderColor: C.line, background: C.surface }}>
                       <div className="flex items-center justify-between gap-2">
-                        <span className="min-w-0 truncate text-sm font-medium">{c.aspsp}<span className="ml-1 text-[11px] font-normal text-slate-400">{c.country}</span></span>
+                        <span className="min-w-0 truncate text-sm font-medium">{c.aspsp && c.aspsp !== "Banco" ? c.aspsp : <span style={{ color: C.warn }}>Banco sin identificar</span>}<span className="ml-1 text-[11px] font-normal text-slate-400">{c.country}</span></span>
                         <button type="button" onClick={() => bank.onRemove(c.id)} aria-label="Quitar banco" className="shrink-0 rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={13} /></button>
                       </div>
                       <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -8490,22 +8490,41 @@ function AppMain() {
       // regla tiene que valer aquí y dentro del updater, o el mensaje diría una cosa y el
       // estado haría otra.
       const isFresh = (pd) => !!pd && (!pd.at || Date.now() - pd.at < 30 * 60000);
-      const renew = !!(isFresh(disk.pending) && disk.pending.reconnectId && (disk.connections || []).some((c) => c.id === disk.pending.reconnectId));
+      // Qué hacer con la sesión que llega. Antes, sin un pending fresco se creaba una conexión
+      // llamada «Banco»: pasa si vuelves del banco en OTRO navegador (la app del banco abre el
+      // predeterminado) o tardas más de media hora. Esa conexión viajaba por la sincronización y
+      // al renovarla Enable Banking contestaba WRONG_ASPSP_PROVIDED, porque «Banco» no es un banco.
+      // Ahora: pending fresco → lo que dice; si no, el nombre del pending viejo; y si no hay
+      // nada pero solo tienes un banco, es casi seguro su renovación.
+      const decide = (b) => {
+        const conns = b.connections || [];
+        if (isFresh(b.pending)) {
+          const pd = b.pending;
+          const target = pd.reconnectId && conns.some((c) => c.id === pd.reconnectId) ? pd.reconnectId : null;
+          return { target, aspsp: pd.aspsp || "", country: pd.country || "ES", psu: pd.psu || "" };
+        }
+        if (b.pending?.aspsp) return { target: null, aspsp: b.pending.aspsp, country: b.pending.country || "ES", psu: b.pending.psu || "" };
+        const named = conns.filter((c) => c.aspsp && c.aspsp !== "Banco");
+        if (conns.length === 1) return { target: conns[0].id, aspsp: named[0]?.aspsp || "", country: conns[0].country || "ES", psu: conns[0].psu || "" };
+        return { target: null, aspsp: "", country: "ES", psu: "" };
+      };
+      const plan = decide(disk);
+      const renew = !!plan.target;
       persistBank((b) => {
-        const pend = isFresh(b.pending) ? b.pending : {};
+        const d = decide(b);
         // Reconectar un banco que ya estaba: se cambia la sesión de esa misma conexión. Antes se
         // añadía una conexión nueva y quedaba la vieja (muerta) al lado, sincronizando en balde.
         // La cuenta elegida NO se conserva: los uid de Enable Banking son por sesión y al renovar
         // cambian, así que el uid viejo filtraba a cero cuentas y la sincronización moría con
         // «la sesión no contiene esa cuenta». Se limpia y se vuelve a elegir.
-        const target = pend.reconnectId && (b.connections || []).some((c) => c.id === pend.reconnectId) ? pend.reconnectId : null;
-        if (target) return { ...b, pending: null, connections: (b.connections || []).map((c) => (c.id === target ? { ...c, sessionId: sid, accountUid: "", accountName: "", psu: pend.psu || c.psu || "", sessionPsu: pend.psu || "", lastError: null, lastErrorAt: null, expired: false } : c)) };
-        const conn = { id: "bc" + Date.now() + Math.random().toString(36).slice(2, 5), aspsp: pend.aspsp || "Banco", country: pend.country || "ES", psu: pend.psu || "", sessionPsu: pend.psu || "", sessionId: sid, accountUid: "", accountName: "", lastSync: null };
+        if (d.target) return { ...b, pending: null, connections: (b.connections || []).map((c) => (c.id === d.target ? { ...c, ...(d.aspsp ? { aspsp: d.aspsp } : {}), sessionId: sid, accountUid: "", accountName: "", psu: d.psu || c.psu || "", sessionPsu: d.psu || "", lastError: null, lastErrorAt: null, expired: false } : c)) };
+        const conn = { id: "bc" + Date.now() + Math.random().toString(36).slice(2, 5), aspsp: d.aspsp, country: d.country, psu: d.psu, sessionPsu: d.psu, sessionId: sid, accountUid: "", accountName: "", lastSync: null };
         return { ...b, connections: [...(b.connections || []), conn], pending: null };
       });
       p.delete("bank_session");
       window.history.replaceState({}, "", window.location.pathname + (p.toString() ? "?" + p.toString() : ""));
-      setBankMsg({ kind: "ok", text: renew ? "Permiso renovado. La cuenta hay que volver a elegirla (al renovar cambian los identificadores): pulsa «Ver cuentas» y luego Sincronizar." : "Banco conectado. Elige la cuenta y sincroniza." });
+      if (!plan.aspsp) setBankMsg({ kind: "err", text: "Has vuelto del banco, pero este navegador no sabe de qué banco era (¿empezaste en otro navegador?). La conexión funciona para sincronizar; si algún día hay que renovarla, quítala y añade tu banco de nuevo." });
+      else setBankMsg({ kind: "ok", text: renew ? "Permiso renovado. La cuenta hay que volver a elegirla (al renovar cambian los identificadores): pulsa «Ver cuentas» y luego Sincronizar." : "Banco conectado. Elige la cuenta y sincroniza." });
       setSettingsOpen(true);
     } catch { /* ignore */ }
   }, [persistBank]);
@@ -8564,6 +8583,12 @@ function AppMain() {
   const bankReconnect = useCallback((connId) => {
     const c = (loadBank().connections || []).find((x) => x.id === connId);
     if (!c) { setBankMsg({ kind: "err", text: "Conexión no válida." }); return; }
+    // Una conexión sin nombre de banco real no se puede renovar: Enable Banking necesita saber
+    // a qué banco mandarte y respondería WRONG_ASPSP_PROVIDED.
+    if (!c.aspsp || c.aspsp === "Banco") {
+      setBankMsg({ kind: "err", text: "Esta conexión no guarda de qué banco es, así que no se puede renovar. Quítala con la papelera y añade tu banco en «Añadir banco»." });
+      return;
+    }
     // Reconectar renueva el permiso pasando otra vez por el banco y obliga a volver a elegir
     // la cuenta. En un dispositivo recién vinculado parece el botón de «conectar aquí», y no
     // lo es: la conexión ya viene heredada. Con una conexión sana, se pregunta antes.
