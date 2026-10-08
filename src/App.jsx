@@ -3628,6 +3628,28 @@ function EntrarModal({ inicial, auto, onEntrar, onClose }) {
   );
 }
 
+// Has firmado en el banco pero has vuelto a un navegador sin tu backend. La firma no se ha
+// perdido: basta con abrir esta misma dirección en el navegador donde usas la app.
+function VueltaOtroNavegador({ url, onClose }) {
+  const [copiado, setCopiado] = useState(false);
+  const copiar = async () => { try { await navigator.clipboard.writeText(url); setCopiado(true); } catch { /* sin permiso */ } };
+  return (
+    <Modal title="Has vuelto en otro navegador" onClose={onClose}>
+      <div className="space-y-3 text-sm text-slate-600">
+        <p>La firma en el banco ha ido bien, pero el banco te ha devuelto a <strong>este</strong> navegador, y tu app está configurada en otro (por ejemplo, Brave). Suele pasar en el iPhone cuando firmas con la app del banco: al terminar abre Safari.</p>
+        <p className="font-medium text-slate-800">Para terminar la conexión:</p>
+        <ol className="list-decimal space-y-1 pl-5">
+          <li>Copia este enlace.</li>
+          <li>Abre el navegador donde usas la app.</li>
+          <li>Pégalo en la barra de direcciones y ábrelo. La conexión se completa sola.</li>
+        </ol>
+        <Btn kind="primary" onClick={copiar}>{copiado ? <><Check size={14} /> Copiado</> : "Copiar enlace"}</Btn>
+        <p className="text-xs text-slate-400">No hace falta firmar otra vez. Después ya puedes cerrar este navegador.</p>
+      </div>
+    </Modal>
+  );
+}
+
 // En Ajustes, para el navegador donde ya está todo configurado.
 function AccesoOtroNavegador({ workerUrl, token }) {
   // En estado, no leído en cada render: si no, el aviso seguía en amarillo después de copiarlo.
@@ -8508,6 +8530,7 @@ function AppMain() {
   const [asistenteOpen, setAsistenteOpen] = useState(false); // asistente de conexión del backend
   const [bankAddPsu, setBankAddPsu] = useState("personal");  // titular: personal o empresa
 
+  const [vueltaAjena, setVueltaAjena] = useState(null); // URL de vuelta del banco caída en otro navegador
   // Al volver del banco, ?bank_session=… : creamos una conexión con el banco que estaba pendiente.
   useEffect(() => {
     try {
@@ -8517,6 +8540,11 @@ function AppMain() {
       // Se decide aquí, con lo que hay en disco: el updater de persistBank corre más tarde y
       // leer su resultado desde este ámbito daría siempre el valor viejo.
       const disk = loadBank();
+      // Volver del banco a un navegador que no tiene tu backend: en el iPhone, la app del banco
+      // abre el navegador predeterminado (Safari) aunque empezaras en otro. Aquí la sesión no
+      // sirve de nada y antes se perdía en silencio: firmabas, «no volvía» y había que repetir.
+      // Se deja el enlace intacto y se explica cómo llevarlo al navegador bueno.
+      if (!disk.workerUrl) { setVueltaAjena(window.location.href); return; }
       // Un pending de hace horas es de un intento abandonado: usarlo hace que la sesión nueva
       // aterrice sobre la conexión que tocaba entonces y herede su cuenta caducada. La misma
       // regla tiene que valer aquí y dentro del updater, o el mensaje diría una cosa y el
@@ -9953,6 +9981,10 @@ function AppMain() {
           onEditMov={(m) => setMovEdit({ mode: "edit", mov: m })}
         />
       )}
+      {vueltaAjena && <VueltaOtroNavegador url={vueltaAjena} onClose={() => {
+        setVueltaAjena(null);
+        try { window.history.replaceState({}, "", window.location.pathname); } catch { /* noop */ }
+      }} />}
       {entrarOpen && <EntrarModal inicial={entrarOpen.inicial} auto={entrarOpen.auto} onEntrar={entrar} onClose={() => setEntrarOpen(null)} />}
       {asistenteOpen && (
         <AsistenteConexion
