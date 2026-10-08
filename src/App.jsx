@@ -88,6 +88,14 @@ const INTERNAL_SET = new Set(["Traspasos entre cuentas", "Ahorro e inversión"])
 // Migración desde la taxonomía anterior (v≤4.1): la categoría única "Ingresos" se reparte
 const migrateCat = (c) => (c === "Ingresos" ? "Otros ingresos" : c === "Gastos financieros" ? "Comisiones" : c);
 const DEFAULT_REDUCIBLE = ["Ocio", "Restauración", "Suscripciones", "Compras", "Ropa"];
+const ALL_TABS = [
+  { id: "resumen", label: "Resumen", icon: LayoutGrid },
+  { id: "analisis", label: "Análisis", icon: TrendingUp },
+  { id: "clasificar", label: "Clasificación", short: "Clasif.", icon: ClipboardList },
+  { id: "activos", label: "Activos", icon: Car },
+  { id: "ideas", label: "Ideas", icon: Sparkles },
+  { id: "asistente", label: "Asistente", icon: Bot },
+];
 const ASSET_EMOJI = { Coche: "🚗", Casa: "🏠", Mascota: "🐾", "Segunda residencia": "🏖️" };
 const EMOJI_CHOICES = ["🚗", "🏠", "🏖️", "🐾", "💻", "🛵", "🚲", "⛵", "📦", "🎸", "🏍️", "🚐"];
 const GROUP_EMOJI = ["🏃", "✈️", "🎉", "🎄", "💍", "🍼", "🏖️", "🎓", "🏡", "🎮", "📸", "🎁", "⚽", "🚴", "🏔️", "🛠️"];
@@ -3603,7 +3611,9 @@ function EntrarModal({ inicial, auto, onEntrar, onClose }) {
           ) : (
             <p className="text-sm text-slate-600">La forma más rápida: abre <strong>tu enlace de acceso</strong> (búscalo en tu email: «Mi acceso a Mis Finanzas») o pégalo aquí abajo.</p>
           )}
-          <div className={inicial ? "hidden" : "space-y-3"}>
+          {/* Con el enlace los campos sobran, salvo si falla (token cambiado, dirección vieja):
+              entonces hay que poder corregirlos, o el modal se queda en un callejón sin salida. */}
+          <div className={inicial && !res ? "hidden" : "space-y-3"}>
             <label className="block text-xs font-medium text-slate-600">Enlace de acceso o dirección de tu backend
               <input name="username" autoComplete="username" inputMode="url" value={url} onChange={(e) => onUrl(e.target.value)}
                 placeholder="Pega aquí tu enlace" autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
@@ -3664,7 +3674,7 @@ function AccesoOtroNavegador({ workerUrl, token }) {
     <section>
       <h3 className="text-sm font-semibold">Tu acceso en otros dispositivos</h3>
       {guardado
-        ? <p className="mt-1 rounded-lg px-2 py-1.5 text-[11px] font-medium" style={{ background: "#dcfce7", color: "#15803d" }}>✓ Te lo guardaste el {fmtCuando(guardado)}. Para usarlo en otro navegador, pégalo allí en «Entrar».</p>
+        ? <p className="mt-1 rounded-lg px-2 py-1.5 text-[11px] font-medium" style={{ background: "#dcfce7", color: "#15803d" }}>✓ Copiado o enviado el {fmtCuando(guardado)}. Para usarlo en otro navegador, pégalo allí en «Entrar».</p>
         : <p className="mt-1 rounded-lg px-2 py-1.5 text-[11px] font-medium" style={{ background: C.warnSoft, color: C.warn }}>Aún no te lo has guardado. Hazlo ahora: si pierdes este dispositivo, es lo que te deja volver a entrar.</p>}
       <p className="mt-1 text-xs text-slate-500">Mándate tu enlace de acceso una vez. Desde cualquier móvil, ordenador o navegador, abrirlo es entrar: llegan tus datos y tus bancos, sin teclear nada.</p>
       <div className="mt-2"><CompartirAcceso workerUrl={workerUrl} token={token} /></div>
@@ -5443,6 +5453,35 @@ function AssetModal({ asset, onSave, onDelete, onClose }) {
   );
 }
 
+// De categoría de la app a apartado de «inmuebles arrendados» en Renta Web. Es una propuesta:
+// la app no sabe si una comisión es de la hipoteca o si «Vivienda» es la comunidad, así que lo
+// dudoso lleva su aviso. Lo no listado cae en «Otros», a revisar uno a uno.
+const RENTA_CONCEPTO = {
+  Impuestos: "Tributos y tasas (IBI, basuras)",
+  Seguros: "Primas de seguros",
+  "Taller y mantenimiento": "Reparación y conservación",
+  Hogar: "Reparación y conservación",
+  Suministros: "Suministros y servicios",
+  Telecomunicaciones: "Suministros y servicios",
+  Vivienda: "Comunidad y servicios de la finca",
+  Comisiones: "Intereses y gastos de financiación",
+};
+const RENTA_REVISAR = {
+  "Comunidad y servicios de la finca": "Si aquí hay cuotas de hipoteca, solo los intereses son deducibles y van en financiación.",
+  "Intereses y gastos de financiación": "Solo cuenta lo del préstamo de este inmueble. Junto con reparación y conservación, no puede superar los ingresos.",
+  "Reparación y conservación": "Las mejoras (ampliar, reformar a fondo) no van aquí: se amortizan.",
+  "Otros gastos": "Revisa uno a uno: solo es deducible lo necesario para alquilar, con factura.",
+};
+const rentaConceptos = (cats) => {
+  const m = new Map();
+  for (const [c, v] of cats) {
+    const k = RENTA_CONCEPTO[c] || "Otros gastos";
+    const e = m.get(k) || { total: 0, cats: [] };
+    e.total += v; e.cats.push(c); m.set(k, e);
+  }
+  return [...m.entries()].sort((x, y) => y[1].total - x[1].total);
+};
+
 /* Informe por inmueble para el periodo seleccionado (un año natural = informe anual, útil
    para la renta). Por cada activo «en alquiler»: alquiler cobrado, gastos desglosados por
    categoría y rendimiento neto. La vivienda habitual se muestra aparte (no es rendimiento
@@ -5452,26 +5491,36 @@ function RentaReport({ assets, agg, periodLabel, onClose }) {
     const ingreso = agg.byAssetIncome.get(a.name) || 0;
     const gasto = agg.byAsset.get(a.name) || 0;
     const cats = [...(agg.byAssetCat.get(a.name) || new Map()).entries()].filter(([, v]) => v > 0).sort((x, y) => y[1] - x[1]);
-    return { a, ingreso, gasto, neto: ingreso - gasto, cats };
+    return { a, ingreso, gasto, neto: ingreso - gasto, cats, conceptos: rentaConceptos(cats) };
   });
   const alquiler = rows.filter((r) => r.a.uso === "alquiler");
+  const anual = /^Año \d{4}$/.test(periodLabel || "");
   const vivienda = rows.filter((r) => r.a.uso === "vivienda");
   const totIng = alquiler.reduce((s, r) => s + r.ingreso, 0);
   const totGas = alquiler.reduce((s, r) => s + r.gasto, 0);
 
+  // CSV para Excel (punto y coma, coma decimal, BOM): una fila por apartado de Renta Web, más
+  // los datos que la app no puede saber y Renta Web te va a pedir igualmente.
   const exportar = () => {
-    const data = {
-      informe: "Rendimiento por inmueble", periodo: periodLabel, generado: new Date().toISOString(),
-      aviso: "Cifras orientativas basadas en tus movimientos. No es asesoramiento fiscal.",
-      alquiler: alquiler.map((r) => ({ inmueble: r.a.name, ingresos: r2(r.ingreso), gastos: r2(r.gasto), neto: r2(r.neto), gastosPorCategoria: Object.fromEntries(r.cats.map(([c, v]) => [c, r2(v)])) })),
-      viviendaHabitual: vivienda.map((r) => ({ inmueble: r.a.name, gastos: r2(r.gasto), nota: "Vivienda habitual: no genera rendimiento de alquiler. La deducción por hipoteca solo aplica en régimen transitorio (compra anterior a 2013)." })),
-      totalAlquiler: { ingresos: r2(totIng), gastos: r2(totGas), neto: r2(totIng - totGas) },
-    };
+    const num = (v) => r2(v).toFixed(2).replace(".", ",");
+    const esc = (v) => /[;"\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+    const filas = [["Periodo", "Inmueble", "Apartado de Renta Web", "Importe (€)", "Origen en la app", "Qué revisar"]];
+    for (const r of alquiler) {
+      const f = (ap, imp, orig = "", rev = "") => filas.push([periodLabel, r.a.name, ap, imp, orig, rev]);
+      f("Referencia catastral", "", "", "Completar: está en el recibo del IBI");
+      f("Porcentaje de titularidad", "", "", "Completar: si es a medias, cada titular declara su parte");
+      f("Días arrendado en el año", "", "", "Completar: los gastos de días sin alquilar no son deducibles");
+      f("NIF del inquilino y fecha del contrato", "", "", "Completar: la fecha decide la reducción (50-90 % en contratos desde el 26/05/2023; 60 % antes)");
+      f("Ingresos íntegros", num(r.ingreso), "Ingresos asignados al inmueble");
+      for (const [ap, e] of r.conceptos) f(ap, num(e.total), e.cats.join(", "), RENTA_REVISAR[ap] || "");
+      f("Amortización del inmueble", "", "", "Completar: 3 % del mayor entre precio de compra (con gastos) y valor catastral, solo la construcción, sin el suelo");
+      f("Rendimiento neto (antes de amortización y reducción)", num(r.neto));
+    }
     try {
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
+      const csv = "\ufeff" + filas.map((l) => l.map(esc).join(";")).join("\r\n");
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
       const a = document.createElement("a");
-      a.href = url; a.download = `informe-inmuebles-${(periodLabel || "").replace(/[^\w-]+/g, "_")}.json`;
+      a.href = url; a.download = `renta-inmuebles-${(periodLabel || "").replace(/[^\w-]+/g, "_")}.csv`;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 4000);
     } catch { /* noop */ }
@@ -5482,14 +5531,19 @@ function RentaReport({ assets, agg, periodLabel, onClose }) {
       <div className="space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="max-w-md text-xs text-slate-500">Rendimiento de cada inmueble <span className="font-medium">en el periodo seleccionado</span>. Elige un año arriba para el informe anual de la renta.</p>
-          <Btn kind="primary" onClick={exportar}><Download size={14} /> Exportar informe</Btn>
+          <Btn kind="primary" onClick={exportar} disabled={!alquiler.length}><Download size={14} /> Exportar para la renta</Btn>
         </div>
+        {!anual && (
+          <p className="rounded-lg px-3 py-2 text-xs" style={{ background: C.warnSoft, color: C.warn }}>
+            La renta se declara por año natural y ahora tienes elegido «{periodLabel}». Elige arriba un año completo antes de exportar.
+          </p>
+        )}
 
         {alquiler.length === 0 ? (
           <Card className="p-6 text-center text-sm text-slate-500">
             Ningún activo marcado como <span className="font-medium">«En alquiler»</span>. Edita tus inmuebles (icono ✏️) y pon su uso para que aparezcan aquí.
           </Card>
-        ) : alquiler.map(({ a, ingreso, gasto, neto, cats }) => (
+        ) : alquiler.map(({ a, ingreso, gasto, neto, conceptos }) => (
           <Card key={a.id} className="p-4">
             <div className="flex items-center justify-between gap-2">
               <h3 className="font-semibold"><span className="mr-1.5">{a.emoji}</span>{a.name}</h3>
@@ -5500,15 +5554,17 @@ function RentaReport({ assets, agg, periodLabel, onClose }) {
               <div><div className="text-[10px] font-medium uppercase tracking-wide text-slate-400">Gastos</div><div className="text-lg font-semibold" style={{ ...tnum, color: C.expense }}>{fmtE0(gasto)}</div></div>
               <div><div className="text-[10px] font-medium uppercase tracking-wide text-slate-400">Neto</div><div className="text-lg font-semibold" style={{ ...tnum, color: neto >= 0 ? C.income : C.expense }}>{neto >= 0 ? "+" : ""}{fmtE0(neto)}</div></div>
             </div>
-            {cats.length > 0 && (
+            {conceptos.length > 0 && (
               <div className="mt-3 border-t pt-2" style={{ borderColor: C.line }}>
-                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">Gastos por categoría</div>
-                <div className="space-y-1">
-                  {cats.map(([c, v]) => (
-                    <div key={c} className="flex items-center gap-2 text-xs">
-                      <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ background: catColor(c) }} />
-                      <span className="min-w-0 flex-1 truncate text-slate-600">{c}</span>
-                      <span className="shrink-0 font-medium text-slate-500" style={tnum}>{fmtE0(v)}</span>
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">Gastos por apartado de Renta Web</div>
+                <div className="space-y-1.5">
+                  {conceptos.map(([ap, e]) => (
+                    <div key={ap} className="text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate text-slate-700">{ap}</span>
+                        <span className="shrink-0 font-medium text-slate-600" style={tnum}>{fmtE0(e.total)}</span>
+                      </div>
+                      <div className="text-[11px] text-slate-400">{e.cats.join(" · ")}{RENTA_REVISAR[ap] ? ` — ${RENTA_REVISAR[ap]}` : ""}</div>
                     </div>
                   ))}
                 </div>
@@ -5538,7 +5594,7 @@ function RentaReport({ assets, agg, periodLabel, onClose }) {
           </Card>
         ))}
 
-        <p className="text-[11px] leading-relaxed text-slate-400">Cifras orientativas a partir de tus movimientos del periodo. No incluye amortizaciones ni la reducción del 60 % por alquiler de vivienda, ni sustituye al asesoramiento fiscal.</p>
+        <p className="text-[11px] leading-relaxed text-slate-400">Cifras orientativas a partir de tus movimientos del periodo. El archivo exportado añade lo que Renta Web te pedirá y la app no sabe (referencia catastral, días alquilado, amortización, reducción). No sustituye al asesoramiento fiscal.</p>
       </div>
     </Modal>
   );
@@ -5555,13 +5611,19 @@ function ActivosTab({ assets, setAssets, agg, allAgg, onDrill, periodLabel }) {
     setEditing(null);
   };
   // Resumen por activo en el PERIODO (real, no proyectado), para el vistazo rápido.
+  // La rentabilidad, en cambio, es anual y sobre el valor: la misma neta proyectada que enseña
+  // la tarjeta de cada activo, para que tabla y tarjeta no digan cosas distintas.
   const resumen = assets.map((a) => {
     const gasto = agg.byAsset.get(a.name) || 0;
     const ingreso = agg.byAssetIncome.get(a.name) || 0;
-    return { a, gasto, ingreso, neto: ingreso - gasto };
+    const netoAnual = ((allAgg.byAssetIncome.get(a.name) || 0) - (allAgg.byAsset.get(a.name) || 0)) * allAgg.annualFactor;
+    return { a, gasto, ingreso, neto: ingreso - gasto, netoAnual, rent: a.value ? netoAnual / a.value : null };
   }).sort((x, y) => y.neto - x.neto);
   const totIng = resumen.reduce((s, r) => s + r.ingreso, 0);
   const totGas = resumen.reduce((s, r) => s + r.gasto, 0);
+  const valorados = resumen.filter((r) => r.a.value);
+  const totValor = valorados.reduce((s, r) => s + r.a.value, 0);
+  const totRent = totValor ? valorados.reduce((s, r) => s + r.netoAnual, 0) / totValor : null;
 
   return (
     <div className="space-y-4 anim-rise">
@@ -5587,10 +5649,11 @@ function ActivosTab({ assets, setAssets, agg, allAgg, onDrill, periodLabel }) {
                   <th className="px-3 py-2 text-right font-medium">Ingresos</th>
                   <th className="px-3 py-2 text-right font-medium">Gastos</th>
                   <th className="px-3 py-2 text-right font-medium">Neto</th>
+                  <th className="px-3 py-2 text-right font-medium" title="Rendimiento neto anual sobre el valor del activo">Rent. neta/año</th>
                 </tr>
               </thead>
               <tbody>
-                {resumen.map(({ a, gasto, ingreso, neto }) => (
+                {resumen.map(({ a, gasto, ingreso, neto, rent }) => (
                   <tr key={a.id} className="border-b last:border-0 hover:bg-slate-50" style={{ borderColor: C.line }}>
                     <td className="px-3 py-2"><button type="button" onClick={() => setEditing(a)} className="text-left font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded" title="Ver / editar este activo"><span className="mr-1.5">{a.emoji}</span>{a.name}</button></td>
                     <td className="px-3 py-2 text-right" style={tnum}>
@@ -5604,6 +5667,11 @@ function ActivosTab({ assets, setAssets, agg, allAgg, onDrill, periodLabel }) {
                         : <span className="text-slate-300">–</span>}
                     </td>
                     <td className="px-3 py-2 text-right font-semibold" style={{ ...tnum, color: neto >= 0 ? C.income : C.expense }}>{neto >= 0 ? "+" : ""}{fmtE0(neto)}</td>
+                    <td className="px-3 py-2 text-right" style={tnum}>
+                      {rent == null
+                        ? <button type="button" onClick={() => setEditing(a)} className="text-[11px] text-slate-400 hover:underline" title="Pon su valoración para calcular la rentabilidad">sin valor</button>
+                        : <span className="font-medium" style={{ color: rent >= 0 ? C.income : C.expense }}>{fmtPct(rent)}</span>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -5613,11 +5681,12 @@ function ActivosTab({ assets, setAssets, agg, allAgg, onDrill, periodLabel }) {
                   <td className="px-3 py-2 text-right" style={{ ...tnum, color: C.income }}>{fmtE0(totIng)}</td>
                   <td className="px-3 py-2 text-right" style={{ ...tnum, color: C.expense }}>{fmtE0(totGas)}</td>
                   <td className="px-3 py-2 text-right" style={{ ...tnum, color: totIng - totGas >= 0 ? C.income : C.expense }}>{totIng - totGas >= 0 ? "+" : ""}{fmtE0(totIng - totGas)}</td>
+                  <td className="px-3 py-2 text-right" style={{ ...tnum, color: (totRent || 0) >= 0 ? C.income : C.expense }}>{totRent == null ? <span className="text-slate-300">–</span> : fmtPct(totRent)}</td>
                 </tr>
               </tfoot>
             </table>
           </div>
-          <div className="border-t px-3 py-1.5 text-[11px] text-slate-400" style={{ borderColor: C.line }}>Cifras del periodo seleccionado. Toca un importe para ver sus movimientos.</div>
+          <div className="border-t px-3 py-1.5 text-[11px] text-slate-400" style={{ borderColor: C.line }}>Importes del periodo seleccionado; la rentabilidad, anual sobre el valor del activo. Toca un importe para ver sus movimientos.</div>
         </Card>
 
         <div className="grid gap-4 sm:grid-cols-2">
@@ -7178,7 +7247,7 @@ function Grupo({ titulo, estado, ok, abierto = false, forzar = false, children }
   );
 }
 
-function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcoming, movsCount, aiOn, setAiOn, ai, setAi, aiDetail, setAiDetail, aiProfiles, onSaveAiProfile, onActivateAiProfile, onDeleteAiProfile, materialidad, setMaterialidad, onExport, onImportFile, onWipe, snapCount, snapTooBig, onListSnaps, onRestoreSnap, imports, onDeleteImport, trashed, onRestoreTrash, onPurgeTrash, onRulesAudit, onToggleRule, onRemoveRule, onUpdateRuleCat, onFindDupes, onTrashDupes, assetMem, onForgetAssetMem, onForgetAllAssetMem, onDrillIds, onAsistente, sync, bank }) {
+function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcoming, movsCount, aiOn, setAiOn, ai, setAi, aiDetail, setAiDetail, aiProfiles, onSaveAiProfile, onActivateAiProfile, onDeleteAiProfile, materialidad, setMaterialidad, onExport, onImportFile, onWipe, snapCount, snapTooBig, onListSnaps, onRestoreSnap, imports, onDeleteImport, trashed, onRestoreTrash, onPurgeTrash, onRulesAudit, onToggleRule, onRemoveRule, onUpdateRuleCat, onFindDupes, onTrashDupes, assetMem, onForgetAssetMem, onForgetAllAssetMem, onDrillIds, onAsistente, sync, bank, tabsOcultas, onToggleTab }) {
   const [confirmWipe, setConfirmWipe] = useState(false);
   const [confirmDel, setConfirmDel] = useState(null); // archivo pendiente de confirmar borrado
   const [trashOpen, setTrashOpen] = useState(false);
@@ -7559,6 +7628,19 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
         </Grupo>
 
         <Grupo titulo="Avanzado" estado="copias, reglas, limpieza y apariencia">
+        {onToggleTab && (
+          <section>
+            <h3 className="text-sm font-semibold">Pestañas</h3>
+            <p className="mt-1 text-xs text-slate-500">Oculta las que no uses. No se borra nada: vuelven a aparecer al marcarlas.</p>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1.5">
+              {ALL_TABS.filter((t) => t.id !== "resumen").map((t) => (
+                <label key={t.id} className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                  <input type="checkbox" className="accent-blue-600" checked={!tabsOcultas.includes(t.id)} onChange={() => onToggleTab(t.id)} />{t.label}
+                </label>
+              ))}
+            </div>
+          </section>
+        )}
         <section>
           <h3 className="text-sm font-semibold">Copia de seguridad</h3>
           <p className="mt-1 text-xs text-slate-500">Exporta un archivo JSON con todo (movimientos, reglas, activos, etiquetas y presupuestos) o restaura una copia anterior. Al importar se reemplaza lo actual.</p>
@@ -8060,6 +8142,14 @@ function AppMain() {
   // consciente, no el arranque. El pie de la app afirma que solo ve agregados.
   const [aiDetail, setAiDetail] = useState(false);
   const [tab, setTab] = useState("resumen");
+  // Pestañas que la persona ha ocultado en Ajustes. Resumen no se puede ocultar: es la portada.
+  const [tabsOcultas, setTabsOcultas] = useState(() => { try { return JSON.parse(localStorage.getItem("finz:tabs-ocultas") || "[]"); } catch { return []; } });
+  const toggleTab = useCallback((id) => setTabsOcultas((xs) => {
+    const n = xs.includes(id) ? xs.filter((x) => x !== id) : [...xs, id];
+    try { localStorage.setItem("finz:tabs-ocultas", JSON.stringify(n)); } catch { /* noop */ }
+    return n;
+  }), []);
+  useEffect(() => { if (tabsOcultas.includes(tab)) setTab("resumen"); }, [tabsOcultas, tab]);
   // Dos pestañas combinan dos vistas con un conmutador interno, para aligerar el nav
   // (sobre todo en móvil): "Activos" ↔ "Etiquetas" e "Ideas" ↔ "Plan".
   const [subAct, setSubAct] = useState("activos");
@@ -9714,14 +9804,7 @@ function AppMain() {
 
 
   /* ---------- Render ---------- */
-  const TABS = [
-    { id: "resumen", label: "Resumen", icon: LayoutGrid },
-    { id: "analisis", label: "Análisis", icon: TrendingUp },
-    { id: "clasificar", label: "Clasificación", short: "Clasif.", icon: ClipboardList },
-    { id: "activos", label: "Activos", icon: Car },
-    { id: "ideas", label: "Ideas", icon: Sparkles },
-    { id: "asistente", label: "Asistente", icon: Bot },
-  ];
+  const TABS = ALL_TABS.filter((t) => !tabsOcultas.includes(t.id));
 
   return (
     <div className="min-h-screen overflow-x-clip" style={{ background: C.bg, color: C.ink }}>
@@ -10004,6 +10087,7 @@ function AppMain() {
           imports={imports} onDeleteImport={deleteImport}
           onFindDupes={findBankDupes} onTrashDupes={trashBankDupes}
           onAsistente={() => setAsistenteOpen(true)}
+          tabsOcultas={tabsOcultas} onToggleTab={toggleTab}
           assetMem={assetMem} onForgetAssetMem={forgetAssetMem} onForgetAllAssetMem={forgetAllAssetMem}
           onDrillIds={(ids, label) => { setSettingsOpen(false); setDrill({ type: "ids", ids, label }); }}
           trashed={trashed} onRestoreTrash={restoreMovs} onPurgeTrash={purgeMovs}
