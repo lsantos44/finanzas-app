@@ -3049,7 +3049,7 @@ function Modal({ title, subtitle, onClose, children, wide, footer }) {
           </div>
           <button type="button" onClick={onClose} aria-label="Cerrar" className="shrink-0 rounded-lg p-2 text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><X size={18} /></button>
         </div>
-        <div className="flex-1 overflow-y-auto overscroll-contain px-5 py-4">{children}</div>
+        <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-5 py-4">{children}</div>
         <div className="shrink-0 border-t bg-white px-5 py-3" style={{ borderColor: C.line, paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))" }}>
           {footer || <Btn onClick={onClose} className="w-full justify-center sm:w-auto">Cerrar</Btn>}
         </div>
@@ -8964,13 +8964,16 @@ function AppMain() {
       // realidad, los movimientos de los últimos días. Lo ya bajado no se pierde: está en local.
       // Si la conexión lleva tiempo rota, 90 días fijos dejarían un agujero: ampliamos la ventana
       // hasta una semana antes del último movimiento que sí llegó.
-      let days = opts.recentDays || (conn.lastNewest ? 90 : 0);
+      // A mano basta con lo nuevo: desde el último movimiento recibido, con margen (14 días como
+      // mínimo, para que entren los que el banco confirma con retraso). Con 90 días CaixaBank
+      // seguía tardando más del minuto en algunas horas.
+      let days = opts.recentDays || (conn.lastNewest ? 14 : 0);
       if (days && conn.lastNewest) {
         const gap = Math.ceil((Date.now() - new Date(conn.lastNewest + "T12:00:00").getTime()) / 86400000) + 7;
         if (gap > days) days = gap;
       }
       const since = days ? `&from=${new Date(Date.now() - days * 86400000).toISOString().slice(0, 10)}` : "";
-      const res = await bankFetch(`/bank/transactions?session=${encodeURIComponent(conn.sessionId)}${acc}${since}`, 60000);
+      const res = await bankFetch(`/bank/transactions?session=${encodeURIComponent(conn.sessionId)}${acc}${since}`, 120000);
       if (!res.ok) throw Object.assign(new Error("HTTP " + res.status + (await bankErrDetail(res))), { httpStatus: res.status });
       const data = await res.json();
       const rows = Array.isArray(data.movements) ? data.movements : [];
