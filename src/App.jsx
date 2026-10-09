@@ -795,8 +795,12 @@ function applyCfg(raw, setters) {
   if (Array.isArray(c.reducible)) setters.setReducible(new Set(c.reducible));
   if (Array.isArray(c.customRules)) setters.setRules(rebuildRules(c.customRules, c.disabledRules));
   if (typeof c.aiOn === "boolean") setters.setAiOn(c.aiOn);
-  if (c.ai && typeof c.ai === "object" && typeof c.ai.provider === "string") setters.setAi?.({ ...DEFAULT_AI_CFG, ...c.ai });
-  if (Array.isArray(c.aiProfiles)) setters.setAiProfiles?.(c.aiProfiles);
+  // Las claves de IA no viajan en las copias (ni exportadas ni del servidor). Al aplicar una, se
+  // conserva la clave que ya hubiera aquí, pero solo para el MISMO servicio: mandarla a otra
+  // dirección sería entregársela a un tercero.
+  const keepKey = (inc, prev) => inc.apiKey || (prev && prev.baseUrl === inc.baseUrl && prev.provider === inc.provider ? prev.apiKey : "") || "";
+  if (c.ai && typeof c.ai === "object" && typeof c.ai.provider === "string") setters.setAi?.((prev) => ({ ...DEFAULT_AI_CFG, ...c.ai, apiKey: keepKey(c.ai, prev) }));
+  if (Array.isArray(c.aiProfiles)) setters.setAiProfiles?.((prev) => c.aiProfiles.map((p) => ({ ...p, apiKey: keepKey(p, (prev || []).find((q) => q.id === p.id)) })));
   if (typeof c.aiDetail === "boolean") setters.setAiDetail?.(c.aiDetail);
   if (c.ruleStats && typeof c.ruleStats === "object") setters.setRuleStats?.(c.ruleStats);
   if (typeof c.materialidad === "number") setters.setMaterialidad?.(c.materialidad);
@@ -851,20 +855,41 @@ async function recordarAcceso(workerUrl, token) {
 // servidor del «enlace mágico» por email: tu bandeja de entrada ya está en todos tus aparatos.
 // Va en el fragmento (#), que el navegador no envía nunca a ningún servidor.
 const ACCESS_KEY = "acceso";
-const makeAccessLink = (workerUrl, token) => {
-  const b64 = btoa(unescape(encodeURIComponent(JSON.stringify({ u: workerUrl, t: token }))))
-    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  return `${window.location.origin}/#${ACCESS_KEY}=${b64}`;
-};
-// Acepta el enlace entero o solo su fragmento. Devuelve { u, t } o null.
+//
+// Desde la v2 el token va CIFRADO con una clave que eliges tú y que no viaja en el enlace: quien
+// consiga tu correo (o el enlace) sin la clave no tiene nada. PBKDF2 con 600.000 iteraciones hace
+// que probar claves a ciegas sea lentísimo; aun así, cuanto más larga, mejor.
+const ACCESS_ITER = 600000;
+const ACCESS_MIN = 8;
+const b64u = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const unb64u = (t) => Uint8Array.from(atob(t.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((t.length + 3) % 4)), (c) => c.charCodeAt(0));
+async function claveEnlace(pass, salt) {
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: ACCESS_ITER, hash: "SHA-256" }, base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function makeAccessLink(workerUrl, token, pass) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const c = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await claveEnlace(pass, salt), new TextEncoder().encode(token));
+  const data = JSON.stringify({ v: 2, u: workerUrl, s: b64u(salt), i: b64u(iv), c: b64u(c) });
+  return `${window.location.origin}/#${ACCESS_KEY}=${b64u(new TextEncoder().encode(data))}`;
+}
+// Devuelve el token, o lanza si la clave no es la buena (AES-GCM no descifra con otra clave).
+async function abrirAcceso(cif, pass) {
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64u(cif.i) }, await claveEnlace(pass, unb64u(cif.s)), unb64u(cif.c));
+  return new TextDecoder().decode(plain);
+}
+// Acepta el enlace entero o solo su fragmento. Devuelve { u, t } (enlace antiguo, sin cifrar),
+// { u, cif } (cifrado: falta la clave) o null.
 const parseAccessLink = (text) => {
   try {
     const m = String(text || "").match(new RegExp(ACCESS_KEY + "=([A-Za-z0-9_-]+)"));
     if (!m) return null;
-    const b64 = m[1].replace(/-/g, "+").replace(/_/g, "/");
-    const j = JSON.parse(decodeURIComponent(escape(atob(b64 + "===".slice((b64.length + 3) % 4)))));
-    const u = String(j.u || "").trim().replace(/\/+$/, ""), t = String(j.t || "").trim();
-    return /^https?:\/\//.test(u) && t ? { u, t } : null;
+    const j = JSON.parse(new TextDecoder().decode(unb64u(m[1])));
+    const u = String(j.u || "").trim().replace(/\/+$/, "");
+    if (!/^https?:\/\//.test(u)) return null;
+    if (j.v === 2 && j.s && j.i && j.c) return { u, cif: { s: j.s, i: j.i, c: j.c } };
+    const t = String(j.t || "").trim();
+    return t ? { u, t } : null;
   } catch { return null; }
 };
 // Se mira al cargar el módulo, antes de que nadie limpie la barra de direcciones.
@@ -1140,47 +1165,19 @@ function decodeBuffer(buf) {
 // así que solo se descarga cuando alguien trae un Excel.
 const isSpreadsheetFile = (file) => /\.(xlsx|xlsm|xls|ods)$/i.test(file.name)
   || /spreadsheetml|opendocument\.spreadsheet/.test(file.type || "");
-async function spreadsheetToRows(buf) {
-  const XLSX = await import("xlsx");
-  // `raw`: en los «.xls» que son HTML, el texto se deja tal cual. Si no, la librería lee
-  // «3/1/2026» como 1 de marzo y «1234,5» como 12345; el lector de CSV ya sabe hacerlo bien.
-  const wb = XLSX.read(new Uint8Array(buf), { type: "array", cellDates: false, cellNF: true, raw: true });
-  // La hoja con más filas: algunos bancos ponen una portada o un resumen delante.
-  let best = null, bestN = -1;
-  for (const name of wb.SheetNames) {
-    const ws = wb.Sheets[name];
-    const ref = ws && ws["!ref"];
-    if (!ref) continue;
-    const r = XLSX.utils.decode_range(ref);
-    const n = r.e.r - r.s.r + 1;
-    if (n > bestN) { bestN = n; best = ws; }
-  }
-  if (!best) return [];
-  const range = XLSX.utils.decode_range(best["!ref"]);
-  const pad = (n) => String(n).padStart(2, "0");
-  const rows = [];
-  for (let R = range.s.r; R <= range.e.r; R++) {
-    const row = [];
-    for (let Cc = range.s.c; Cc <= range.e.c; Cc++) {
-      const cell = best[XLSX.utils.encode_cell({ r: R, c: Cc })];
-      if (!cell || cell.v == null) { row.push(""); continue; }
-      if (cell.t === "n" && cell.z && XLSX.SSF.is_date(cell.z)) {
-        // Las fechas de Excel son un número de días. Se pasan a dd/mm/aaaa: el texto formateado
-        // depende del formato del archivo y el 14 por defecto sale como m/d/aa, al revés.
-        const d = XLSX.SSF.parse_date_code(cell.v);
-        row.push(d ? `${pad(d.d)}/${pad(d.m)}/${d.y}` : String(cell.w || cell.v));
-      } else if (cell.t === "d" && cell.v instanceof Date) {
-        row.push(`${pad(cell.v.getDate())}/${pad(cell.v.getMonth() + 1)}/${cell.v.getFullYear()}`);
-      } else if (cell.t === "n") {
-        // Coma decimal: con punto, «1.234» se leería como mil doscientos treinta y cuatro.
-        row.push(String(cell.v).replace(".", ","));
-      } else {
-        row.push(String(cell.v).trim());
-      }
-    }
-    if (row.some((x) => x !== "")) rows.push(row);
-  }
-  return rows;
+function spreadsheetToRows(buf) {
+  return new Promise((resolve, reject) => {
+    const w = new Worker(new URL("./excelWorker.js", import.meta.url), { type: "module" });
+    const t = setTimeout(() => { w.terminate(); reject(new Error("el Excel tarda demasiado en leerse")); }, 30000);
+    w.onmessage = (e) => {
+      clearTimeout(t); w.terminate();
+      // Solo se aceptan filas de texto: nada que venga del hilo se usa como objeto o código.
+      const rows = e.data && e.data.ok && Array.isArray(e.data.rows) ? e.data.rows.map((r) => (Array.isArray(r) ? r.map((c) => String(c ?? "")) : [])) : null;
+      rows ? resolve(rows) : reject(new Error((e.data && e.data.error) || "no se pudo leer el Excel"));
+    };
+    w.onerror = (e) => { clearTimeout(t); w.terminate(); reject(new Error(e.message || "no se pudo leer el Excel")); };
+    w.postMessage(buf, [buf]);
+  });
 }
 function detectDelimiter(text) {
   const sample = text.slice(0, 6000);
@@ -3557,26 +3554,46 @@ const accesoGuardado = () => { try { return Number(localStorage.getItem(ACCESO_G
 const fmtCuando = (ms) => new Date(ms).toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 function CompartirAcceso({ workerUrl, token, compacto }) {
   const [msg, setMsg] = useState(null);
+  const [pass, setPass] = useState("");
+  const [link, setLink] = useState("");
+  const [preparando, setPreparando] = useState(false);
+  // El enlace se prepara al escribir la clave (cuesta medio segundo): así los botones funcionan
+  // al momento y el móvil no bloquea copiar o compartir por haber esperado.
+  useEffect(() => {
+    setLink("");
+    if (!workerUrl || !token || pass.length < ACCESS_MIN) return;
+    let vivo = true;
+    setPreparando(true);
+    const t = setTimeout(() => makeAccessLink(workerUrl, token, pass).then((l) => { if (vivo) setLink(l); }).finally(() => { if (vivo) setPreparando(false); }), 400);
+    return () => { vivo = false; clearTimeout(t); };
+  }, [workerUrl, token, pass]);
   if (!workerUrl || !token) return null;
-  const link = makeAccessLink(workerUrl, token);
   const asunto = "Mi acceso a Mis Finanzas";
-  const cuerpo = `Abre este enlace en cualquier móvil u ordenador para entrar con tus datos:\n\n${link}\n\nEs como tu contraseña: no lo reenvíes a nadie.`;
+  const cuerpo = `Abre este enlace en cualquier móvil u ordenador para entrar con tus datos. Te pedirá la clave que elegiste (no va en este correo):\n\n${link}`;
   const copiar = async () => { try { await navigator.clipboard.writeText(link); marcarAccesoGuardado(); setMsg("Enlace copiado. Guárdalo en tus notas o mándatelo."); } catch { setMsg("No se pudo copiar."); } };
   const compartir = async () => { try { await navigator.share({ title: asunto, text: cuerpo }); marcarAccesoGuardado(); } catch { /* cancelado */ } };
   const gestor = async () => { const ok = await recordarAcceso(workerUrl, token); if (ok) marcarAccesoGuardado();
     setMsg(ok ? "Guardado en tu gestor de contraseñas (si te lo ha preguntado)." : "Este navegador no deja guardarlo desde aquí."); };
+  const listo = !!link && !preparando;
+  const off = "pointer-events-none opacity-40";
   return (
-    <div>
+    <div className="space-y-2">
+      <label className="block text-xs font-medium text-slate-600">Clave del enlace <span className="font-normal text-slate-400">(mínimo {ACCESS_MIN} caracteres; te la pedirá al abrirlo)</span>
+        <input type="password" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="new-password" autoCapitalize="off" autoCorrect="off" spellCheck={false}
+          placeholder="Una frase que recuerdes" className="mt-1 w-full rounded-lg border px-2.5 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ borderColor: C.line }} />
+      </label>
+      <p className="text-[11px] leading-relaxed text-slate-400">La clave no va en el enlace ni en el correo: así, aunque alguien entre en tu email, no puede usar el enlace. Una frase de varias palabras es más segura y más fácil de recordar.</p>
       <div className="flex flex-wrap gap-2">
-        <a href={`mailto:?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`} onClick={marcarAccesoGuardado}
-          className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ background: C.accent }}>
+        <a href={listo ? `mailto:?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}` : undefined} onClick={listo ? marcarAccesoGuardado : undefined} aria-disabled={!listo}
+          className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${listo ? "" : off}`} style={{ background: C.accent }}>
           Enviármelo por email
         </a>
-        {typeof navigator !== "undefined" && navigator.share && <Btn size="sm" onClick={compartir}>Compartir…</Btn>}
-        <Btn size="sm" onClick={copiar}>Copiar enlace</Btn>
+        {typeof navigator !== "undefined" && navigator.share && <Btn size="sm" onClick={compartir} disabled={!listo}>Compartir…</Btn>}
+        <Btn size="sm" onClick={copiar} disabled={!listo}>Copiar enlace</Btn>
         {!compacto && typeof window !== "undefined" && window.PasswordCredential && <Btn size="sm" onClick={gestor}>Gestor de contraseñas</Btn>}
       </div>
-      {msg && <p className="mt-1.5 text-xs text-slate-500">{msg}</p>}
+      {preparando && <p className="text-xs text-slate-400">Cifrando el enlace…</p>}
+      {msg && <p className="text-xs text-slate-500">{msg}</p>}
     </div>
   );
 }
@@ -3587,6 +3604,8 @@ function CompartirAcceso({ workerUrl, token, compacto }) {
 function EntrarModal({ inicial, auto, onEntrar, onClose }) {
   const [url, setUrl] = useState(inicial?.u || "");
   const [tok, setTok] = useState(inicial?.t || "");
+  const [cif, setCif] = useState(inicial?.cif || null); // enlace cifrado: falta la clave
+  const [pass, setPass] = useState("");
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState(null);
   const [hecho, setHecho] = useState(null); // { u, t } con el que se entró
@@ -3595,6 +3614,13 @@ function EntrarModal({ inicial, auto, onEntrar, onClose }) {
     leerAccesoGuardado().then((c) => { if (c) { setUrl((v) => v || c.u); setTok((v) => v || c.t); } });
   }, [inicial]);
   const ir = async (u0, t0) => {
+    if (cif) {
+      if (!pass) { setRes({ ok: false, text: "Escribe la clave que elegiste al crear el enlace." }); return; }
+      setBusy(true); setRes(null);
+      try { t0 = await abrirAcceso(cif, pass); }
+      catch { setBusy(false); setRes({ ok: false, text: "Esa no es la clave del enlace." }); return; }
+      setBusy(false);
+    }
     const u = u0.trim().replace(/\/+$/, ""), t = t0.trim();
     if (!/^https?:\/\//.test(u)) { setRes({ ok: false, text: "Pega tu enlace de acceso, o la dirección de tu backend (empieza por https://)." }); return; }
     if (!t) { setRes({ ok: false, text: "Falta el token." }); return; }
@@ -3603,9 +3629,13 @@ function EntrarModal({ inicial, auto, onEntrar, onClose }) {
   };
   // Al llegar desde el gestor de contraseñas ya has elegido cuenta: no se pide otro toque.
   const autoRef = useRef(false);
-  useEffect(() => { if (auto && inicial && !autoRef.current) { autoRef.current = true; ir(inicial.u, inicial.t); } }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (auto && inicial && !inicial.cif && !autoRef.current) { autoRef.current = true; ir(inicial.u, inicial.t); } }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // Pegar el enlace en el primer campo vale igual que abrirlo.
-  const onUrl = (v) => { const p = parseAccessLink(v); if (p) { setUrl(p.u); setTok(p.t); } else setUrl(v); };
+  const onUrl = (v) => {
+    const p = parseAccessLink(v);
+    if (!p) { setUrl(v); setCif(null); return; }
+    setUrl(p.u); setCif(p.cif || null); setTok(p.t || "");
+  };
   const host = (() => { try { return new URL(url).host; } catch { return url; } })();
   const campo = "mt-1 w-full rounded-lg border px-2.5 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500";
   return (
@@ -3636,12 +3666,18 @@ function EntrarModal({ inicial, auto, onEntrar, onClose }) {
           )}
           {/* Con el enlace los campos sobran, salvo si falla (token cambiado, dirección vieja):
               entonces hay que poder corregirlos, o el modal se queda en un callejón sin salida. */}
+          {cif && (
+            <label className="block text-xs font-medium text-slate-600">Clave del enlace
+              <input type="password" value={pass} onChange={(e) => setPass(e.target.value)} autoFocus autoCapitalize="off" autoCorrect="off" spellCheck={false}
+                placeholder="La que elegiste al crearlo" className={campo} style={{ borderColor: C.line }} />
+            </label>
+          )}
           <div className={inicial && !res ? "hidden" : "space-y-3"}>
             <label className="block text-xs font-medium text-slate-600">Enlace de acceso o dirección de tu backend
               <input name="username" autoComplete="username" inputMode="url" value={url} onChange={(e) => onUrl(e.target.value)}
                 placeholder="Pega aquí tu enlace" autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
             </label>
-            <label className="block text-xs font-medium text-slate-600">Token
+            <label className={`block text-xs font-medium text-slate-600 ${cif ? "hidden" : ""}`}>Token
               <input name="password" type="password" autoComplete="current-password" value={tok} onChange={(e) => setTok(e.target.value)}
                 placeholder="Se rellena solo si pegas el enlace" autoCapitalize="off" autoCorrect="off" spellCheck={false} className={campo} style={{ borderColor: C.line }} />
             </label>
@@ -3699,10 +3735,10 @@ function AccesoOtroNavegador({ workerUrl, token }) {
       {guardado
         ? <p className="mt-1 rounded-lg px-2 py-1.5 text-[11px] font-medium" style={{ background: "#dcfce7", color: "#15803d" }}>✓ Copiado o enviado el {fmtCuando(guardado)}. Para usarlo en otro navegador, pégalo allí en «Entrar».</p>
         : <p className="mt-1 rounded-lg px-2 py-1.5 text-[11px] font-medium" style={{ background: C.warnSoft, color: C.warn }}>Aún no te lo has guardado. Hazlo ahora: si pierdes este dispositivo, es lo que te deja volver a entrar.</p>}
-      <p className="mt-1 text-xs text-slate-500">Mándate tu enlace de acceso una vez. Desde cualquier móvil, ordenador o navegador, abrirlo es entrar: llegan tus datos y tus bancos, sin teclear nada.</p>
+      <p className="mt-1 text-xs text-slate-500">Mándate tu enlace de acceso una vez. Desde cualquier móvil, ordenador o navegador, abrirlo y escribir tu clave es entrar: llegan tus datos y tus bancos.</p>
       <div className="mt-2"><CompartirAcceso workerUrl={workerUrl} token={token} /></div>
       <p className="mt-2 rounded-lg px-2 py-1.5 text-[11px] leading-relaxed" style={{ background: C.warnSoft, color: C.warn }}>
-        El enlace funciona como tu contraseña: guárdalo solo en sitios tuyos. Si se filtra, cambia el token del Worker y el enlace viejo deja de valer.
+        El enlace va cifrado con tu clave: sin ella no sirve. Si te mandaste uno antes de este cambio, ese no lleva clave: cambia el token del Worker para invalidarlo y mándate uno nuevo.
       </p>
     </section>
   );
@@ -8500,9 +8536,11 @@ function AppMain() {
   // y puedas volver atrás sin convertir nada.
   const syncPayload = useCallback(() => ({
     app: "finanzas-personales", version: 3, updatedAt: Date.now(),
-    cfg: JSON.parse(serializeCfg({ rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem })),
+    // Ni las claves de IA ni el token del backend van a la copia del servidor: quien consiga esa
+    // copia (o el token) no debe llevarse además las llaves para usarlas en otro sitio.
+    cfg: JSON.parse(serializeCfg({ rules, assets, groups, budgets, reducible, aiOn, ai: { ...ai, apiKey: "" }, aiProfiles: (aiProfiles || []).map((p) => ({ ...p, apiKey: "" })), aiDetail, ruleStats, materialidad, assetMem })),
     movs: JSON.parse(serializeMovs(movs)),
-    bank: loadBank(),
+    bank: { ...loadBank(), token: "" },
   }), [rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem, movs]);
 
   const syncPush = useCallback(async ({ silent, force } = {}) => {
@@ -8666,7 +8704,7 @@ function AppMain() {
     if (!p) return;
     try { window.history.replaceState({}, "", window.location.pathname + window.location.search); } catch { /* noop */ }
     const b = loadBank();
-    if (b.workerUrl === p.u && b.token === p.t && loadSync().version) return;
+    if (!p.cif && b.workerUrl === p.u && b.token === p.t && loadSync().version) return;
     setEntrarOpen({ inicial: p });
   }, [booted]);
   // En un navegador vacío, si el gestor de contraseñas ya guarda tu acceso, se ofrece entrar con
