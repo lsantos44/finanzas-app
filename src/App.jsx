@@ -936,6 +936,9 @@ function parseEsNumber(raw) {
   if (raw == null) return null;
   let s = String(raw).trim()
     .replace(/\u00A0/g, " ")
+    // El signo menos tipográfico (−) y los guiones largos que meten Excel y algunos bancos
+    // no son el «-» del teclado: sin esto, el gasto no se leía y la fila desaparecía.
+    .replace(/[\u2212\u2012\u2013\u2014\uFE63\uFF0D]/g, "-")
     .replace(/[€$£]/g, "")
     .replace(/[A-Za-z]/g, "")
     .replace(/\s/g, "");
@@ -1210,6 +1213,8 @@ function tokenizeCSV(text, delim) {
 
 const HEADER_WORDS = ["fecha", "concepto", "descripcion", "importe", "cargo", "abono", "debe", "haber", "saldo", "movimiento", "cantidad", "detalle", "valor"];
 
+const SIGNO_RE = /^(d|h|debe|haber|cargo|abono|\+|-)$/i;
+const SIGNO_NEG = /^(d|debe|cargo|-)$/i;
 function analyzeRows(rows) {
   let headerIdx = -1;
   for (let i = 0; i < Math.min(rows.length, 40); i++) {
@@ -1255,14 +1260,17 @@ function analyzeRows(rows) {
     stats.push({ dates, nums, filled, textLen, signChanges, avgAbs: nums ? sumAbs / nums : 0 });
   }
   const n = sample.length || 1;
-  const cols = { date: -1, date2: -1, concept: -1, amount: -1, cargo: -1, abono: -1, saldo: -1 };
+  const cols = { date: -1, date2: -1, concept: -1, amount: -1, cargo: -1, abono: -1, saldo: -1, signo: -1 };
   if (headers) {
     headers.forEach((h, i) => {
       if (/fecha/.test(h)) { if (/valor/.test(h)) cols.date2 = i; else if (cols.date < 0) cols.date = i; }
       else if (/concepto|descripcion|movimiento|detalle|observ/.test(h)) { if (cols.concept < 0) cols.concept = i; }
       else if (/saldo/.test(h)) cols.saldo = i;
-      else if (/cargo|debe|debito|pagos/.test(h)) cols.cargo = i;
-      else if (/abono|haber|credito|ingreso/.test(h)) cols.abono = i;
+      else if (/^(d\/h|debe\/haber|cargo\/abono|signo|\+\/-)$/.test(h.trim())) cols.signo = i;
+      // «Gasto (-)» / «Ingreso (+)» (así exportan algunos bancos): sin «gasto» aquí, la
+      // columna de gastos no se reconocía y solo entraban los ingresos.
+      else if (/cargo|debe|debito|pagos|gasto|retirad|reintegro|salida/.test(h)) cols.cargo = i;
+      else if (/abono|haber|credito|ingreso|deposito|entrada/.test(h)) cols.abono = i;
       else if (/importe|cantidad|monto/.test(h)) cols.amount = i;
     });
     if (cols.date < 0 && cols.date2 >= 0) { cols.date = cols.date2; cols.date2 = -1; }
@@ -1291,10 +1299,20 @@ function analyzeRows(rows) {
       }
     }
   }
+  // Importe siempre en positivo y el signo en otra columna (D/H, Debe/Haber, +/-): sin
+  // detectarla, todos los movimientos entraban como ingresos.
+  if (cols.signo < 0) {
+    for (let c = 0; c < nCols; c++) {
+      if ([cols.date, cols.date2, cols.amount, cols.cargo, cols.abono, cols.saldo].includes(c)) continue;
+      const vals = sample.map((r) => String(r[c] ?? "").trim()).filter(Boolean);
+      // Con los dos signos presentes: una columna de «-» de relleno no es una columna de signo.
+      if (vals.length >= n * 0.8 && vals.every((v) => SIGNO_RE.test(v)) && new Set(vals.map((v) => SIGNO_NEG.test(v))).size === 2) { cols.signo = c; break; }
+    }
+  }
   if (cols.concept < 0) {
     let best = -1, bestLen = -1;
     stats.forEach((s, i) => {
-      if (i === cols.date || i === cols.date2 || i === cols.amount || i === cols.cargo || i === cols.abono || i === cols.saldo) return;
+      if (i === cols.date || i === cols.date2 || i === cols.amount || i === cols.cargo || i === cols.abono || i === cols.saldo || i === cols.signo) return;
       if (s.textLen > bestLen) { best = i; bestLen = s.textLen; }
     });
     cols.concept = best;
@@ -1329,6 +1347,10 @@ function buildMovements(rows, dataStart, cols, fileName) {
       }
     }
     if (amount === null) { skipped++; continue; }
+    if (cols.signo >= 0) {
+      const sg = String(r[cols.signo] ?? "").trim();
+      if (SIGNO_RE.test(sg)) amount = SIGNO_NEG.test(sg) ? -Math.abs(amount) : Math.abs(amount);
+    }
     const concept = String(r[cols.concept] || "").replace(/\s+/g, " ").trim() || "Sin concepto";
     const saldo = cols.saldo >= 0 ? parseEsNumber(r[cols.saldo]) : null;
     saldoSeq.push({ saldo, amount });
@@ -4245,7 +4267,7 @@ function MappingModal({ imp, onConfirm, onCancel }) {
       </div>
       <div className="mt-4 flex justify-end gap-2">
         <Btn onClick={onCancel}>Cancelar</Btn>
-        <Btn kind="primary" disabled={!ok} onClick={() => onConfirm({ dataStart: headerRow + 1, cols: { date, date2: -1, concept, amount: mode === "single" ? amount : -1, cargo: mode === "dual" ? cargo : -1, abono: mode === "dual" ? abono : -1, saldo, skipEmptyCol, keepCol, keepVal } })}>Continuar</Btn>
+        <Btn kind="primary" disabled={!ok} onClick={() => onConfirm({ dataStart: headerRow + 1, cols: { date, date2: -1, concept, amount: mode === "single" ? amount : -1, cargo: mode === "dual" ? cargo : -1, abono: mode === "dual" ? abono : -1, saldo, skipEmptyCol, keepCol, keepVal, signo: init.signo ?? -1 } })}>Continuar</Btn>
       </div>
     </Modal>
   );
