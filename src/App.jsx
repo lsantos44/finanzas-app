@@ -3477,6 +3477,7 @@ function DropZone({ onFiles, compact }) {
 // Guía de instalación del backend. Vive en el repositorio porque es donde está el botón de
 // despliegue; desde la app solo se enlaza.
 const GUIA_URL = "https://github.com/lsantos44/MisFinanzas";
+const DEPLOY_URL = "https://deploy.workers.cloudflare.com/?url=https://github.com/lsantos44/MisFinanzas";
 
 // Primeros pasos. Enseña la progresión real de la app: lo que funciona sin montar nada y lo
 // que exige backend, con su coste declarado. Un usuario nuevo tiene que poder ver de un
@@ -3626,7 +3627,7 @@ function EntrarModal({ inicial, auto, onEntrar, onClose }) {
               <summary className="cursor-pointer font-medium text-slate-600">No tengo el enlace</summary>
               <div className="mt-1.5 space-y-1.5">
                 <p><strong>Si tienes a mano el otro dispositivo:</strong> allí, Ajustes → Tus datos y sincronización → «Tu acceso en otros dispositivos» → «Enviármelo por email».</p>
-                <p><strong>Si no:</strong> recupéralo en Cloudflare, que es donde vive tu backend. Entra en dash.cloudflare.com → Workers. La <strong>dirección</strong> es la que acaba en <code>.workers.dev</code>. El <strong>token</strong> no se puede leer (es un secreto), así que pon uno nuevo: tu Worker → Settings → Variables and Secrets → <code>PROXY_TOKEN</code> → Edit, pega uno que te inventes y Deploy. Escríbelo aquí y, al entrar, mándate el enlace nuevo. Tus otros dispositivos te lo pedirán también, porque el antiguo deja de valer.</p>
+                <p><strong>Si no:</strong> recupéralo en Cloudflare, que es donde vive tu backend. Entra en dash.cloudflare.com → Workers. La <strong>dirección</strong> es la que acaba en <code>.workers.dev</code>. El <strong>token</strong> no se puede leer (es un secreto). Puedes poner uno nuevo (tu Worker → Settings → Variables and Secrets → <code>PROXY_TOKEN</code> → Edit → Deploy), pero ojo: <strong>tu copia del servidor va ligada al token</strong>, así que con uno nuevo el servidor empieza vacío. Tus datos vuelven si te queda algún navegador con la app: entra en él con el token nuevo y se guardan solos. Si no te queda ninguno, la copia antigua solo se recupera con el token antiguo. Por eso conviene tener el enlace en el correo.</p>
               </div>
             </details>
           </div>
@@ -3693,7 +3694,7 @@ function AccesoOtroNavegador({ workerUrl, token }) {
 // Cubre el proceso entero, backend y banco. El tramo bancario es el que más cuesta: el error
 // típico (elegir mal el tipo de titular) no se manifiesta al configurar sino DESPUÉS de firmar
 // en el banco, con un mensaje que no dice nada. Por eso aquí se valida antes de mandarte allí.
-function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onConectarBanco }) {
+function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onActivarSync, onConectarBanco }) {
   const [paso, setPaso] = useState(0);
   const [url, setUrl] = useState(workerUrl || "");
   const [tok, setTok] = useState(token || "");
@@ -3742,6 +3743,14 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onConectarBan
           detalle: "En Cloudflare: tu Worker → Settings → Bindings → añadir D1 con el nombre DB. Ojo: el botón de guardar queda fuera de la vista, baja dentro de la ventanita." });
         return false;
       }
+      // Sin ALLOW_ORIGIN la sincronización funciona, pero al volver del banco el Worker no sabe a
+      // qué página devolverte y la conexión se queda a medias. Pasa con la instalación a mano.
+      const origenes = String(d.allowOrigin || "").split(",").map((x) => x.trim().replace(/\/+$/, ""));
+      if (!origenes.includes(window.location.origin)) {
+        setRes({ ok: false, texto: "Responde, pero no sabe cuál es la dirección de la app.",
+          detalle: `En Cloudflare: tu Worker → Settings → Variables and Secrets → Add. Tipo Text, nombre ALLOW_ORIGIN, valor ${window.location.origin}. Guarda y pulsa Deploy. Ahora tiene: ${d.allowOrigin || "nada"}.` });
+        return false;
+      }
       setRes({ ok: true,
         texto: conToken ? "Todo correcto: responde, la contraseña coincide y la base de datos funciona." : "Tu backend responde y la base de datos funciona.",
         detalle: !conToken && !d.tieneToken ? "Aún no tiene contraseña: la pondremos en el paso siguiente." : null });
@@ -3766,6 +3775,13 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onConectarBan
         return false;
       }
       const d = JSON.parse(txt);
+      // Una aplicación de producción nace inactiva y no deja conectar ningún banco hasta que se
+      // vinculan cuentas en el panel. Es el paso que nadie sabe que existe.
+      if (d.active === false) {
+        setRes({ ok: false, texto: "Tus credenciales funcionan, pero la aplicación está inactiva.",
+          detalle: "En el panel de Enable Banking, entra en tu aplicación y pulsa «Activate by linking accounts». Elige tu banco, identifícate como en su app y autoriza todas las cuentas que quieras ver. Después vuelve a comprobar." });
+        return false;
+      }
       const registrada = (d.redirect_urls || []).some((x) => String(x).replace(/\/+$/, "") === callback);
       if (!registrada) {
         setRes({ ok: false, texto: "Tus credenciales funcionan, pero falta la dirección de retorno.",
@@ -3844,7 +3860,7 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onConectarBan
   };
 
   const avanzar = () => {
-    if (paso === 2) onGuardar(limpia(url), tok.trim());
+    if (paso === 2) { onGuardar(limpia(url), tok.trim()); onActivarSync?.(); }
     if (paso === 3 && quiereBanco === false) { setPaso(99); return; }
     if (paso === 5) { onConectarBanco?.(banco, pais, psu); return; } // navega al banco
     setRes(null); setPaso(paso + 1);
@@ -3880,11 +3896,17 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onConectarBan
 
         {paso === 1 && (
           <Paso n={2} titulo="Instala tu backend">
-            <p>Pulsa el enlace: se abre Cloudflare, te pide permiso y lo instala solo, con su base de datos incluida.</p>
-            <a href={GUIA_URL} target="_blank" rel="noopener noreferrer"
+            <p>Tu backend es un pequeño programa que vive gratis en tu cuenta de Cloudflare. Se instala con un botón:</p>
+            <ol className="list-decimal space-y-1 pl-5 text-[13px]">
+              <li>Si no tienes cuenta de <strong>GitHub</strong>, créala primero en <a href="https://github.com/signup" target="_blank" rel="noopener noreferrer" className="font-semibold hover:underline" style={{ color: C.accent }}>github.com/signup</a> (gratis, 2 minutos). El botón la usa para guardar tu copia del programa.</li>
+              <li>Pulsa el botón de abajo. Te pedirá entrar en Cloudflare y autorizar GitHub; si pregunta a qué repositorios dar acceso, basta con el nuevo.</li>
+              <li>En la pantalla de confirmación pulsa <strong>Deploy</strong> y espera uno o dos minutos.</li>
+            </ol>
+            <a href={DEPLOY_URL} target="_blank" rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold text-white" style={{ background: C.accent }}>
-              Abrir la guía con el botón <ChevronRight size={14} />
+              Instalar en Cloudflare <ChevronRight size={14} />
             </a>
+            <p className="text-[12px] text-slate-500">¿Prefieres no crear cuenta de GitHub? Hay un camino copiando y pegando: <a href={GUIA_URL + "#camino-b--sin-cuenta-de-github"} target="_blank" rel="noopener noreferrer" className="font-semibold hover:underline" style={{ color: C.accent }}>guía sin GitHub</a>.</p>
             <p className="text-[12px] text-slate-500">Cuando termine, Cloudflare te dará una dirección parecida a <code className="rounded bg-slate-100 px-1">https://finanzas.algo.workers.dev</code>. Pégala aquí:</p>
             <input value={url} onChange={(e) => { setUrl(e.target.value); setRes(null); }} placeholder="https://…workers.dev"
               autoCapitalize="off" autoCorrect="off" spellCheck={false}
@@ -3947,21 +3969,27 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onConectarBan
 
         {paso === 4 && (
           <Paso n={5} titulo="Tu aplicación de Enable Banking">
-            <p>Entra en <a href="https://enablebanking.com" target="_blank" rel="noopener noreferrer" className="font-semibold hover:underline" style={{ color: C.accent }}>enablebanking.com</a>, regístrate y crea una aplicación con entorno <strong>producción</strong> y servicio <strong>AIS</strong>.</p>
-            <div className="rounded-xl border p-3" style={{ borderColor: C.line, background: C.surfaceAlt }}>
-              <p className="text-[12px] font-medium text-slate-700">Dirección de retorno</p>
-              <p className="mt-0.5 text-[12px]">Al crear la aplicación te pedirá una <em>redirect URL</em>. Tiene que ser <strong>exactamente</strong> ésta:</p>
-              <Campo valor={callback} />
-            </div>
-            <div className="rounded-xl border p-3" style={{ borderColor: C.line, background: C.surfaceAlt }}>
-              <p className="text-[12px] font-medium text-slate-700">Y dos secretos más en Cloudflare</p>
-              <p className="mt-0.5 text-[12px]">Mismo sitio que la contraseña, tipo <strong>Secret</strong>:</p>
-              <ul className="mt-1 space-y-0.5 text-[12px]">
-                <li><code className="rounded bg-slate-100 px-1">EB_APP_ID</code> — el Application ID que te da Enable Banking.</li>
-                <li><code className="rounded bg-slate-100 px-1">EB_PRIVATE_KEY</code> — el contenido entero del archivo <code className="rounded bg-slate-100 px-1">.pem</code> que descargas, incluidas las líneas BEGIN y END.</li>
-              </ul>
-              <p className="mt-1 text-[12px] font-medium" style={{ color: C.warn }}>El .pem solo se descarga una vez. Guárdalo bien.</p>
-            </div>
+            <p>Enable Banking es la empresa autorizada en Europa que lee tus cuentas (solo lectura: nunca puede mover dinero). Necesitas crear allí tu propia «aplicación». Está en inglés; estos son los pasos:</p>
+            <ol className="list-decimal space-y-2 pl-5 text-[13px]">
+              <li>Entra en <a href="https://enablebanking.com/cp/" target="_blank" rel="noopener noreferrer" className="font-semibold hover:underline" style={{ color: C.accent }}>el panel de Enable Banking</a> y regístrate con tu correo. Te llegará un enlace para entrar.</li>
+              <li>Ve a <strong>Applications</strong> y registra una nueva. Rellena:
+                <ul className="mt-1 list-disc space-y-1 pl-4 text-[12px]">
+                  <li><strong>Environment</strong>: <strong>Production</strong> (no Sandbox, que es de pruebas con bancos falsos).</li>
+                  <li><strong>Name</strong>: lo que quieras, por ejemplo «Mis Finanzas».</li>
+                  <li><strong>Redirect URL</strong>: exactamente esta, sin cambiar nada:
+                    <Campo valor={callback} /></li>
+                  <li>Si pide web de privacidad, de condiciones o un correo, pon <code className="rounded bg-slate-100 px-1">{window.location.origin}</code> y tu correo.</li>
+                  <li>Para la clave, elige generarla en el navegador. Se descarga un archivo <code className="rounded bg-slate-100 px-1">.pem</code>: <strong>guárdalo</strong>, solo se descarga una vez. Su nombre es el <strong>Application ID</strong>.</li>
+                </ul>
+              </li>
+              <li><strong>Actívala</strong>, que es el paso que todo el mundo se salta: la aplicación nace <em>inactiva</em>. Pulsa <strong>Activate by linking accounts</strong>, elige tu banco, identifícate como en su app y autoriza <strong>todas</strong> las cuentas que quieras ver luego aquí. Solo esas podrá leer.</li>
+              <li>En Cloudflare, en el mismo sitio que la contraseña, añade dos <strong>Secret</strong> y pulsa <strong>Deploy</strong>:
+                <ul className="mt-1 list-disc space-y-1 pl-4 text-[12px]">
+                  <li><code className="rounded bg-slate-100 px-1">EB_APP_ID</code>: el Application ID (el nombre del archivo, sin <code className="rounded bg-slate-100 px-1">.pem</code>).</li>
+                  <li><code className="rounded bg-slate-100 px-1">EB_PRIVATE_KEY</code>: el contenido entero del archivo, incluidas las líneas BEGIN y END. Ábrelo en el ordenador con el Bloc de notas (Windows) o TextEdit (Mac), selecciona todo y cópialo.</li>
+                </ul>
+              </li>
+            </ol>
             <Btn onClick={probarBanco} disabled={probando}>{probando ? "Comprobando…" : "Comprobar mis credenciales"}</Btn>
             <Resultado />
           </Paso>
@@ -8575,6 +8603,17 @@ function AppMain() {
   // sincronización automática encendida. Es lo que antes había que hacer en cuatro sitios
   // distintos, y lo que se olvidaba (la casilla de «automático» es de cada navegador y no
   // viaja con los datos). Al acabar, ofrece guardar el acceso en el gestor de contraseñas.
+  // Al terminar de montar el backend en el asistente: sincronización automática encendida y
+  // primera copia en el servidor. Sin esto el asistente acababa «bien» pero nada se guardaba
+  // fuera, y el disparador del servidor no tenía ningún banco que revisar.
+  const activarSync = useCallback(async () => {
+    syncBootRef.current = true;
+    syncSuppressRef.current = Date.now() + 6000;
+    persistSync({ auto: true });
+    const r = await syncPull({ silent: true, confirmReplace: true });
+    if (r?.empty) await syncPush({ silent: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncPull, syncPush, persistSync]);
   const [entrarOpen, setEntrarOpen] = useState(null); // null | { inicial?: {u,t}, auto?: bool }
   const entrar = useCallback(async (u, t) => {
     const prev = loadBank();
@@ -8699,6 +8738,28 @@ function AppMain() {
       });
       p.delete("bank_session");
       window.history.replaceState({}, "", window.location.pathname + (p.toString() ? "?" + p.toString() : ""));
+      // Lo que antes había que saber hacer a mano al volver: elegir la cuenta y sincronizar. Si
+      // la sesión trae una sola cuenta (o es una renovación que se reencuentra por IBAN), se
+      // hace solo; con varias, se cargan para que solo haya que elegir. Y la sincronización al
+      // abrir queda encendida, que si no nadie la activa.
+      setTimeout(async () => {
+        const conn = (loadBank().connections || []).find((c) => c.sessionId === sid);
+        if (!conn) return;
+        persistBank((b) => ({ ...b, auto: true }));
+        if (conn.accountIban) { bankSyncOne(conn.id); return; }
+        try {
+          const r = await bankFetch(`/bank/accounts?session=${encodeURIComponent(sid)}`, 30000);
+          const list = r.ok ? ((await r.json()).accounts || []) : [];
+          setBankAccountsByConn((m) => ({ ...m, [conn.id]: list }));
+          if (list.length === 1) {
+            bankPickAccount(conn.id, list[0].uid, list[0].name || list[0].iban, list[0].iban);
+            setBankMsg({ kind: "ok", text: "Banco conectado. Bajando tus movimientos…" });
+            setTimeout(() => bankSyncOne(conn.id), 300);
+          } else if (list.length > 1) {
+            setBankMsg({ kind: "info", text: `Banco conectado. Tienes ${list.length} cuentas: elige en el desplegable cuál seguir y pulsa Sincronizar.` });
+          }
+        } catch { /* se queda el mensaje de siempre: Ver cuentas y Sincronizar a mano */ }
+      }, 400);
       if (!plan.aspsp) setBankMsg({ kind: "err", text: "Has vuelto del banco, pero este navegador no sabe de qué banco era (¿empezaste en otro navegador?). La conexión funciona para sincronizar; si algún día hay que renovarla, quítala y añade tu banco de nuevo." });
       else setBankMsg({ kind: "ok", text: renew ? "Permiso renovado. La cuenta hay que volver a elegirla (al renovar cambian los identificadores): pulsa «Ver cuentas» y luego Sincronizar." : "Banco conectado. Elige la cuenta y sincroniza." });
       setSettingsOpen(true);
@@ -10104,7 +10165,9 @@ function AppMain() {
       {asistenteOpen && (
         <AsistenteConexion
           workerUrl={bankCfg.workerUrl || ""} token={bankCfg.token || ""}
-          onGuardar={(u, t) => persistBank({ workerUrl: u, token: t })}
+          // A disco al momento (no vía persistBank): activarSync lee la URL y el token de ahí.
+          onGuardar={(u, t) => { saveBank({ ...loadBank(), workerUrl: u, token: t }); setBankCfg(loadBank()); }}
+          onActivarSync={activarSync}
           onConectarBanco={(aspsp, pais, psu) => { setAsistenteOpen(false); bankStartAuth(aspsp, pais, null, psu); }}
           onClose={() => setAsistenteOpen(false)} />
       )}
