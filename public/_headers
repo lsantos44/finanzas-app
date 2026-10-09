@@ -1,0 +1,15 @@
+# Cabeceras de seguridad de misfinanzas.cc (Cloudflare Workers las aplica a los archivos estáticos).
+# - script-src 'self': solo se ejecuta el código de la propia app. Un texto inyectado (un concepto
+#   bancario, un CSV manipulado) no puede convertirse en código que lea tu token o tus datos.
+# - connect-src https:: la app habla con TU backend y con el proveedor de IA que elijas, y ambos
+#   son direcciones de cada persona; por eso no se puede cerrar más.
+# - frame-ancestors 'none': nadie puede meter la app dentro de otra página para engañarte.
+# - Referrer-Policy no-referrer: ninguna dirección de la app (con ?bank_session o similares) se
+#   filtra a otras webs al pulsar un enlace.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Cross-Origin-Opener-Policy: same-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
