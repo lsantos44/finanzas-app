@@ -14,3 +14,14 @@
     height: 100%;
   }
 }
+
+/* En el iPhone, tocar un campo con letra de menos de 16 px hace zoom en toda la página, y al
+   salir la vista queda ampliada y bailando de lado a lado (pasaba en Ajustes, con los campos
+   de URL y token). A 16 px no hay zoom. Solo en pantallas estrechas, para no tocar escritorio. */
+@media (max-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
