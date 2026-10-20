@@ -7577,7 +7577,8 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
                         : !c.at ? "El servidor aún no ha hecho ninguna revisión automática. La primera llegará en menos de 3 horas."
                         : <>Servidor: última revisión el {fmtCuando(c.at)}{c.origen === "manual" ? " (forzada)" : ""} · {nfNum.format(c.nuevos || 0)} {c.nuevos === 1 ? "movimiento nuevo" : "movimientos nuevos"}.
                           {viejo && " Lleva más de 7 horas sin revisar: comprueba en Cloudflare que el disparador programado sigue activo."}
-                          {(c.errores || []).length > 0 && <span className="block">Errores: {c.errores.join(" · ")}</span>}</>}
+                          {(c.omitidas || []).length > 0 && <span className="block">No consultó: {c.omitidas.join(" · ")}.</span>}
+                          {(c.errores || []).length > 0 && <span className="block">Errores: {c.errores.map((x) => (/HTTP 429|HUB046/.test(x) ? x.split(":")[0] + ": límite diario de consultas del banco agotado (se reanuda mañana)" : x)).join(" · ")}</span>}</>}
                     </p>
                   );
                 })()}
@@ -9051,8 +9052,12 @@ function AppMain() {
   }, [bankCfg]);
 
   const bankLockRef = useRef(Promise.resolve());
+  const bankRunningRef = useRef(0);
   const bankSyncOne = useCallback((connId, opts = {}) => {
-    const run = () => bankSyncOneInner(connId, opts);
+    // Si ya hay una sincronización en marcha (p. ej. la automática al abrir, que es silenciosa),
+    // esta espera su turno. Antes esperaba sin decir nada y el botón parecía muerto.
+    if (!opts.silent) { setBankBusy(true); if (bankRunningRef.current) setBankMsg({ kind: "info", text: "Ya se estaba sincronizando: en cuanto termine, sigo con la tuya." }); }
+    const run = () => { bankRunningRef.current++; return bankSyncOneInner(connId, opts).finally(() => { bankRunningRef.current--; if (!opts.silent) setBankBusy(false); }); };
     const p = bankLockRef.current.then(run, run);
     bankLockRef.current = p.catch(() => {});
     return p;
@@ -9133,9 +9138,14 @@ function AppMain() {
     } catch (e) {
       // Antes el auto-sync silencioso se tragaba el error entero: la app parecía sana con la
       // conexión muerta. Ahora el fallo queda pegado a la conexión y se ve en Ajustes.
-      const expired = e.httpStatus === 401 || e.httpStatus === 403 || e.httpStatus === 404 || /expired|caducad|invalid.*session|session.*(not found|invalid)|consent/i.test(e.message || "");
-      persistBank((b) => ({ ...b, connections: (b.connections || []).map((c) => (c.id === connId ? { ...c, lastError: e.message, lastErrorAt: Date.now(), expired } : c)) }));
-      if (!opts.silent) setBankMsg({ kind: "err", text: `${conn.aspsp}: ${e.message}${expired ? " — el permiso ha caducado, pulsa Reconectar." : ""}` });
+      // 429 (HUB046 en CaixaBank) es el límite diario de consultas que fija la normativa, no un
+      // permiso caducado. Antes su texto («…exceeded for consent») lo hacía pasar por caducado y
+      // la app invitaba a Reconectar, que gasta más consultas y no arregla nada.
+      const limite = e.httpStatus === 429 || /HTTP 429|HUB046|exceeded/i.test(e.message || "");
+      const expired = !limite && (e.httpStatus === 401 || e.httpStatus === 403 || e.httpStatus === 404 || /expired|caducad|invalid.*session|session.*(not found|invalid)|consent/i.test(e.message || ""));
+      const texto = limite ? "el banco ha agotado las consultas que permite por hoy. Se reanuda solo mañana; no hace falta reconectar." : e.message;
+      persistBank((b) => ({ ...b, connections: (b.connections || []).map((c) => (c.id === connId ? { ...c, lastError: texto, lastErrorAt: Date.now(), expired, limitedAt: limite ? Date.now() : c.limitedAt || null } : c)) }));
+      if (!opts.silent) setBankMsg({ kind: "err", text: `${conn.aspsp}: ${texto}${expired ? " — el permiso ha caducado, pulsa Reconectar." : ""}` });
     }
     finally { if (!opts.silent) setBankBusy(false); }
   };
@@ -9173,26 +9183,40 @@ function AppMain() {
   const bankSyncAll = useCallback(async (opts = {}) => {
     const conns = loadBank().connections || [];
     if (!conns.length) { if (!opts.silent) setBankMsg({ kind: "err", text: "No hay bancos conectados." }); return; }
-    for (const c of conns) await bankSyncOne(c.id, opts); // secuencial
+    const hoy = new Date().toDateString();
+    for (const c of conns) {
+      // En automático no se insiste con un banco que hoy ya dijo «límite agotado»: cada intento
+      // fallido también cuenta. A mano sí se intenta (puede que lo acepte con la app delante).
+      if (opts.silent && c.limitedAt && new Date(c.limitedAt).toDateString() === hoy) continue;
+      await bankSyncOne(c.id, opts); // secuencial
+    }
   }, [bankSyncOne]);
 
   // Sincronización automática al abrir: si está activada y hace >12 h de la última, baja lo reciente
   // (ventana de 90 días, barata) de todos los bancos, en silencio. La dedup evita duplicados.
   const bankAutoRef = useRef(false);
+  const bankInboxRef = useRef(false);
   useEffect(() => {
     // Esperar a `booted` es obligatorio: antes esto arrancaba con el efecto de montaje y la
     // ingesta se hacía contra `movs` vacío, así que ni deduplicaba por bankId ni contra el
     // histórico, y encima el setMovs(ms) de la carga podía llegar después y borrar lo bajado.
     if (!booted || bankAutoRef.current) return; // solo un intento por carga
     const b = loadBank();
-    if (!b.auto || !(b.connections || []).length) return;
+    if (!(b.connections || []).length || !b.workerUrl) return;
+    // La bandeja (lo que el servidor bajó con la app cerrada) se recoge SIEMPRE al abrir: no
+    // cuesta ninguna consulta al banco. Antes solo se miraba una vez cada 12 h, y al entrar no
+    // aparecía lo que el servidor ya tenía.
+    if (!bankInboxRef.current) { bankInboxRef.current = true; bankDrainInbox({ silent: true }); }
+    if (!b.auto) return;
+    const hoy = new Date().toDateString();
+    if ((b.connections || []).every((c) => c.limitedAt && new Date(c.limitedAt).toDateString() === hoy)) return; // límite del banco: mañana
     if (b.lastAuto && Date.now() - b.lastAuto < 12 * 3600000) return; // como mucho cada 12 h
     bankAutoRef.current = true;
     // El sello se pone al terminar, no antes: si el intento falla, no bloquea 12 h el siguiente.
     // La bandeja va primero: es lo que el servidor ya bajó por su cuenta, no cuesta ninguna
     // llamada al banco y suele traer todo lo pendiente.
     bankDrainInbox({ silent: true })
-      .then(() => bankSyncAll({ silent: true, recentDays: 90 }))
+      .then(() => bankSyncAll({ silent: true, recentDays: 14 }))
       .finally(() => persistBank((prev) => ({ ...prev, lastAuto: Date.now() })));
     // También depende de la config del banco: en el móvil llega del servidor DESPUÉS de arrancar,
     // y con solo [booted] el efecto ya había pasado y no volvía a intentarlo en toda la sesión.
