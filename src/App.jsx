@@ -7569,14 +7569,14 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
                 {/* Lo que hace el servidor por su cuenta, con la app cerrada. */}
                 {bank.cron && (() => {
                   const c = bank.cron;
-                  const viejo = c.at && Date.now() - c.at > 7 * 3600000;
+                  const viejo = c.at && Date.now() - c.at > 9 * 3600000;
                   const mal = c.viejo || viejo || (c.errores || []).length;
                   return (
                     <p className="mt-1 rounded-lg px-2 py-1.5 text-[11px] leading-relaxed" style={mal ? { background: C.warnSoft, color: C.warn } : { background: C.surfaceAlt, color: C.muted }}>
                       {c.viejo ? "Tu backend no informa de sus revisiones automáticas. Redespliégalo en Cloudflare para verlas aquí."
-                        : !c.at ? "El servidor aún no ha hecho ninguna revisión automática. La primera llegará en menos de 3 horas."
+                        : !c.at ? "El servidor aún no ha hecho ninguna revisión automática. La primera llegará en menos de 8 horas."
                         : <>Servidor: última revisión el {fmtCuando(c.at)}{c.origen === "manual" ? " (forzada)" : ""} · {nfNum.format(c.nuevos || 0)} {c.nuevos === 1 ? "movimiento nuevo" : "movimientos nuevos"}.
-                          {viejo && " Lleva más de 7 horas sin revisar: comprueba en Cloudflare que el disparador programado sigue activo."}
+                          {viejo && " Lleva más de 9 horas sin revisar: comprueba en Cloudflare que el disparador programado sigue activo."}
                           {(c.omitidas || []).length > 0 && <span className="block">No consultó: {c.omitidas.join(" · ")}.</span>}
                           {(c.errores || []).length > 0 && <span className="block">Errores: {c.errores.map((x) => (/HTTP 429|HUB046/.test(x) ? x.split(":")[0] + ": límite diario de consultas del banco agotado (se reanuda mañana)" : x)).join(" · ")}</span>}</>}
                     </p>
@@ -8720,17 +8720,18 @@ function AppMain() {
   // persistBank acepta un patch { ... } o una función (b) => nuevoEstado.
   const persistBank = useCallback((patchOrFn) => setBankCfg((b) => { const n = typeof patchOrFn === "function" ? patchOrFn(b) : { ...b, ...patchOrFn }; saveBank(n); return n; }), []);
   useEffect(() => { if (settingsOpen) setBankCfg(loadBank()); }, [settingsOpen]);
-  // Última revisión automática del servidor (el cron del Worker). Se pregunta al abrir Ajustes:
-  // es la única forma de saber si los movimientos siguen entrando con la app cerrada.
+  // Última revisión automática del servidor (el cron del Worker). Se pregunta al arrancar y al
+  // abrir Ajustes: es la única forma de saber si los movimientos siguen entrando con la app
+  // cerrada, y la cabecera la necesita para no decir «hace 15 h» cuando el servidor revisó hace 2.
   const [cronInfo, setCronInfo] = useState(null); // null | { at, nuevos, errores, cuentas } | { viejo: true }
   useEffect(() => {
-    if (!settingsOpen || !bankBase() || !(loadBank().connections || []).length) return;
+    if (!bankBase() || !(loadBank().connections || []).length) return;
     bankFetch("/store/cron", 15000).then((r) => (r.ok ? r.json() : null))
       // Un backend sin actualizar no conoce /store/cron y devuelve la copia de tus datos.
       .then((d) => setCronInfo(d && "at" in d ? d : { viejo: true }))
       .catch(() => setCronInfo(null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settingsOpen]);
+  }, [settingsOpen, bankCfg.workerUrl]);
   useEffect(() => {
     const h = () => setBankCfg(loadBank());
     window.addEventListener("finz-bank-updated", h);
@@ -9045,11 +9046,13 @@ function AppMain() {
   const bankStatus = useMemo(() => {
     const conns = bankCfg.connections || [];
     if (!conns.length) return null;
-    const last = Math.max(0, ...conns.map((c) => c.lastSync || 0));
+    // Cuenta también la revisión del servidor si fue limpia: también consulta el banco.
+    const cronOk = cronInfo && cronInfo.at && !(cronInfo.errores || []).length && !cronInfo.limite ? cronInfo.at : 0;
+    const last = Math.max(cronOk, ...conns.map((c) => c.lastSync || 0));
     const expired = conns.some((c) => c.expired);
     const failed = conns.some((c) => c.lastError && (!c.lastSync || (c.lastErrorAt || 0) > c.lastSync));
     return { last, expired, failed, stale: last > 0 && Date.now() - last > 36 * 3600000 };
-  }, [bankCfg]);
+  }, [bankCfg, cronInfo]);
 
   const bankLockRef = useRef(Promise.resolve());
   const bankRunningRef = useRef(0);
