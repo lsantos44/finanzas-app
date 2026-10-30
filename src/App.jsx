@@ -1066,13 +1066,30 @@ function isProcessorPattern(pattern) {
    paga. "TRANSFER INMEDIATA" agrupa el alquiler de todos los inquilinos y "BIZUM RECIBIDO"
    a media agenda, asi que tratarlos como si fueran un comercio hace que etiquetar UNO
    arrastre a todos los demas. El \b evita falsos positivos: "INGRESOS SL" no casa con INGRESO. */
-const GENERIC_OP_RE = /^(TRANSFER|TRANSFERENCIA|BIZUM|TRASPASO|INGRESO|REINTEGRO|CAJERO|NOMINA|DEVOLUCION|ADEUDO|RECIBO|DOMICILIACION|EFECTIVO|ABONO|CARGO|LIQUIDACION|COMISION|VARIOS)\b/;
+// La segunda línea es lo que queda de una transferencia tras quitarle el prefijo
+// ("TRANSF. PERIODICA" → "PERIODICA"): tampoco dice a quién se paga.
+const GENERIC_OP_RE = /^(TRANSFER|TRANSFERENCIA|BIZUM|TRASPASO|INGRESO|REINTEGRO|CAJERO|NOMINA|DEVOLUCION|ADEUDO|RECIBO|DOMICILIACION|EFECTIVO|ABONO|CARGO|LIQUIDACION|COMISION|VARIOS|PERIODICA|INMEDIATA|EMITIDA|RECIBIDA|ORDINARIA|SEPA|NACIONAL|SIN CONCEPTO)\b/;
 
 /* ¿El patron identifica a un comercio concreto? Solo entonces tiene sentido que una accion
    sobre un movimiento se aplique a todos los que comparten patron. */
 function identifiesMerchant(pattern) {
   const p = stripAccents(String(pattern || "").toUpperCase()).trim();
   return !!p && !isProcessorPattern(p) && !GENERIC_OP_RE.test(p);
+}
+
+/* Transferencias y operaciones genéricas: el texto no dice para qué es el dinero, el importe
+   sí. Lo que se aprende de ellas va atado al importe (±15 %): corregir la transferencia de
+   85 € del parking no debe arrastrar la de 500 € que va a los fondos. */
+const TRANSF_CONCEPT_RE = /^(TRANSF|TRASPASO|ORDEN DE TRANSF)/;
+function needsAmount(m) {
+  return !identifiesMerchant(m.pattern) || TRANSF_CONCEPT_RE.test(stripAccents(String(m.concept || "").toUpperCase()).trim());
+}
+// Regla personal que se aprende al corregir (o confirmar) un movimiento.
+function learnedRule(m, cat, asset) {
+  const r = { k: m.pattern, cat, asset: asset || undefined, prio: PRIO.personal, scope: "personal" };
+  if (!needsAmount(m)) return r;
+  const a = Math.abs(m.amount);
+  return { ...r, sign: m.amount < 0 ? "-" : "+", min: Math.floor(a * 85) / 100, max: Math.ceil(a * 115) / 100 };
 }
 
 const _ruleRe = new Map();
@@ -1124,6 +1141,9 @@ function matchRule(pattern, amount, rules, date = null) {
   const isIncome = amount > 0;
   for (const r of sortedRules(rules)) {
     if (r.active === false) continue; // baja lógica: la regla existe pero está apagada
+    // Reglas personales antiguas sobre un patrón genérico sin importe: casaban con TODAS las
+    // transferencias de ese tipo, fuera cual fuera su importe. Ya no se crean; se ignoran.
+    if (r.scope === "personal" && !isConditional(r) && !identifiesMerchant(r.k)) continue;
     const k = stripAccents(String(r.k).toUpperCase()).trim();
     if (!k) continue;
     // Una regla de categoría de GASTO no debe capturar un ingreso (mismo texto, signo opuesto):
@@ -1917,13 +1937,15 @@ function buildBehaviorModel(movs) {
     addFeat("bucket", bucket, cat);
     addFeat("wknd", wknd, cat);
     addFeat("phase", phase, cat);
-    const toks = merchantTokens(m.pattern);
-    for (const t of new Set(toks)) addFeat("tok", t, cat);
-
-    const ent = merchantEntity(m.pattern);
-    bumpMap(entityCat, ent, cat);
-    if (!entityTokenSets.has(ent)) entityTokenSets.set(ent, new Set(toks));
-    else for (const t of toks) entityTokenSets.get(ent).add(t);
+    // En una transferencia el texto no identifica el motivo: solo cuentan importe y fechas.
+    if (!needsAmount(m)) {
+      const toks = merchantTokens(m.pattern);
+      for (const t of new Set(toks)) addFeat("tok", t, cat);
+      const ent = merchantEntity(m.pattern);
+      bumpMap(entityCat, ent, cat);
+      if (!entityTokenSets.has(ent)) entityTokenSets.set(ent, new Set(toks));
+      else for (const t of toks) entityTokenSets.get(ent).add(t);
+    }
 
     // Importe recurrente solo tiene sentido para cargos de cierta magnitud
     if (Math.abs(m.amount) >= 8) bumpMap(amountCat, `${Math.round(Math.abs(m.amount))}|${sign}`, cat);
@@ -1956,7 +1978,7 @@ function naiveBayesScores(model, m) {
   const bucket = AMOUNT_BUCKET(Math.abs(m.amount));
   const wknd = isWeekend(m.date) ? "we" : "wd";
   const phase = monthPhase(m.date);
-  const toks = [...new Set(merchantTokens(m.pattern))];
+  const toks = needsAmount(m) ? [] : [...new Set(merchantTokens(m.pattern))];
   const feats = [["sign", sign], ["bucket", bucket], ["wknd", wknd], ["phase", phase], ...toks.map((t) => ["tok", t])];
 
   const logs = [];
@@ -1993,10 +2015,12 @@ const totalV = (total, V) => total + V; // denominador Laplace, factorizado para
 function inferByBehavior(model, m, { minConf = 0.5, minSupport = 3 } = {}) {
   const sign = m.amount >= 0 ? "in" : "out";
 
-  // 1) Entidad conocida (match exacto o fuzzy por tokens)
+  // 1) Entidad conocida (match exacto o fuzzy por tokens). No en transferencias: ahí el
+  // «comercio» es el tipo de operación y mezclaría el parking con la inversión.
+  const generic = needsAmount(m);
   const ent = merchantEntity(m.pattern);
-  let entHit = model.entityCat.get(ent);
-  if (!entHit) {
+  let entHit = generic ? null : model.entityCat.get(ent);
+  if (!entHit && !generic) {
     // Fuzzy: busca la entidad más parecida por Jaccard de tokens
     const toks = new Set(merchantTokens(m.pattern));
     let best = null, bestSim = 0;
@@ -2248,7 +2272,11 @@ function classifyForImport(freshMovs, existingMovs, rules, { materialidad = DEFA
   }
   const dec = new Map();
   for (const m of freshMovs) {
-    const r = matchRule(m.pattern, m.amount, rules, m.date);
+    const generic = needsAmount(m);
+    let r = matchRule(m.pattern, m.amount, rules, m.date);
+    // Una regla tuya sin importe sobre una transferencia (las de antes de atarlas al importe)
+    // clasificaba igual el parking y la inversión: se ignora y decide el importe.
+    if (r && generic && r.scope === "personal" && !isConditional(r)) r = null;
     if (r) {
       // Una regla defensiva clasifica, pero pide que lo mires: crea el pendiente a propósito.
       dec.set(m.id, {
@@ -2258,8 +2286,11 @@ function classifyForImport(freshMovs, existingMovs, rules, { materialidad = DEFA
       });
       continue;
     }
-    const rep = repByPattern.get(m.pattern);
-    const guess = rep ? inferByBehavior(behavior, rep) : null;
+    const rep = generic ? m : repByPattern.get(m.pattern);
+    let guess = rep ? inferByBehavior(behavior, rep) : null;
+    // En una transferencia solo vale el mismo importe recurrente: lo demás (fase del mes,
+    // tramo de importe) es adivinar, y así es como los fondos acababan en Parking.
+    if (generic && guess && guess.source !== "importe") guess = null;
     let trustworthy = !!guess && (guess.source === "comercio" || guess.source === "importe" || guess.conf >= 0.9);
     // Calderilla: se acepta lo que haya y no se pregunta.
     if (!trustworthy && Math.abs(m.amount) <= materialidad) trustworthy = true;
@@ -4403,8 +4434,11 @@ function PendientesPanel({ movsPend, assets, setAssets, applyPending, aiOn, ai, 
   const groups = useMemo(() => {
     const map = new Map();
     for (const m of movsPend) {
-      if (!map.has(m.pattern)) map.set(m.pattern, { pattern: m.pattern, sample: m.concept, count: 0, total: 0, cat: m.category, ids: [] });
-      const g = map.get(m.pattern);
+      // Transferencias: una fila por importe. Juntas, la del parking y la de los fondos
+      // compartían fila y una sola elección clasificaba las dos.
+      const key = needsAmount(m) ? `${m.pattern}|${Math.round(m.amount)}` : m.pattern;
+      if (!map.has(key)) map.set(key, { key, pattern: m.pattern, sample: m.concept, mov: needsAmount(m) ? m : null, count: 0, total: 0, cat: m.category, ids: [] });
+      const g = map.get(key);
       g.count++; g.total += m.amount; g.ids.push(m.id);
     }
     return orderByInfoGain([...map.values()]);
@@ -4418,7 +4452,7 @@ function PendientesPanel({ movsPend, assets, setAssets, applyPending, aiOn, ai, 
 
   const applySuggestions = (map) => setEdits((e) => {
     const next = { ...e };
-    for (const g of groups) if (map[g.pattern] && !(next[g.pattern]?.cat)) next[g.pattern] = { ...next[g.pattern], cat: map[g.pattern], _ai: true };
+    for (const g of groups) if (map[g.pattern] && !(next[g.key]?.cat)) next[g.key] = { ...next[g.key], cat: map[g.pattern], _ai: true };
     return next;
   });
 
@@ -4439,7 +4473,8 @@ function PendientesPanel({ movsPend, assets, setAssets, applyPending, aiOn, ai, 
   const runAI = async (silent = false) => {
     setAiBusy(true); setAiError(null); setAiNote(null);
     try {
-      const payload = groups.slice(0, 200).map((g) => ({ pattern: g.pattern, sign: g.total > 0 ? 1 : -1 }));
+      // Sin las operaciones genéricas: la IA no puede saber para qué es una "TRANSFER INMEDIATA".
+      const payload = [...new Map(groups.filter((g) => identifiesMerchant(g.pattern)).slice(0, 200).map((g) => [g.pattern, { pattern: g.pattern, sign: g.total > 0 ? 1 : -1 }])).values()];
       const { map, unresolved: left } = await aiCategorizePatterns(payload, false, ai);
       if (Object.keys(map).length === 0) { if (!silent) setAiError("La IA no reconoció ninguno de estos comercios. Clasifícalos a mano."); return; }
       applySuggestions(map);
@@ -4491,9 +4526,9 @@ function PendientesPanel({ movsPend, assets, setAssets, applyPending, aiOn, ai, 
   const save = () => {
     const changes = [];
     for (const g of groups) {
-      const e = edits[g.pattern];
+      const e = edits[g.key];
       if (!e || (!e.cat && e.asset === undefined)) continue;
-      changes.push({ pattern: g.pattern, cat: e.cat || g.cat, asset: e.asset, fromAI: !!e._ai });
+      changes.push({ pattern: g.pattern, cat: e.cat || g.cat, asset: e.asset, fromAI: !!e._ai, ...(g.mov ? { ids: g.ids, mov: g.mov } : {}) });
     }
     applyPending(changes);
     onClose();
@@ -4549,18 +4584,18 @@ function PendientesPanel({ movsPend, assets, setAssets, applyPending, aiOn, ai, 
 
         <div className="flex-1 overflow-y-auto">
           {groups.map((g) => {
-            const e = edits[g.pattern] || {};
+            const e = edits[g.key] || {};
             const cat = e.cat ?? "";
             const asset = e.asset;
-            const isOpen = open === g.pattern;
-            const mine = isOpen ? movsPend.filter((m) => m.pattern === g.pattern).sort((a, b) => b.date - a.date) : null;
+            const isOpen = open === g.key;
+            const mine = isOpen ? movsPend.filter((m) => g.ids.includes(m.id)).sort((a, b) => b.date - a.date) : null;
             const noteVals = new Set();
             for (const m of movsPend) if (m.pattern === g.pattern && m.note) noteVals.add(m.note);
             const gNote = noteVals.size === 1 ? [...noteVals][0] : null;
             const gMixed = noteVals.size > 1;
             return (
-              <div key={g.pattern} className="border-b px-4 py-3" style={{ borderColor: C.line }}>
-                <button type="button" onClick={() => setOpen(isOpen ? null : g.pattern)} className="flex w-full items-start gap-1.5 text-left focus-visible:outline-none">
+              <div key={g.key} className="border-b px-4 py-3" style={{ borderColor: C.line }}>
+                <button type="button" onClick={() => setOpen(isOpen ? null : g.key)} className="flex w-full items-start gap-1.5 text-left focus-visible:outline-none">
                   <ChevronRight size={14} className="mt-0.5 shrink-0 text-slate-400 transition-transform" style={{ transform: isOpen ? "rotate(90deg)" : "none" }} />
                   <div className="min-w-0 flex-1">
                     <div className="break-words text-sm font-medium" title={g.sample}>{g.sample}</div>
@@ -4572,12 +4607,12 @@ function PendientesPanel({ movsPend, assets, setAssets, applyPending, aiOn, ai, 
                   </div>
                 </button>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <CatSelect value={cat} allowEmpty onChange={(v) => setEdit(g.pattern, { cat: v, _ai: false })} className="min-w-0 flex-1 basis-[45%] sm:basis-auto" />
-                  <AssetSelect value={asset ?? ""} assets={assets} onCreateAsset={createAssetLocal} onChange={(v) => setEdit(g.pattern, { asset: v })} className="min-w-0 flex-1 basis-[45%] sm:basis-auto" />
+                  <CatSelect value={cat} allowEmpty onChange={(v) => setEdit(g.key, { cat: v, _ai: false })} className="min-w-0 flex-1 basis-[45%] sm:basis-auto" />
+                  <AssetSelect value={asset ?? ""} assets={assets} onCreateAsset={createAssetLocal} onChange={(v) => setEdit(g.key, { asset: v })} className="min-w-0 flex-1 basis-[45%] sm:basis-auto" />
                   {onToggleGroup && <GroupTags mov={{ id: g.ids[0], pattern: g.pattern }} groups={tagGroups || []} onToggle={onToggleGroup} onCreateGroup={onCreateGroup} />}
-                  {onNoteAll && <button type="button" onClick={() => { setGNoting(gNoting === g.pattern ? null : g.pattern); setGNoteText(gNote || ""); }} className="rounded-lg border px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50" style={{ borderColor: C.line }}>{gNote || gMixed ? `🏷️ ${gNote || "varios"}` : "+ apodo a todos"}</button>}
+                  {onNoteAll && <button type="button" onClick={() => { setGNoting(gNoting === g.key ? null : g.key); setGNoteText(gNote || ""); }} className="rounded-lg border px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50" style={{ borderColor: C.line }}>{gNote || gMixed ? `🏷️ ${gNote || "varios"}` : "+ apodo a todos"}</button>}
                 </div>
-                {onNoteAll && gNoting === g.pattern && (
+                {onNoteAll && gNoting === g.key && (
                   <div className="mt-2 flex items-center gap-2">
                     <input value={gNoteText} onChange={(ev) => setGNoteText(ev.target.value)} autoFocus maxLength={40}
                       placeholder={`Apodo para los ${g.count} movimientos`}
@@ -6184,7 +6219,7 @@ function ClasificacionTab({ movs, assets, groups, onRecat, onReasset, onReassetA
                       ? <button type="button" onClick={() => { setGNoting(g.pattern); setGNoteText(""); }} className="rounded-lg border px-2 py-1 text-xs text-slate-500 hover:bg-slate-50" style={{ borderColor: C.line }} title="Hay varios apodos; unifícalos">🏷️ varios</button>
                       : <button type="button" onClick={() => { setGNoting(g.pattern); setGNoteText(""); }} className="rounded-lg border px-2 py-1 text-xs text-slate-500 hover:bg-slate-50" style={{ borderColor: C.line }}>+ apodo a todos</button>)}
                 </div>
-                {onNoteAll && gNoting === g.pattern && (
+                {onNoteAll && gNoting === g.key && (
                   <div className="mt-2 flex items-center gap-2">
                     <input value={gNoteText} onChange={(e) => setGNoteText(e.target.value)} autoFocus maxLength={40}
                       placeholder={`Apodo para los ${g.count} movimientos de este comercio`}
@@ -8064,7 +8099,7 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
 export {
   matchRule, ruleConditionsHold, sortedRules, ruleId, isConditional,
   DEFAULT_RULES, PRIO, DEFAULT_MATERIALIDAD,
-  classifyForImport, dedupeAgainst, movKey, normalizePattern, auditRules,
+  classifyForImport, dedupeAgainst, movKey, normalizePattern, auditRules, learnedRule, needsAmount,
   CATEGORIES, rebuildRules,
   buildMonthClose, missingIncome, upcomingIncome, upcomingCharges, detectRecurring, analyzeReceiptTrends,
 };
@@ -9425,6 +9460,7 @@ function AppMain() {
           const d = decByMov.get(m.id);
           if (!d || !d.confirmed || d.source === "regla" || seen.has(m.pattern)) continue;
           if (d.source !== "comercio" && d.source !== "importe") continue;
+          if (needsAmount(m)) { if (!extra.some((e) => ruleId(e) === ruleId(learnedRule(m, d.cat, d.asset)))) extra.push(learnedRule(m, d.cat, d.asset)); continue; }
           seen.add(m.pattern);
           const ent = merchantEntity(m.pattern);
           if (ent && ent.length >= 5 && !ENTITY_STOP.has(ent)) addRule(ent, d.cat, d.asset);
@@ -9450,12 +9486,15 @@ function AppMain() {
   // Aplicar clasificaciones desde el panel de pendientes: marca confirmados y destila reglas.
   const applyPending = useCallback((changes) => {
     if (!changes?.length) return;
-    const byPattern = new Map(changes.map((c) => [c.pattern, c]));
+    // Las filas de transferencias van por importe, así que se aplica por ids cuando llegan.
+    const byId = new Map();
+    for (const c of changes) for (const id of c.ids || []) byId.set(id, c);
+    const byPattern = new Map(changes.filter((c) => !c.ids).map((c) => [c.pattern, c]));
     const assetNames = new Set();
     for (const c of changes) if (c.asset) assetNames.add(c.asset);
     for (const n of assetNames) ensureAsset(n);
     setMovs((ms) => ms.map((m) => {
-      const c = byPattern.get(m.pattern);
+      const c = byId.get(m.id) || byPattern.get(m.pattern);
       if (!c || m.confirmed) return m;
       return { ...m, category: c.cat, assetName: c.asset !== undefined ? (c.asset || null) : m.assetName, confirmed: true };
     }));
@@ -9468,6 +9507,11 @@ function AppMain() {
         }
       };
       for (const c of changes) {
+        if (c.mov && needsAmount(c.mov)) {
+          const nr = learnedRule(c.mov, c.cat, c.asset);
+          if (!rs.some((r) => ruleId(r) === ruleId(nr)) && !extra.some((e) => ruleId(e) === ruleId(nr))) extra.push(nr);
+          continue;
+        }
         // Clasificación manual → patrón exacto. Sugerencia de IA aceptada → entidad (generaliza).
         if (c.fromAI) {
           const ent = merchantEntity(c.pattern);
@@ -9495,12 +9539,17 @@ function AppMain() {
     // con reglas condicionales por importe/día, no por patrón. Así que corregir un Bizum
     // cambia el movimiento (o los del mismo patrón, si lo pides) pero NO crea regla.
     const isBizum = /^BIZUM\b/.test(String(mov.pattern || ""));
+    // En una transferencia, «los similares» y la regla son los de importe parecido.
+    const nr = learnedRule(mov, cat);
+    const parecido = (m) => isBizum || !isConditional(nr) || ruleConditionsHold(nr, m.amount, m.date);
     setMovs((ms) => ms.map((m) => {
       if (m.id === mov.id) return { ...m, category: cat, splits: null, confirmed: true };
-      if (applySimilar && !proc && m.pattern === mov.pattern) return { ...m, category: cat, splits: m.splits, confirmed: true };
+      if (applySimilar && !proc && m.pattern === mov.pattern && parecido(m)) return { ...m, category: cat, splits: m.splits, confirmed: true };
       return m;
     }));
-    if (!proc && !isBizum) setRules((rs) => [{ k: mov.pattern, cat, prio: PRIO.personal, scope: "personal" }, ...rs.filter((r) => r.k !== mov.pattern)]);
+    // Sustituye a las reglas del mismo patrón que clasificaban ESTE movimiento (no a las de
+    // otros importes: la del parking sobrevive a corregir la de la inversión).
+    if (!proc && !isBizum) setRules((rs) => [nr, ...rs.filter((r) => r.k !== mov.pattern || (isConditional(nr) && !ruleConditionsHold(r, mov.amount, mov.date)))]);
   };
   // Aplicar una propuesta de reclasificación del asistente: reclasifica los ids a la categoría.
   // Reversible (puedes volver a corregir a mano); no crea reglas para no ensuciar con lotes.
@@ -9511,12 +9560,12 @@ function AppMain() {
     setMovs((ms) => ms.map((m) => (ids.has(m.id) ? { ...m, category: cat, splits: null, confirmed: true } : m)));
     // Una correccion sin regla se repite cada mes. Se crea una regla personal por cada patron
     // afectado, saltando los que ya tienen una: asi la proxima importacion ya llega clasificada.
-    const patrones = [...new Set(movs.filter((m) => ids.has(m.id)).map((m) => m.pattern).filter(Boolean))];
-    if (patrones.length) {
+    const porRegla = new Map();
+    for (const m of movs) if (ids.has(m.id) && m.pattern) { const nr = learnedRule(m, cat); porRegla.set(ruleId(nr), nr); }
+    if (porRegla.size) {
       setRules((rs) => {
-        const nuevas = patrones
-          .filter((k) => !rs.some((r) => r.scope === "personal" && r.k === k && r.cat === cat))
-          .map((k) => ({ k, cat, prio: PRIO.personal, scope: "personal" }));
+        const nuevas = [...porRegla.values()]
+          .filter((nr) => !rs.some((r) => r.scope === "personal" && (isConditional(nr) ? ruleId(r) === ruleId(nr) : r.k === nr.k && r.cat === cat)));
         return nuevas.length ? [...nuevas, ...rs] : rs;
       });
     }
