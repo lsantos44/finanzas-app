@@ -708,6 +708,13 @@ function deserializeMovs(raw) {
     assetName: m.assetName === "Casa" ? "Algodonales 10" : m.assetName,
     splits: m.splits?.length ? m.splits.map((s) => ({ ...s, cat: migrateCat(s.cat) })) : m.splits,
   })).filter((m) => m.date instanceof Date && !isNaN(m.date));
+  // Las devoluciones de un comercio conocido guardadas como ingreso pasan a la categoría de
+  // gasto del comercio, donde restan (Amazon → Compras). Idempotente: ya movidas no vuelven a casar.
+  for (const m of list) {
+    if (!(m.amount > 0) || m.splits?.length || (m.category !== "Devoluciones y ayudas" && m.category !== "Otros ingresos")) continue;
+    const r = matchRule(m.pattern || normalizePattern(m.concept), m.amount, DEFAULT_RULES, m.date, m.concept);
+    if (r && !INGRESO_SET.has(r.cat) && !TRANSFER_SET.has(r.cat)) m.category = r.cat;
+  }
   return list;
 }
 /* Solo se guardan tus reglas (scope "personal") y qué reglas de fábrica has apagado.
@@ -1136,9 +1143,27 @@ function ruleConditionsHold(r, amount, date) {
   return true;
 }
 
-function matchRule(pattern, amount, rules, date = null) {
+/* Devolución: un positivo que el banco marca como tal, o un positivo de tarjeta (una
+   compra con tarjeta no te paga; si entra dinero, es que te la han devuelto). */
+const REFUND_RE = /DEVOLUC|DEVOL\b|REEMBOLSO|REFUND|RETROCESION|ANULACION|ANUL\b|ABONO COMPRA/;
+const CARD_OP_RE = /^(COMPRA|PAGO (CON )?TARJ|PAGO MOVIL|TARJ)/;
+
+function matchRule(pattern, amount, rules, date = null, concept = "") {
   const p = stripAccents(String(pattern).toUpperCase());
   const isIncome = amount > 0;
+  // Una devolución va a la categoría de gasto del comercio (Amazon → Compras, Iberdrola →
+  // Suministros) y así resta de ese gasto en vez de contar como ingreso. Las condiciones de
+  // la regla se miran sobre el cargo que se devuelve (mismo importe, en negativo).
+  const c = stripAccents(String(concept || "").toUpperCase()).trim();
+  if (isIncome && (REFUND_RE.test(p) || REFUND_RE.test(c) || CARD_OP_RE.test(c))) {
+    for (const r of sortedRules(rules)) {
+      if (r.active === false || INGRESO_SET.has(r.cat) || TRANSFER_SET.has(r.cat) || r.cat === "Impuestos") continue;
+      if (r.scope === "personal" && !isConditional(r) && !identifiesMerchant(r.k)) continue;
+      if (!ruleConditionsHold(r, -amount, date)) continue;
+      const k = stripAccents(String(r.k).toUpperCase()).trim();
+      if (k && (k.length <= 4 ? ruleRegex(k).test(p) : p.includes(k))) return r;
+    }
+  }
   for (const r of sortedRules(rules)) {
     if (r.active === false) continue; // baja lógica: la regla existe pero está apagada
     // Reglas personales antiguas sobre un patrón genérico sin importe: casaban con TODAS las
@@ -2273,7 +2298,7 @@ function classifyForImport(freshMovs, existingMovs, rules, { materialidad = DEFA
   const dec = new Map();
   for (const m of freshMovs) {
     const generic = needsAmount(m);
-    let r = matchRule(m.pattern, m.amount, rules, m.date);
+    let r = matchRule(m.pattern, m.amount, rules, m.date, m.concept);
     // Una regla tuya sin importe sobre una transferencia (las de antes de atarlas al importe)
     // clasificaba igual el parking y la inversión: se ignora y decide el importe.
     if (r && generic && r.scope === "personal" && !isConditional(r)) r = null;
@@ -8100,7 +8125,7 @@ export {
   matchRule, ruleConditionsHold, sortedRules, ruleId, isConditional,
   DEFAULT_RULES, PRIO, DEFAULT_MATERIALIDAD,
   classifyForImport, dedupeAgainst, movKey, normalizePattern, auditRules, learnedRule, needsAmount,
-  CATEGORIES, rebuildRules,
+  CATEGORIES, rebuildRules, deserializeMovs,
   buildMonthClose, missingIncome, upcomingIncome, upcomingCharges, detectRecurring, analyzeReceiptTrends,
 };
 
