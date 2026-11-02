@@ -1079,7 +1079,7 @@ function isProcessorPattern(pattern) {
    arrastre a todos los demas. El \b evita falsos positivos: "INGRESOS SL" no casa con INGRESO. */
 // La segunda línea es lo que queda de una transferencia tras quitarle el prefijo
 // ("TRANSF. PERIODICA" → "PERIODICA"): tampoco dice a quién se paga.
-const GENERIC_OP_RE = /^(TRANSFER|TRANSFERENCIA|BIZUM|TRASPASO|INGRESO|REINTEGRO|CAJERO|NOMINA|DEVOLUCION|ADEUDO|RECIBO|DOMICILIACION|EFECTIVO|ABONO|CARGO|LIQUIDACION|COMISION|VARIOS|PERIODICA|INMEDIATA|EMITIDA|RECIBIDA|ORDINARIA|SEPA|NACIONAL|SIN CONCEPTO)\b/;
+const GENERIC_OP_RE = /^(TRANSFER|TRANSFERENCIA|BIZUM|TRASPASO|INGRESO|REINTEGRO|CAJERO|NOMINA|DEVOLUCION|ADEUDO|RECIBO|DOMICILIACION|EFECTIVO|ABONO|CARGO|LIQUIDACION|COMISION|VARIOS|PERIODICA|INMEDIATA|EMITIDA|RECIBIDA|ORDINARIA|SEPA|NACIONAL|SIN CONCEPTO|MOVIMIENTO)\b/;
 
 /* ¿El patron identifica a un comercio concreto? Solo entonces tiene sentido que una accion
    sobre un movimiento se aplique a todos los que comparten patron. */
@@ -1092,17 +1092,34 @@ function identifiesMerchant(pattern) {
    sí. Lo que se aprende de ellas va atado al importe (±15 %): corregir la transferencia de
    85 € del parking no debe arrastrar la de 500 € que va a los fondos. */
 const TRANSF_CONCEPT_RE = /^(TRANSF|TRASPASO|ORDEN DE TRANSF)/;
-function needsAmount(m) {
-  return !identifiesMerchant(m.pattern) || TRANSF_CONCEPT_RE.test(stripAccents(String(m.concept || "").toUpperCase()).trim());
+// Por la conexión con el banco el concepto es el destinatario («LUIS SANTOS…»), sin rastro de
+// que sea una transferencia. Por eso también cuenta el historial: un mismo concepto con
+// movimientos del mismo signo en categorías distintas se decide por importe (`amb`).
+const ambKey = (m) => `${m.pattern}|${m.amount < 0 ? "-" : "+"}`;
+function ambiguousPatterns(movs) {
+  const cats = new Map();
+  for (const m of movs || []) {
+    if (!m.category || m.category === "Otros" || m.splits?.length) continue;
+    const k = ambKey(m);
+    if (!cats.has(k)) cats.set(k, new Set());
+    cats.get(k).add(m.category);
+  }
+  return new Set([...cats].filter(([, c]) => c.size > 1).map(([k]) => k));
 }
-// Regla personal que se aprende al corregir (o confirmar) un movimiento.
-function learnedRule(m, cat, asset) {
+function needsAmount(m, amb) {
+  return !identifiesMerchant(m.pattern) || TRANSF_CONCEPT_RE.test(stripAccents(String(m.concept || "").toUpperCase()).trim())
+    || !!(amb && amb.has(ambKey(m)));
+}
+// Regla personal que se aprende al corregir (o confirmar) un movimiento. `others`: el resto
+// de movimientos; si el mismo concepto tiene otros de distinta categoría, la regla va por importe.
+function learnedRule(m, cat, asset, others) {
   const r = { k: m.pattern, cat, asset: asset || undefined, prio: PRIO.personal, scope: "personal" };
+  const amb = others && others.some((o) => o.id !== m.id && ambKey(o) === ambKey(m) && o.category && o.category !== "Otros" && o.category !== cat) ? new Set([ambKey(m)]) : null;
   // Un positivo puesto en una categoría de gasto es una devolución: la regla lleva signo «+»
   // para aplicarse a las próximas devoluciones (sin signo, una regla de gasto nunca casa con
   // un ingreso y la corrección no enseñaba nada).
   const refund = m.amount > 0 && !INGRESO_SET.has(cat) && !TRANSFER_SET.has(cat);
-  if (!needsAmount(m)) return refund ? { ...r, sign: "+" } : r;
+  if (!needsAmount(m, amb)) return refund ? { ...r, sign: "+" } : r;
   const a = Math.abs(m.amount);
   return { ...r, sign: m.amount < 0 ? "-" : "+", min: Math.floor(a * 85) / 100, max: Math.ceil(a * 115) / 100 };
 }
@@ -2334,6 +2351,7 @@ function refundFromHistory(m, idx) {
 function classifyForImport(freshMovs, existingMovs, rules, { materialidad = DEFAULT_MATERIALIDAD, assetMem = {} } = {}) {
   const behavior = buildBehaviorModel(existingMovs || []);
   const refunds = refundIndex(existingMovs);
+  const amb = ambiguousPatterns(existingMovs);
   const repByPattern = new Map();
   for (const m of freshMovs) {
     const prev = repByPattern.get(m.pattern);
@@ -2341,7 +2359,7 @@ function classifyForImport(freshMovs, existingMovs, rules, { materialidad = DEFA
   }
   const dec = new Map();
   for (const m of freshMovs) {
-    const generic = needsAmount(m);
+    const generic = needsAmount(m, amb);
     let r = matchRule(m.pattern, m.amount, rules, m.date, m.concept);
     // Una regla tuya sin importe sobre una transferencia (las de antes de atarlas al importe)
     // clasificaba igual el parking y la inversión: se ignora y decide el importe.
@@ -4483,7 +4501,7 @@ function ValidationModal({ val, onConfirm, onCancel, onRemap }) {
    marca como resuelto al vuelo: eliges categoría y activo, y al pulsar
    "Guardar cambios" se aplican juntos (así no desaparece antes de asignarle
    también el activo). */
-function PendientesPanel({ movsPend, assets, setAssets, applyPending, aiOn, ai, autoRanRef, onClose, tagGroups, onToggleGroup, onCreateGroup, onRecat, onReasset, onNote, onNoteAll, onSetAmount, onDelete }) {
+function PendientesPanel({ movsPend, amb, assets, setAssets, applyPending, aiOn, ai, autoRanRef, onClose, tagGroups, onToggleGroup, onCreateGroup, onRecat, onReasset, onNote, onNoteAll, onSetAmount, onDelete }) {
   const [edits, setEdits] = useState({}); // pattern -> { cat, asset }
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState(null);
@@ -4510,13 +4528,14 @@ function PendientesPanel({ movsPend, assets, setAssets, applyPending, aiOn, ai, 
     for (const m of movsPend) {
       // Transferencias: una fila por importe. Juntas, la del parking y la de los fondos
       // compartían fila y una sola elección clasificaba las dos.
-      const key = needsAmount(m) ? `${m.pattern}|${Math.round(m.amount)}` : m.pattern;
-      if (!map.has(key)) map.set(key, { key, pattern: m.pattern, sample: m.concept, mov: needsAmount(m) ? m : null, count: 0, total: 0, cat: m.category, ids: [] });
+      const porImporte = needsAmount(m, amb);
+      const key = porImporte ? `${m.pattern}|${Math.round(m.amount)}` : m.pattern;
+      if (!map.has(key)) map.set(key, { key, pattern: m.pattern, sample: m.concept, mov: porImporte ? m : null, count: 0, total: 0, cat: m.category, ids: [] });
       const g = map.get(key);
       g.count++; g.total += m.amount; g.ids.push(m.id);
     }
     return orderByInfoGain([...map.values()]);
-  }, [movsPend]);
+  }, [movsPend, amb]);
 
   const createAssetLocal = ({ name, emoji }) => {
     setAssets((as) => (as.some((a) => a.name.toLowerCase() === name.toLowerCase()) ? as : [...as, { id: "a" + Date.now(), name, emoji: emoji || "📦", categories: [] }]));
@@ -8173,7 +8192,7 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
 export {
   matchRule, ruleConditionsHold, sortedRules, ruleId, isConditional,
   DEFAULT_RULES, PRIO, DEFAULT_MATERIALIDAD,
-  classifyForImport, dedupeAgainst, movKey, normalizePattern, auditRules, learnedRule, needsAmount,
+  classifyForImport, dedupeAgainst, movKey, normalizePattern, auditRules, learnedRule, needsAmount, ambiguousPatterns,
   CATEGORIES, rebuildRules, deserializeMovs,
   buildMonthClose, missingIncome, upcomingIncome, upcomingCharges, detectRecurring, analyzeReceiptTrends,
 };
@@ -8424,6 +8443,7 @@ function AppMain() {
   const aiAutoRanRef = useRef(false);
   const hasData = movs.length > 0;
   const movsPend = useMemo(() => movs.filter((m) => m.confirmed === false && !m.omit), [movs]);
+  const ambPend = useMemo(() => ambiguousPatterns(movs), [movs]);
 
   // Botón atrás cierra overlays en vez de salir de la app (crucial en la PWA de iPhone)
   useBackClose(settingsOpen, () => setSettingsOpen(false));
@@ -9581,8 +9601,8 @@ function AppMain() {
         }
       };
       for (const c of changes) {
-        if (c.mov && needsAmount(c.mov)) {
-          const nr = learnedRule(c.mov, c.cat, c.asset);
+        if (c.mov) {
+          const nr = learnedRule(c.mov, c.cat, c.asset, movs);
           if (!rs.some((r) => ruleId(r) === ruleId(nr)) && !extra.some((e) => ruleId(e) === ruleId(nr))) extra.push(nr);
           continue;
         }
@@ -9598,7 +9618,7 @@ function AppMain() {
       return extra.length ? [...extra, ...rs] : rs;
     });
     setPendingNotice(0);
-  }, [ensureAsset]);
+  }, [ensureAsset, movs]);
 
   // Corregir a mano es la señal de confirmación más fuerte que existe: si no marcamos
   // `confirmed`, el movimiento seguía apareciendo en «por clasificar» para siempre.
@@ -9614,7 +9634,7 @@ function AppMain() {
     // cambia el movimiento (o los del mismo patrón, si lo pides) pero NO crea regla.
     const isBizum = /^BIZUM\b/.test(String(mov.pattern || ""));
     // En una transferencia, «los similares» y la regla son los de importe parecido.
-    const nr = learnedRule(mov, cat);
+    const nr = learnedRule(mov, cat, undefined, movs);
     const parecido = (m) => isBizum || !isConditional(nr) || ruleConditionsHold(nr, m.amount, m.date);
     setMovs((ms) => ms.map((m) => {
       if (m.id === mov.id) return { ...m, category: cat, splits: null, confirmed: true };
@@ -9627,7 +9647,15 @@ function AppMain() {
     // debe borrar la regla de los cargos del mismo comercio.
     const aplica = (r) => ruleConditionsHold(r, mov.amount, mov.date) && (mov.amount < 0 || INGRESO_SET.has(r.cat) || TRANSFER_SET.has(r.cat) || r.sign === "+");
     const sobra = (r) => r.k === mov.pattern && (ruleId(r) === ruleId(nr) || (aplica(r) && (r.cat !== cat || !isConditional(nr))));
-    if (!proc && !isBizum) setRules((rs) => [nr, ...rs.filter((r) => !sobra(r))]);
+    // La regla sin importe que se retira (p. ej. «concepto = Parking» al corregir los 500 €) no se
+    // pierde: vuelve atada a los importes de los movimientos que sí son de esa categoría.
+    const reatar = (r) => {
+      if (isConditional(r) || !isConditional(nr) || r.cat === cat) return null;
+      const amts = movs.filter((m) => m.id !== mov.id && ambKey(m) === ambKey(mov) && m.category === r.cat && !ruleConditionsHold(nr, m.amount, m.date)).map((m) => Math.abs(m.amount));
+      if (!amts.length) return null;
+      return { ...r, sign: mov.amount < 0 ? "-" : "+", min: Math.floor(Math.min(...amts) * 85) / 100, max: Math.ceil(Math.max(...amts) * 115) / 100 };
+    };
+    if (!proc && !isBizum) setRules((rs) => [nr, ...rs.filter(sobra).map(reatar).filter((x) => x && !ruleConditionsHold(x, mov.amount, mov.date)), ...rs.filter((r) => !sobra(r))]);
   };
   // Aplicar una propuesta de reclasificación del asistente: reclasifica los ids a la categoría.
   // Reversible (puedes volver a corregir a mano); no crea reglas para no ensuciar con lotes.
@@ -9639,7 +9667,7 @@ function AppMain() {
     // Una correccion sin regla se repite cada mes. Se crea una regla personal por cada patron
     // afectado, saltando los que ya tienen una: asi la proxima importacion ya llega clasificada.
     const porRegla = new Map();
-    for (const m of movs) if (ids.has(m.id) && m.pattern) { const nr = learnedRule(m, cat); porRegla.set(ruleId(nr), nr); }
+    for (const m of movs) if (ids.has(m.id) && m.pattern) { const nr = learnedRule(m, cat, undefined, movs.filter((o) => !ids.has(o.id))); porRegla.set(ruleId(nr), nr); }
     if (porRegla.size) {
       setRules((rs) => {
         const nuevas = [...porRegla.values()]
@@ -10415,7 +10443,7 @@ function AppMain() {
             onLoadAccounts: bankLoadAccounts, onPickAccount: bankPickAccount, onSyncOne: bankSyncOne, onSyncAll: bankSyncAll, onRemove: bankRemoveConnection }} />
       )}
       {pendingOpen && (
-        <PendientesPanel movsPend={movsPend} assets={assets} setAssets={setAssets} applyPending={applyPending}
+        <PendientesPanel movsPend={movsPend} amb={ambPend} assets={assets} setAssets={setAssets} applyPending={applyPending}
           aiOn={aiOn} ai={ai} autoRanRef={aiAutoRanRef} onClose={() => setPendingOpen(false)}
           tagGroups={groups} onToggleGroup={toggleGroup} onCreateGroup={createGroupFromMov}
           onRecat={recat} onReasset={reasset} onNote={setNote} onNoteAll={setNoteAll} onSetAmount={setAmount} onDelete={deleteMovs} />
