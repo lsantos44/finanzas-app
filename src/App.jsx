@@ -709,9 +709,11 @@ function deserializeMovs(raw) {
     splits: m.splits?.length ? m.splits.map((s) => ({ ...s, cat: migrateCat(s.cat) })) : m.splits,
   })).filter((m) => m.date instanceof Date && !isNaN(m.date));
   // Las devoluciones de un comercio conocido guardadas como ingreso pasan a la categoría de
-  // gasto del comercio, donde restan (Amazon → Compras). Idempotente: ya movidas no vuelven a casar.
+  // gasto del comercio, donde restan (Amazon → Compras). Una sola vez por movimiento (`dv`):
+  // si luego lo devuelves a ingreso a mano, se respeta.
   for (const m of list) {
-    if (!(m.amount > 0) || m.splits?.length || (m.category !== "Devoluciones y ayudas" && m.category !== "Otros ingresos")) continue;
+    if (m.dv || !(m.amount > 0) || m.splits?.length || (m.category !== "Devoluciones y ayudas" && m.category !== "Otros ingresos")) continue;
+    m.dv = 1;
     const r = matchRule(m.pattern || normalizePattern(m.concept), m.amount, DEFAULT_RULES, m.date, m.concept);
     if (r && !INGRESO_SET.has(r.cat) && !TRANSFER_SET.has(r.cat)) m.category = r.cat;
   }
@@ -1094,7 +1096,11 @@ function needsAmount(m) {
 // Regla personal que se aprende al corregir (o confirmar) un movimiento.
 function learnedRule(m, cat, asset) {
   const r = { k: m.pattern, cat, asset: asset || undefined, prio: PRIO.personal, scope: "personal" };
-  if (!needsAmount(m)) return r;
+  // Un positivo puesto en una categoría de gasto es una devolución: la regla lleva signo «+»
+  // para aplicarse a las próximas devoluciones (sin signo, una regla de gasto nunca casa con
+  // un ingreso y la corrección no enseñaba nada).
+  const refund = m.amount > 0 && !INGRESO_SET.has(cat) && !TRANSFER_SET.has(cat);
+  if (!needsAmount(m)) return refund ? { ...r, sign: "+" } : r;
   const a = Math.abs(m.amount);
   return { ...r, sign: m.amount < 0 ? "-" : "+", min: Math.floor(a * 85) / 100, max: Math.ceil(a * 115) / 100 };
 }
@@ -1147,6 +1153,7 @@ function ruleConditionsHold(r, amount, date) {
    compra con tarjeta no te paga; si entra dinero, es que te la han devuelto). */
 const REFUND_RE = /DEVOLUC|DEVOL\b|REEMBOLSO|REFUND|RETROCESION|ANULACION|ANUL\b|ABONO COMPRA/;
 const CARD_OP_RE = /^(COMPRA|PAGO (CON )?TARJ|PAGO MOVIL|TARJ)/;
+const REFUND_NEEDS_MARK = new Set(["Vivienda", "Comisiones", "Otros"]);
 
 function matchRule(pattern, amount, rules, date = null, concept = "") {
   const p = stripAccents(String(pattern).toUpperCase());
@@ -1154,12 +1161,22 @@ function matchRule(pattern, amount, rules, date = null, concept = "") {
   // Una devolución va a la categoría de gasto del comercio (Amazon → Compras, Iberdrola →
   // Suministros) y así resta de ese gasto en vez de contar como ingreso. Las condiciones de
   // la regla se miran sobre el cargo que se devuelve (mismo importe, en negativo).
+  // Sin marca de devolución también vale un positivo de un comercio concreto (muchos bancos
+  // ponen solo «AMAZON EU SARL»), pero no de categorías donde un
+  // positivo sí suele ser ingreso (alquiler, intereses) o una regla genérica de palabra.
   const c = stripAccents(String(concept || "").toUpperCase()).trim();
-  if (isIncome && (REFUND_RE.test(p) || REFUND_RE.test(c) || CARD_OP_RE.test(c))) {
+  const marked = REFUND_RE.test(p) || REFUND_RE.test(c) || CARD_OP_RE.test(c);
+  const transf = TRANSF_CONCEPT_RE.test(c);
+  if (isIncome && (marked || identifiesMerchant(p))) {
     for (const r of sortedRules(rules)) {
       if (r.active === false || INGRESO_SET.has(r.cat) || TRANSFER_SET.has(r.cat) || r.cat === "Impuestos") continue;
       if (r.scope === "personal" && !isConditional(r) && !identifiesMerchant(r.k)) continue;
-      if (!ruleConditionsHold(r, -amount, date)) continue;
+      if (!marked && (REFUND_NEEDS_MARK.has(r.cat) || (r.prio ?? PRIO.merchant) < PRIO.safety)) continue;
+      // Por transferencia solo un comercio de la lista de fábrica (IBERDROLA): un nombre de
+      // persona con regla tuya de gasto no convierte en devolución lo que te paga.
+      if (!marked && transf && r.scope === "personal") continue;
+      // Una regla aprendida de una devolución («+») se mira tal cual; una de gasto, contra el cargo.
+      if (!ruleConditionsHold(r, r.sign === "+" ? amount : -amount, date)) continue;
       const k = stripAccents(String(r.k).toUpperCase()).trim();
       if (k && (k.length <= 4 ? ruleRegex(k).test(p) : p.includes(k))) return r;
     }
@@ -1173,7 +1190,7 @@ function matchRule(pattern, amount, rules, date = null, concept = "") {
     if (!k) continue;
     // Una regla de categoría de GASTO no debe capturar un ingreso (mismo texto, signo opuesto):
     // p. ej. "ALQUILER" que pagas (Vivienda) vs. el que cobras (Alquileres cobrados).
-    if (isIncome && !INGRESO_SET.has(r.cat) && !TRANSFER_SET.has(r.cat)) continue;
+    if (isIncome && !INGRESO_SET.has(r.cat) && !TRANSFER_SET.has(r.cat) && r.sign !== "+") continue;
     // Simétrico: una categoría de ingreso no debe capturar un gasto.
     if (!isIncome && INGRESO_SET.has(r.cat)) continue;
     if (!ruleConditionsHold(r, amount, date)) continue;
@@ -9574,7 +9591,11 @@ function AppMain() {
     }));
     // Sustituye a las reglas del mismo patrón que clasificaban ESTE movimiento (no a las de
     // otros importes: la del parking sobrevive a corregir la de la inversión).
-    if (!proc && !isBizum) setRules((rs) => [nr, ...rs.filter((r) => r.k !== mov.pattern || (isConditional(nr) && !ruleConditionsHold(r, mov.amount, mov.date)))]);
+    // Una regla de gasto no se aplica a un positivo (salvo las «+»): corregir una devolución no
+    // debe borrar la regla de los cargos del mismo comercio.
+    const aplica = (r) => ruleConditionsHold(r, mov.amount, mov.date) && (mov.amount < 0 || INGRESO_SET.has(r.cat) || TRANSFER_SET.has(r.cat) || r.sign === "+");
+    const sobra = (r) => r.k === mov.pattern && (ruleId(r) === ruleId(nr) || (aplica(r) && (r.cat !== cat || !isConditional(nr))));
+    if (!proc && !isBizum) setRules((rs) => [nr, ...rs.filter((r) => !sobra(r))]);
   };
   // Aplicar una propuesta de reclasificación del asistente: reclasifica los ids a la categoría.
   // Reversible (puedes volver a corregir a mano); no crea reglas para no ensuciar con lotes.
