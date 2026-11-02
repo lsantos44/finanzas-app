@@ -711,11 +711,13 @@ function deserializeMovs(raw) {
   // Las devoluciones de un comercio conocido guardadas como ingreso pasan a la categoría de
   // gasto del comercio, donde restan (Amazon → Compras). Una sola vez por movimiento (`dv`):
   // si luego lo devuelves a ingreso a mano, se respeta.
+  const refunds = refundIndex(list);
   for (const m of list) {
-    if (m.dv || !(m.amount > 0) || m.splits?.length || (m.category !== "Devoluciones y ayudas" && m.category !== "Otros ingresos")) continue;
-    m.dv = 1;
+    if ((m.dv || 0) >= 2 || !(m.amount > 0) || m.splits?.length || (m.category !== "Devoluciones y ayudas" && m.category !== "Otros ingresos")) continue;
+    m.dv = 2;
     const r = matchRule(m.pattern || normalizePattern(m.concept), m.amount, DEFAULT_RULES, m.date, m.concept);
-    if (r && !INGRESO_SET.has(r.cat) && !TRANSFER_SET.has(r.cat)) m.category = r.cat;
+    const cat = r && !INGRESO_SET.has(r.cat) && !TRANSFER_SET.has(r.cat) ? r.cat : refundFromHistory(m, refunds);
+    if (cat) m.category = cat;
   }
   return list;
 }
@@ -2305,8 +2307,33 @@ const DEFAULT_MATERIALIDAD = 10;
    razona sobre el comercio, no sobre el cargo concreto).
 
    Devuelve Map(id -> { cat, asset, confirmed, source, conf, rule }). Pura y testeable. */
+/* Devolución por historial: el banco devuelve con el MISMO concepto que el cargo, en positivo.
+   Si ya hay cargos con ese patrón en una categoría de gasto, el positivo es su devolución y va
+   a esa categoría (donde resta). No en transferencias ni operaciones genéricas, y nunca por
+   más de lo que se llegó a cargar: eso ya no es una devolución. */
+function refundIndex(movs) {
+  const idx = new Map(); // patrón -> { cats: Map(cat -> n), max }
+  for (const m of movs || []) {
+    if (!(m.amount < 0) || m.splits?.length || !GASTO_SET.has(m.category) || m.category === "Otros" || m.category === "Impuestos" || needsAmount(m)) continue;
+    const e = idx.get(m.pattern) || { cats: new Map(), max: 0 };
+    e.cats.set(m.category, (e.cats.get(m.category) || 0) + 1);
+    e.max = Math.max(e.max, -m.amount);
+    idx.set(m.pattern, e);
+  }
+  return idx;
+}
+function refundFromHistory(m, idx) {
+  if (!(m.amount > 0) || needsAmount(m)) return null;
+  const e = idx.get(m.pattern);
+  if (!e || m.amount > e.max * 1.05) return null;
+  let top = null, n = 0, total = 0;
+  for (const [cat, c] of e.cats) { total += c; if (c > n) { top = cat; n = c; } }
+  return n / total >= 0.7 ? top : null;
+}
+
 function classifyForImport(freshMovs, existingMovs, rules, { materialidad = DEFAULT_MATERIALIDAD, assetMem = {} } = {}) {
   const behavior = buildBehaviorModel(existingMovs || []);
+  const refunds = refundIndex(existingMovs);
   const repByPattern = new Map();
   for (const m of freshMovs) {
     const prev = repByPattern.get(m.pattern);
@@ -2319,6 +2346,11 @@ function classifyForImport(freshMovs, existingMovs, rules, { materialidad = DEFA
     // Una regla tuya sin importe sobre una transferencia (las de antes de atarlas al importe)
     // clasificaba igual el parking y la inversión: se ignora y decide el importe.
     if (r && generic && r.scope === "personal" && !isConditional(r)) r = null;
+    // Positivo sin regla propia (solo el cajón de ingresos por defecto): ¿devolución de un cargo?
+    if (m.amount > 0 && (!r || !r.k)) {
+      const cat = refundFromHistory(m, refunds);
+      if (cat) { dec.set(m.id, { cat, asset: assetMem[m.pattern] || null, confirmed: true, source: "devolución", rule: null }); continue; }
+    }
     if (r) {
       // Una regla defensiva clasifica, pero pide que lo mires: crea el pendiente a propósito.
       dec.set(m.id, {
