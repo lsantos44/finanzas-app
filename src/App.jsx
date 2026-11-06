@@ -2218,7 +2218,7 @@ function missingIncome(movs, baseDate, { graceDays = 5, maxRetraso = 45 } = {}) 
   return out.sort((a, b) => b.amount - a.amount);
 }
 
-function buildMonthClose({ movs, receiptTrends, upcoming, saldoSerie, dataRange, realSaldo = null }) {
+function buildMonthClose({ movs, receiptTrends, upcoming, saldoSerie, dataRange, realSaldo = null, saldoEstimado = false }) {
   if (!movs || !movs.length || !dataRange) return null;
   const lastDate = dataRange[1];
   const mesKey = monthKey(lastDate);
@@ -2298,7 +2298,7 @@ function buildMonthClose({ movs, receiptTrends, upcoming, saldoSerie, dataRange,
     gasto: r2c(gastoMes), ingreso: r2c(ingresoMes), neto: r2c(ingresoMes - gastoMes),
     gastoPrev: r2c(gastoPrev), deltaGasto: gastoPrev > 0 ? r2c((gastoMes - gastoPrev) / gastoPrev) : null,
     topCats, subidas,
-    saldoNow: saldoNow != null ? r2c(saldoNow) : null, saldoReal: realSaldo != null,
+    saldoNow: saldoNow != null ? r2c(saldoNow) : null, saldoReal: realSaldo != null, saldoEstimado: realSaldo != null && saldoEstimado,
     saldoProj, pendientes: r2c(pendientes), ingresosPrev: r2c(ingresosPrev),
     discrecional: r2c(discrecional), diasRestantes,
   };
@@ -5189,7 +5189,7 @@ function CierreMesCard({ cierre, onDrill }) {
           {cierre.ingreso > 0 && <div className="text-xs text-slate-400">{fmtPct(cierre.neto / cierre.ingreso)} de lo ingresado</div>}
         </div>
         <div className="bg-white p-4">
-          <div className="text-[10px] font-medium uppercase tracking-wide text-slate-400">Saldo actual{cierre.saldoReal ? <span className="ml-1 rounded-full px-1.5 py-px text-[9px] font-semibold" style={{ background: C.accentSoft, color: C.accent }}>banco</span> : ""}</div>
+          <div className="text-[10px] font-medium uppercase tracking-wide text-slate-400">Saldo actual{cierre.saldoReal ? <span className="ml-1 rounded-full px-1.5 py-px text-[9px] font-semibold" style={{ background: C.accentSoft, color: C.accent }} title={cierre.saldoEstimado ? "Último saldo leído del banco más los movimientos que han llegado después" : "Leído del banco"}>{cierre.saldoEstimado ? "banco + movimientos" : "banco"}</span> : ""}</div>
           {cierre.saldoNow != null
             ? <div className="text-2xl font-bold tracking-tight" style={{ ...tnum, color: cierre.saldoNow >= 0 ? C.ink : C.expense }}>{fmtE0(cierre.saldoNow)}</div>
             : <div className="text-sm text-slate-400">Sin datos de saldo</div>}
@@ -9150,6 +9150,7 @@ function AppMain() {
       return {
         id: MOV_ID++, date, concept: r.concept || "Sin concepto", amount: Math.round((Number(r.amount) || 0) * 100) / 100,
         saldo: null, pattern: normalizePattern(r.concept || ""), file: sourceLabel || "Banco", bankId: r.bankId || undefined,
+        ...(typeof r.saldo === "number" && isFinite(r.saldo) ? { bs: r.saldo } : {}), // saldo tras el movimiento (banco)
         category: null, assetName: undefined, splits: null, groupIds: [], confirmed: false,
         ...(r.accountUid ? { accountUid: r.accountUid } : {}),
         ...(r.currency && r.currency !== "EUR" ? { currency: r.currency } : {}),
@@ -9254,10 +9255,10 @@ function AppMain() {
         if (rb.ok) {
           const jb = await rb.json();
           const b0 = (jb.balances || []).find((x) => x.amount != null);
-          if (b0) bal = { amount: b0.amount, currency: b0.currency || "EUR", at: b0.at || null };
+          if (b0) bal = { amount: b0.amount, currency: b0.currency || "EUR", at: b0.at || null, booked: typeof b0.booked === "number" ? b0.booked : null, bookedAt: b0.bookedAt || null };
         }
       } catch { /* saldo opcional */ }
-      persistBank((b) => ({ ...b, connections: (b.connections || []).map((c) => (c.id === connId ? { ...c, lastSync: Date.now(), lastCount: rows.length, lastNewest: newest || c.lastNewest || null, lastError: errs.length ? errs.join(" · ") : null, lastErrorAt: errs.length ? Date.now() : null, expired: false, ...(bal ? { balance: bal.amount, balanceCur: bal.currency, balanceAt: bal.at } : {}) } : c)) }));
+      persistBank((b) => ({ ...b, connections: (b.connections || []).map((c) => (c.id === connId ? { ...c, lastSync: Date.now(), lastCount: rows.length, lastNewest: newest || c.lastNewest || null, lastError: errs.length ? errs.join(" · ") : null, lastErrorAt: errs.length ? Date.now() : null, expired: false, ...(bal ? { balance: bal.amount, balanceCur: bal.currency, balanceAt: bal.at, balanceRead: Date.now(), balanceBooked: bal.booked, balanceBookedAt: bal.bookedAt } : {}) } : c)) }));
       // Distinguir «el banco no manda nada» de «llega pero ya lo tenías» es lo que permite
       // diagnosticar sin abrir la consola: por eso el mensaje dice ambas cifras.
       const detail = n ? `${nfNum.format(n)} movimientos nuevos de ${conn.aspsp}.`
@@ -9939,11 +9940,30 @@ function AppMain() {
   }, [movs]);
 
   // Saldo REAL: suma de los saldos de las cuentas bancarias conectadas (si los hay).
+  /* Saldo del banco AL DÍA. El saldo solo se lee cuando la app consulta el banco; las revisiones
+     automáticas del servidor traen movimientos pero no saldo (pedirlo gastaría consultas del
+     límite diario). Así que, si después han llegado movimientos de esa conexión, se parte del
+     saldo contable y su fecha y se suman los contabilizados después; si el banco da el saldo
+     tras cada movimiento, se usa ese directamente. Sin movimientos nuevos, el saldo leído. */
   const bankSaldo = useMemo(() => {
     const conns = (bankCfg.connections || []).filter((c) => typeof c.balance === "number");
-    return conns.length ? conns.reduce((s, c) => s + c.balance, 0) : null;
-  }, [bankCfg]);
-  const cierre = useMemo(() => buildMonthClose({ movs, receiptTrends, upcoming, saldoSerie, dataRange, realSaldo: bankSaldo }), [movs, receiptTrends, upcoming, saldoSerie, dataRange, bankSaldo]);
+    if (!conns.length) return null;
+    const dia = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    let total = 0, estimado = false, hasta = null;
+    for (const c of conns) {
+      const base = typeof c.balanceBooked === "number" ? c.balanceBooked : c.balance;
+      const baseDia = String((typeof c.balanceBooked === "number" ? c.balanceBookedAt : c.balanceAt) || (c.balanceRead || c.lastSync ? dia(new Date(c.balanceRead || c.lastSync)) : "")).slice(0, 10);
+      const despues = baseDia ? movs.filter((m) => m.bankId && m.file === (c.aspsp || "Banco") && !m.omit && dia(m.date) > baseDia) : [];
+      if (!despues.length) { total += c.balance; continue; }
+      despues.sort((a, b) => a.date - b.date);
+      const ult = despues[despues.length - 1];
+      total += typeof ult.bs === "number" ? ult.bs : base + despues.reduce((s, m) => s + m.amount, 0);
+      estimado = estimado || typeof ult.bs !== "number";
+      if (!hasta || ult.date > hasta) hasta = ult.date;
+    }
+    return { amount: Math.round(total * 100) / 100, estimado, hasta };
+  }, [bankCfg, movs]);
+  const cierre = useMemo(() => buildMonthClose({ movs, receiptTrends, upcoming, saldoSerie, dataRange, realSaldo: bankSaldo ? bankSaldo.amount : null, saldoEstimado: !!bankSaldo?.estimado }), [movs, receiptTrends, upcoming, saldoSerie, dataRange, bankSaldo]);
 
   const createGroupFromProposal = useCallback((p) => {
     setGroups((gs) => {
