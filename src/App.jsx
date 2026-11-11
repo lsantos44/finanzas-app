@@ -20,7 +20,6 @@ import {
 const THEME_KEY = "finz:theme:v1";
 // Sello de versión visible (en Ajustes y en el pie): sirve para confirmar de un vistazo
 // qué build está desplegado. Se sube a mano en cada despliegue.
-const APP_BUILD = "2026-09-08";
 const TOKENS = {
   light: {
     bg: "#F3F6FA", surface: "#FFFFFF", surfaceAlt: "#F8FAFC",
@@ -2773,7 +2772,7 @@ function runQuery(ctx, args = {}) {
           if (okParte && !okParte(p)) continue;
           const key = dim === "categoria" ? p.cat
             : dim === "macro" ? macroOf(p.cat)
-            : dim === "comercio" ? m.pattern
+            : dim === "comercio" ? (ctx.detail || (identifiesMerchant(m.pattern) && !needsAmount(m)) ? m.pattern : "Transferencias y Bizum (sin detalle)")
             : dim === "activo" ? (p.asset || "Sin activo")
             : dim === "mes" ? monthKey(m.date)
             : dim === "año" ? String(m.date.getFullYear())
@@ -2784,7 +2783,7 @@ function runQuery(ctx, args = {}) {
       }
     }
     let filas = [...acc.entries()].map(([clave, x]) => ({
-      clave, ...(dim === "comercio" ? { ejemplo: x.sample.slice(0, 46) } : {}),
+      clave, ...(dim === "comercio" && ctx.detail ? { ejemplo: x.sample.slice(0, 46) } : {}),
       gasto: r2(x.gasto), ingreso: r2(x.ingreso), neto: r2(x.ingreso - x.gasto), movimientos: x.n,
     }));
     const temporal = dim === "mes" || dim === "año";
@@ -2853,7 +2852,9 @@ function buildGroupProposal(ctx, { nombre, emoji, keywords, ids } = {}) {
       coincidencias: matches.length,
       gasto_total: gasto,
       por_categoria: [...byCat.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([c, n]) => `${c} (${n})`),
-      ejemplos: matches.slice(0, 5).map((m) => m.concept.slice(0, 46)),
+      // Sin acceso a detalle, solo nombres de comercio: un concepto de Bizum o transferencia
+      // lleva nombres de personas.
+      ejemplos: ctx.detail ? matches.slice(0, 5).map((m) => m.concept.slice(0, 46)) : [...new Set(matches.filter((m) => identifiesMerchant(m.pattern) && !needsAmount(m)).map((m) => m.pattern))].slice(0, 5),
       nota: "Propuesta mostrada al usuario con un botón para crearla. NO está creada todavía.",
     },
     ui: { nombre: String(nombre).slice(0, 30), emoji: emoji || "🏷️", keywords: kws, ids: [...idSet], count: matches.length, gasto },
@@ -2964,7 +2965,8 @@ function buildAgentTools(detail) {
 
 function buildAssistantSystem(ctx, detail) {
   const taxo = MACROS.map((m) => `- ${m.name}: ${m.cats.join(", ")}`).join("\n");
-  const acts = ctx.assets.length ? ctx.assets.map((a) => `- ${a.name} (${a.categories.join(", ") || "sin categorías fijas"})`).join("\n") : "- (ninguno definido)";
+  const USO = { alquiler: "en alquiler", vivienda: "vivienda habitual", segunda: "inmueble sin alquilar", otro: "otro" };
+  const acts = ctx.assets.length ? ctx.assets.map((a) => `- ${a.name} (${a.categories.join(", ") || "sin categorías fijas"}; uso: ${USO[a.uso] || "otro"}${a.value ? `; valor estimado ${Math.round(a.value)} €` : ""})`).join("\n") : "- (ninguno definido)";
   const tags = ctx.groups.length ? ctx.groups.map((g) => `- ${g.name}${g.keywords?.length ? ` [claves: ${g.keywords.join(", ")}]` : ""}`).join("\n") : "- (ninguna definida)";
   const buds = Object.entries(ctx.budgets || {}).filter(([, v]) => v > 0);
   const budTxt = buds.length ? buds.map(([c, v]) => `${c} ${v} €/mes`).join(" · ") : "sin presupuestos definidos";
@@ -2976,7 +2978,7 @@ function buildAssistantSystem(ctx, detail) {
     "Activos del usuario:\n" + acts,
     "Etiquetas del usuario (clusters transversales):\n" + tags,
     "Presupuestos: " + budTxt + ".",
-    "Reglas: 1) Cualquier cifra sale de las herramientas; nunca la estimes de memoria. 2) Las consultas se ejecutan en su propio dispositivo: tú solo ves los resultados que devuelven. 3) Si una consulta vuelve vacía, revisa nombres exactos o pregunta. 4) 'Rentabilidad' de un activo aquí significa neto ingresos−gastos de sus movimientos (un extracto no contiene valor de mercado); dilo si procede. 5) Para agrupar gastos transversales usa proponer_etiqueta y deja que el usuario confirme; para corregir categorías (mal clasificados o sin clasificar) usa proponer_reclasificacion con la categoría destino EXACTA, y deja que el usuario aplique. Nunca afirmes que has cambiado nada: solo propones. 6) Para pagos futuros usa proximos_cargos y di que son estimaciones. 7) Un resultado vacío puede significar que NO hay datos de ese periodo, no que no haya habido gasto: contrasta el periodo pedido con el rango de datos y, si cae fuera aunque sea en parte, dilo explícitamente («tus datos llegan hasta el X») en vez de afirmar que no ha gastado nada." + (detail ? "" : " 8) El usuario ha limitado tu acceso: solo agregados, sin movimientos individuales."),
+    "Reglas: 1) Cualquier cifra sale de las herramientas; nunca la estimes de memoria. 2) Las consultas se ejecutan en su propio dispositivo: tú solo ves los resultados que devuelven. 3) Si una consulta vuelve vacía, revisa nombres exactos o pregunta. 4) La rentabilidad de un activo es su neto (ingresos−gastos de sus movimientos), anualizado con su propio periodo, dividido entre el valor estimado que el usuario le ha puesto (si lo tiene); sin valor, da solo el neto y dilo. Para la renta de un inmueble remite al «Informe por inmueble» de la pestaña Activos. 5) Para agrupar gastos transversales usa proponer_etiqueta y deja que el usuario confirme; para corregir categorías (mal clasificados o sin clasificar) usa proponer_reclasificacion con la categoría destino EXACTA, y deja que el usuario aplique. Nunca afirmes que has cambiado nada: solo propones. 6) Para pagos futuros usa proximos_cargos y di que son estimaciones. 7) Un resultado vacío puede significar que NO hay datos de ese periodo, no que no haya habido gasto: contrasta el periodo pedido con el rango de datos y, si cae fuera aunque sea en parte, dilo explícitamente («tus datos llegan hasta el X») en vez de afirmar que no ha gastado nada." + (detail ? "" : " 8) El usuario ha limitado tu acceso: solo agregados, sin movimientos individuales."),
   ].join("\n\n");
 }
 
@@ -6962,21 +6964,43 @@ function mdInline(text, keyBase) {
   }
   return out;
 }
+// Markdown mínimo y SIN HTML (todo pasa por mdInline, que solo genera texto, negrita y código):
+// párrafos, títulos, listas (con su numeración) y tablas. Las tablas las pide el propio prompt
+// del asistente, y antes salían como líneas con barras «|».
 function MDLite({ text }) {
   const lines = String(text || "").split("\n");
-  return (
-    <div className="space-y-1">
-      {lines.map((ln, i) => {
-        const t = ln.trim();
-        if (!t) return <div key={i} className="h-1" />;
-        const mList = t.match(/^([-•*]|\d+[.)])\s+(.*)$/);
-        if (mList) return <div key={i} className="flex gap-1.5 pl-1"><span className="shrink-0 text-slate-400">•</span><span className="min-w-0 flex-1">{mdInline(mList[2], i)}</span></div>;
-        const mHead = t.match(/^#{1,4}\s+(.*)$/);
-        if (mHead) return <div key={i} className="font-semibold">{mdInline(mHead[1], i)}</div>;
-        return <div key={i}>{mdInline(ln, i)}</div>;
-      })}
-    </div>
-  );
+  const out = [];
+  const celdas = (l) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    // Tabla: cabecera | separador (---) | filas
+    if (t.startsWith("|") && /^\|?\s*:?-{2,}/.test((lines[i + 1] || "").trim())) {
+      const cab = celdas(t);
+      const filas = [];
+      let j = i + 2;
+      while (j < lines.length && lines[j].trim().startsWith("|")) { filas.push(celdas(lines[j])); j++; }
+      const num = (c) => /^[-+]?[\d.,]+\s*(€|%)?$/.test(c);
+      out.push(
+        <div key={i} className="-mx-1 overflow-x-auto">
+          <table className="my-1 w-full text-xs">
+            <thead><tr className="border-b" style={{ borderColor: C.line }}>{cab.map((c, k) => <th key={k} className="px-1.5 py-1 text-left font-semibold text-slate-600">{mdInline(c, `${i}h${k}`)}</th>)}</tr></thead>
+            <tbody>{filas.map((f, r) => <tr key={r} className="border-b last:border-0" style={{ borderColor: C.line }}>{f.map((c, k) => <td key={k} className={`px-1.5 py-1 ${num(c) ? "text-right" : ""}`} style={num(c) ? tnum : undefined}>{mdInline(c, `${i}r${r}c${k}`)}</td>)}</tr>)}</tbody>
+          </table>
+        </div>
+      );
+      i = j - 1;
+      continue;
+    }
+    if (!t) { out.push(<div key={i} className="h-1" />); continue; }
+    const mNum = t.match(/^(\d+)[.)]\s+(.*)$/);
+    if (mNum) { out.push(<div key={i} className="flex gap-1.5 pl-1"><span className="shrink-0 text-slate-500" style={tnum}>{mNum[1]}.</span><span className="min-w-0 flex-1">{mdInline(mNum[2], i)}</span></div>); continue; }
+    const mList = t.match(/^[-•*]\s+(.*)$/);
+    if (mList) { out.push(<div key={i} className="flex gap-1.5 pl-1"><span className="shrink-0 text-slate-400">•</span><span className="min-w-0 flex-1">{mdInline(mList[1], i)}</span></div>); continue; }
+    const mHead = t.match(/^#{1,4}\s+(.*)$/);
+    if (mHead) { out.push(<div key={i} className="font-semibold">{mdInline(mHead[1], i)}</div>); continue; }
+    out.push(<div key={i}>{mdInline(lines[i], i)}</div>);
+  }
+  return <div className="space-y-1">{out}</div>;
 }
 
 function TraceSummary({ trace }) {
@@ -7048,7 +7072,6 @@ function ProposalCard({ p, created, onCreate }) {
 function AsistenteTab({ aiOn, setAiOn, hasData, ctx, ai, aiDetail, onCreateProposal, onApplyReclassify, onOpenSettings, msgs, setMsgs, conversations, activeId, onNewChat, onSelectChat, onDeleteChat }) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [createdKeys, setCreatedKeys] = useState(() => new Set());
   const [convMenu, setConvMenu] = useState(false);
   const [convQuery, setConvQuery] = useState("");
   const endRef = useRef(null);
@@ -7094,7 +7117,8 @@ function AsistenteTab({ aiOn, setAiOn, hasData, ctx, ai, aiDetail, onCreatePropo
   }, [msgs, busy, irAlFinal]);
 
   const suggestions = [
-    "Revisa mis movimientos sin categorizar y propón cómo clasificarlos",
+    // Revisar movimientos uno a uno necesita el acceso a detalle (las herramientas de reclasificar).
+    ...(aiDetail ? ["Revisa mis movimientos sin categorizar y propón cómo clasificarlos"] : ["¿Cuánto he gastado este año por categoría y cómo va frente al año pasado?"]),
     "¿Qué recibos me han subido y cuánto suponen al año?",
     "Etiqueta como Pádel todo mi gasto en pádel",
     "¿En qué comercios gasté más el mes pasado?",
@@ -7115,27 +7139,33 @@ function AsistenteTab({ aiOn, setAiOn, hasData, ctx, ai, aiDetail, onCreatePropo
     if (!q || busy || !aiOn) return;
     setInput("");
     const history = [...msgs.filter((m) => !m.error), { role: "user", content: q }];
-    setMsgs((ms) => [...ms, { role: "user", content: q }]);
+    const convId = activeId;
+    setMsgs((ms) => [...ms, { role: "user", content: q }], convId);
     setBusy(true);
     const trace = [];
     const proposals = [];
     try {
       const system = buildAssistantSystem(ctx, aiDetail);
       const tools = buildAgentTools(aiDetail);
-      const runTool = (n, a) => runAgentTool(ctx, n, a, { onProposal: (ui) => proposals.push(ui) });
+      // Si una herramienta falla, el modelo recibe el error y puede seguir; antes se perdía la respuesta entera.
+      const runTool = (n, a) => {
+        try { return runAgentTool({ ...ctx, detail: !!aiDetail }, n, a, { onProposal: (ui) => proposals.push(ui) }); } catch (e) { return { error: "La herramienta falló: " + ((e && e.message) || e) }; }
+      };
       const onTrace = (n, a, out) => trace.push({ name: n, argsTxt: JSON.stringify(a), resumen: resumen(n, out) });
       const reply = await aiChatWithTools(ai, {
         system, tools, runTool, onTrace,
         history: history.map((m) => ({ role: m.role, content: m.content })),
       });
-      setMsgs((ms) => [...ms, { role: "assistant", content: reply, trace, proposals }]);
+      setMsgs((ms) => [...ms, { role: "assistant", content: reply, trace, proposals }], convId);
     } catch (e) {
       const isNet = /failed to fetch|networkerror|load failed/i.test(e.message);
       const custom = ai && ai.provider !== "claude";
-      const content = isNet && custom
-        ? `No he podido conectar con ${aiProviderLabel(ai)}. Dentro de Claude.ai solo funciona el proveedor integrado; tu elección se aplicará en la versión instalada en tu iPhone. Si ya estás en tu web, revisa la URL del proveedor y tu conexión.`
-        : "No he podido conectar con el asistente (" + e.message + "). Inténtalo de nuevo.";
-      setMsgs((ms) => [...ms, { role: "assistant", content, error: true, trace, proposals: [] }]);
+      const content = /\b401\b/.test(e.message) && !custom
+        ? "El proveedor «Claude (integrado)» solo funciona dentro de claude.ai. Elige un proveedor con tu propia clave en Ajustes → Inteligencia artificial."
+        : isNet && custom
+          ? `No he podido conectar con ${aiProviderLabel(ai)}. Revisa la dirección del proveedor y tu conexión, y vuelve a intentarlo.`
+          : "No he podido conectar con el asistente (" + e.message + "). Inténtalo de nuevo.";
+      setMsgs((ms) => [...ms, { role: "assistant", content, error: true, trace, proposals: [] }], convId);
     } finally { setBusy(false); }
   };
 
@@ -7245,11 +7275,16 @@ function AsistenteTab({ aiOn, setAiOn, hasData, ctx, ai, aiDetail, onCreatePropo
                 style={user ? { background: C.accent } : { background: C.surface, border: `1px solid ${m.error ? "#FECDD3" : C.line}` }}>
                 {user ? <div className="whitespace-pre-wrap">{m.content}</div> : <MDLite text={m.content} />}
                 {!user && <TraceSummary trace={m.trace} />}
-                {!user && (m.proposals || []).map((p, pi) => {
-                  const key = mi + "-" + pi;
-                  return <ProposalCard key={key} p={p} created={createdKeys.has(key)}
-                    onCreate={() => { (p.kind === "reclass" ? onApplyReclassify : onCreateProposal)(p); setCreatedKeys((s) => new Set(s).add(key)); }} />;
-                })}
+                {/* «Aplicada» se guarda en el propio mensaje: sobrevive a recargar y no se confunde
+                    entre conversaciones (antes era un estado local por posición). */}
+                {!user && (m.proposals || []).map((p, pi) => (
+                  <ProposalCard key={mi + "-" + pi} p={p} created={!!p.aplicada}
+                    onCreate={() => {
+                      const ok = (p.kind === "reclass" ? onApplyReclassify : onCreateProposal)(p);
+                      if (ok === false) return;
+                      setMsgs((ms) => ms.map((x, i) => (i === mi ? { ...x, proposals: x.proposals.map((q, j) => (j === pi ? { ...q, aplicada: true } : q)) } : x)), activeId);
+                    }} />
+                ))}
               </div>
             </div>
           );
@@ -8152,7 +8187,7 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
 
           <label className="mt-3 flex cursor-pointer items-start gap-2 text-sm text-slate-700">
             <input type="checkbox" className="mt-0.5 accent-blue-600" checked={aiDetail} onChange={(e) => setAiDetail(e.target.checked)} />
-            <span>Permitir que la IA consulte movimientos individuales<span className="block text-xs text-slate-400">Desactivado, el asistente solo puede pedir totales agregados (menos granularidad, más privacidad).</span></span>
+            <span>Permitir que la IA consulte movimientos individuales<span className="block text-xs text-slate-400">Desactivado, el asistente solo puede pedir totales y nombres de comercios, sin movimientos uno a uno ni nombres de personas.</span></span>
           </label>
           <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
             Con independencia de este ajuste, al clasificar movimientos pendientes se envían al proveedor de IA los
@@ -8500,6 +8535,7 @@ export {
   classifyForImport, dedupeAgainst, movKey, normalizePattern, auditRules, learnedRule, needsAmount, ambiguousPatterns,
   CATEGORIES, rebuildRules, deserializeMovs, calcRentaInmueble, calcImputacion, conciliar, viviendaPorDefecto, VIVIENDA, computeBankSaldo, refundIndex, refundFromHistory,
   runQuery, totalsOf,
+  MDLite,
   makeAccessLink, abrirAcceso, parseAccessLink, parseEsNumber, parseDateAny, tokenizeCSV, detectDelimiter, analyzeRows, buildMovements,
   buildMonthClose, missingIncome, upcomingIncome, upcomingCharges, detectRecurring, analyzeReceiptTrends,
 };
@@ -8773,9 +8809,12 @@ function AppMain() {
   }, [chatStore]);
   const activeConv = chatStore.convs.find((c) => c.id === chatStore.activeId) || chatStore.convs[0];
   const chatMsgs = activeConv ? activeConv.msgs : [];
-  const setChatMsgs = useCallback((arg) => {
+  // `convId`: la conversación de la pregunta. Sin él, una respuesta que llegaba después de
+  // cambiar de chat aparecía en el chat equivocado.
+  const setChatMsgs = useCallback((arg, convId) => {
     setChatStore((store) => {
-      const convs = store.convs.map((c) => (c.id === store.activeId ? { ...c, msgs: typeof arg === "function" ? arg(c.msgs) : arg, updatedAt: Date.now() } : c));
+      const destino = convId || store.activeId;
+      const convs = store.convs.map((c) => (c.id === destino ? { ...c, msgs: typeof arg === "function" ? arg(c.msgs) : arg, updatedAt: Date.now() } : c));
       return { ...store, convs };
     });
   }, []);
@@ -10470,7 +10509,10 @@ function AppMain() {
 
   const createGroupFromProposal = useCallback((p) => {
     setGroups((gs) => {
-      if (gs.some((g) => g.name.toLowerCase() === p.nombre.toLowerCase())) return gs;
+      // Si la etiqueta ya existe, se le añaden los movimientos y palabras propuestos (antes no
+      // se hacía nada, pero la tarjeta decía «Creada»).
+      const ya = gs.find((g) => g.name.toLowerCase() === p.nombre.toLowerCase());
+      if (ya) return gs.map((g) => (g === ya ? { ...g, keywords: [...new Set([...(g.keywords || []), ...(p.keywords || [])])], movementIds: [...new Set([...(g.movementIds || []), ...(p.ids || [])])] } : g));
       return [...gs, { id: "g" + Date.now(), name: p.nombre, emoji: p.emoji || "🏷️", color: GROUP_COLORS[gs.length % GROUP_COLORS.length], keywords: p.keywords || [], movementIds: p.ids || [], excludedIds: [] }];
     });
   }, []);
@@ -10884,8 +10926,8 @@ function AppMain() {
             Tus datos se guardan solo en {STORE.kind} y puedes exportarlos o borrarlos desde Ajustes.{" "}
             {aiDetail
               ? "Has permitido que el asistente consulte movimientos individuales."
-              : "El asistente solo recibe totales agregados; al clasificar pendientes sí ve los nombres de comercio."}
-            <span className="mt-1 block text-[10px] text-slate-300">versión {APP_BUILD}</span>
+              : "El asistente recibe totales y nombres de comercios, nunca movimientos uno a uno ni nombres de personas."}
+            <span className="mt-1 block text-[10px] text-slate-300">versión {BUILD_STAMP}</span>
           </footer>
         </div>
       )}
