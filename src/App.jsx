@@ -96,7 +96,23 @@ const ALL_TABS = [
   { id: "asistente", label: "Asistente", icon: Bot },
 ];
 const ASSET_EMOJI = { Coche: "🚗", Casa: "🏠", Mascota: "🐾", "Segunda residencia": "🏖️" };
-const EMOJI_CHOICES = ["🚗", "🏠", "🏖️", "🐾", "💻", "🛵", "🚲", "⛵", "📦", "🎸", "🏍️", "🚐"];
+const EMOJI_CHOICES = ["🚗", "🏠", "🏖️", "🐾", "💻", "🛵", "🚲", "⛵", "📦", "🎸", "🏍️", "🚐", "📈", "🏢"];
+/* Tipo de activo, para seleccionar de golpe «todos los vehículos» o «todos los inmuebles» y
+   ver su subtotal. Se puede fijar al editar el activo; si no, se deduce del uso, el icono y el
+   nombre. */
+const TIPOS_ACTIVO = [
+  { v: "inmueble", l: "🏠 Inmuebles" }, { v: "vehiculo", l: "🚗 Vehículos" },
+  { v: "inversion", l: "📈 Inversiones" }, { v: "mascota", l: "🐾 Mascotas" }, { v: "otro", l: "📦 Otros" },
+];
+function tipoActivo(a) {
+  if (a?.tipo) return a.tipo;
+  const n = stripAccents(String(a?.name || "").toLowerCase());
+  if (["alquiler", "vivienda", "segunda"].includes(a?.uso) || ["🏠", "🏖️", "🏢"].includes(a?.emoji) || /\b(casa|piso|apartamento|local|garaje|plaza|chalet|vivienda|finca|calle|avda)\b/.test(n)) return "inmueble";
+  if (["🚗", "🛵", "🚲", "⛵", "🏍️", "🚐"].includes(a?.emoji) || /\b(coche|moto|furgo\w*|bici\w*|barco|vehiculo|auto)\b/.test(n)) return "vehiculo";
+  if (a?.emoji === "📈" || /\b(fondo|fondos|acciones|cartera|broker|myinvestor|indexa|inversion\w*|etf|plan de pensiones)\b/.test(n)) return "inversion";
+  if (a?.emoji === "🐾" || /\b(perro|gato|mascota)\b/.test(n)) return "mascota";
+  return "otro";
+}
 const GROUP_EMOJI = ["🏃", "✈️", "🎉", "🎄", "💍", "🍼", "🏖️", "🎓", "🏡", "🎮", "📸", "🎁", "⚽", "🚴", "🏔️", "🛠️"];
 
 /* ============================================================
@@ -5716,7 +5732,8 @@ function AssetModal({ asset, allAssets = [], onSave, onDelete, onClose }) {
   const [emoji, setEmoji] = useState(asset?.emoji || "📦");
   const [cats, setCats] = useState(new Set(asset?.categories || []));
   const [value, setValue] = useState(asset?.value != null ? String(asset.value) : "");
-  const [uso, setUso] = useState(asset?.uso || "otro"); // alquiler | vivienda | otro
+  const [uso, setUso] = useState(asset?.uso || "otro"); // alquiler | vivienda | segunda | otro
+  const [tipo, setTipo] = useState(asset?.tipo || "");  // vacío = deducido
   return (
     <Modal title={asset ? "Editar activo" : "Nuevo activo"} onClose={onClose}>
       <div className="space-y-4">
@@ -5726,6 +5743,13 @@ function AssetModal({ asset, allAssets = [], onSave, onDelete, onClose }) {
           <div className="flex-1"><label className="text-xs font-medium text-slate-600">Nombre</label>
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Coche, Casa, Segunda residencia…" className="mt-1 w-full rounded-lg border px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ borderColor: C.line }} /></div>
         </div>
+        <label className="block text-xs font-medium text-slate-600">Tipo
+          <select value={tipo} onChange={(e) => setTipo(e.target.value)} className="mt-1 block w-full rounded-lg border bg-white px-2 py-1.5 text-sm" style={{ borderColor: C.line }}>
+            <option value="">Automático ({TIPOS_ACTIVO.find((t) => t.v === tipoActivo({ name, emoji, uso }))?.l})</option>
+            {TIPOS_ACTIVO.map((t) => <option key={t.v} value={t.v}>{t.l}</option>)}
+          </select>
+          <span className="mt-0.5 block text-[11px] font-normal text-slate-500">Para ver juntos, por ejemplo, todos tus vehículos o todos tus inmuebles.</span>
+        </label>
         <div>
           <label className="text-xs font-medium text-slate-600">Uso</label>
           <p className="mb-1.5 mt-0.5 text-xs text-slate-400">Para el informe por inmueble: distingue lo que alquilas de tu vivienda.</p>
@@ -5791,7 +5815,7 @@ function AssetModal({ asset, allAssets = [], onSave, onDelete, onClose }) {
         </div>
         <div className="flex justify-between gap-2">
           {asset ? <Btn kind="danger" onClick={onDelete}><Trash2 size={14} /> Eliminar</Btn> : <span />}
-          <div className="flex gap-2"><Btn onClick={onClose}>Cancelar</Btn><Btn kind="primary" disabled={!name.trim()} onClick={() => { const v = parseFloat(String(value).replace(",", ".")); onSave({ name: name.trim(), emoji, categories: [...cats], value: isFinite(v) && v > 0 ? v : undefined, uso, ...((uso === "alquiler" || uso === "segunda") ? { fiscal } : {}) }); }}>Guardar</Btn></div>
+          <div className="flex gap-2"><Btn onClick={onClose}>Cancelar</Btn><Btn kind="primary" disabled={!name.trim()} onClick={() => { const v = parseFloat(String(value).replace(",", ".")); onSave({ name: name.trim(), emoji, categories: [...cats], value: isFinite(v) && v > 0 ? v : undefined, uso, tipo: tipo || undefined, ...((uso === "alquiler" || uso === "segunda") ? { fiscal } : {}) }); }}>Guardar</Btn></div>
         </div>
       </div>
     </Modal>
@@ -6092,6 +6116,24 @@ function ActivosTab({ assets, setAssets, agg, rentaAgg, allAgg, onDrill, periodL
   const totValor = valorados.reduce((s, r) => s + r.a.value, 0);
   const totRent = totValor ? valorados.reduce((s, r) => s + r.netoAnual, 0) / totValor : null;
 
+  // Selección de activos para ver su subtotal («todos los alquileres», «todos los vehículos»…).
+  // Se recalcula sola al cambiar el periodo o los datos, y se recuerda en este navegador.
+  const [sel, setSelRaw] = useState(() => { try { return new Set(JSON.parse(localStorage.getItem("finz:activos-sel") || "[]")); } catch { return new Set(); } });
+  const setSel = (next) => { setSelRaw(next); try { localStorage.setItem("finz:activos-sel", JSON.stringify([...next])); } catch { /* sin almacenamiento */ } };
+  const toggleSel = (id) => { const n = new Set(sel); n.has(id) ? n.delete(id) : n.add(id); setSel(n); };
+  const atajos = [
+    ...(assets.some((a) => a.uso === "alquiler") ? [{ l: "🔑 Alquileres", ids: assets.filter((a) => a.uso === "alquiler").map((a) => a.id) }] : []),
+    ...TIPOS_ACTIVO.map((t) => ({ l: t.l, ids: assets.filter((a) => tipoActivo(a) === t.v).map((a) => a.id) })).filter((x) => x.ids.length),
+  ];
+  const mismo = (ids) => ids.length === sel.size && ids.every((id) => sel.has(id));
+  const elegidos = resumen.filter((r) => sel.has(r.a.id));
+  const sub = elegidos.length ? (() => {
+    const ing = elegidos.reduce((t, r) => t + r.ingreso, 0), gas = elegidos.reduce((t, r) => t + r.gasto, 0);
+    const conValor = elegidos.filter((r) => r.a.value);
+    const valor = conValor.reduce((t, r) => t + r.a.value, 0);
+    return { n: elegidos.length, ing, gas, neto: ing - gas, netoAnual: elegidos.reduce((t, r) => t + r.netoAnual, 0), valor, rent: valor ? conValor.reduce((t, r) => t + r.netoAnual, 0) / valor : null, sinValor: elegidos.length - conValor.length };
+  })() : null;
+
   return (
     <div className="space-y-4 anim-rise">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -6105,6 +6147,33 @@ function ActivosTab({ assets, setAssets, agg, rentaAgg, allAgg, onDrill, periodL
       {assets.length === 0 ? (
         <Card className="p-10 text-center"><Car size={28} className="mx-auto mb-2 text-slate-300" /><p className="text-sm text-slate-500">Aún no tienes activos. Crea uno (por ejemplo «Coche») y elige qué categorías agrupa.</p></Card>
       ) : (<>
+        {/* Atajos de selección y subtotal de lo seleccionado. */}
+        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Seleccionar activos">
+          <span className="text-xs text-slate-500">Sumar:</span>
+          {atajos.map((x) => (
+            <button key={x.l} type="button" onClick={() => setSel(mismo(x.ids) ? new Set() : new Set(x.ids))} aria-pressed={mismo(x.ids)}
+              className="rounded-full border px-2.5 py-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              style={mismo(x.ids) ? { background: C.accent, color: "#fff", borderColor: C.accent } : { borderColor: C.line, color: C.ink }}>
+              {x.l} <span className="opacity-70">{x.ids.length}</span>
+            </button>
+          ))}
+          {sel.size > 0 && <button type="button" onClick={() => setSel(new Set())} className="px-1.5 text-xs text-slate-500 hover:underline">Quitar selección</button>}
+        </div>
+        {sub && (
+          <Card className="p-3" style={{ borderColor: C.accent }}>
+            <div className="mb-1.5 text-xs font-semibold text-slate-700">{sub.n === 1 ? "1 activo seleccionado" : `${sub.n} activos seleccionados`} <span className="font-normal text-slate-500">· {periodLabel}</span></div>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm sm:grid-cols-4" style={tnum}>
+              <div><div className="text-[11px] text-slate-500">Ingresos</div><div className="font-semibold" style={{ color: C.income }}>{fmtE0(sub.ing)}</div></div>
+              <div><div className="text-[11px] text-slate-500">Gastos</div><div className="font-semibold" style={{ color: C.expense }}>{fmtE0(sub.gas)}</div></div>
+              <div><div className="text-[11px] text-slate-500">Neto del periodo</div><div className="font-semibold" style={{ color: sub.neto >= 0 ? C.income : C.expense }}>{sub.neto >= 0 ? "+" : ""}{fmtE0(sub.neto)}</div></div>
+              <div><div className="text-[11px] text-slate-500">Neto al año (estimado)</div><div className="font-semibold" style={{ color: sub.netoAnual >= 0 ? C.income : C.expense }}>{sub.netoAnual >= 0 ? "+" : ""}{fmtE0(sub.netoAnual)}</div></div>
+              {sub.valor > 0 && <div><div className="text-[11px] text-slate-500">Valor</div><div className="font-semibold">{fmtE0(sub.valor)}</div></div>}
+              {sub.rent != null && <div><div className="text-[11px] text-slate-500">Rent. neta/año</div><div className="font-semibold" style={{ color: sub.rent >= 0 ? C.income : C.expense }}>{fmtPct(sub.rent)}</div></div>}
+            </div>
+            {sub.sinValor > 0 && sub.valor > 0 && <p className="mt-1.5 text-[11px] text-slate-500">La rentabilidad solo incluye los que tienen valor ({sub.n - sub.sinValor} de {sub.n}).</p>}
+          </Card>
+        )}
+
         {/* Tabla resumen: todos los activos de un vistazo, ingresos y gastos por separado.
             Cada celda de importe lleva a sus movimientos (por signo). */}
         <Card className="overflow-hidden">
@@ -6112,6 +6181,7 @@ function ActivosTab({ assets, setAssets, agg, rentaAgg, allAgg, onDrill, periodL
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-xs uppercase tracking-wide text-slate-400" style={{ borderColor: C.line }}>
+                  <th className="w-8 py-2 pl-3"><input type="checkbox" className="accent-blue-600" aria-label="Seleccionar todos" checked={sel.size > 0 && assets.every((a) => sel.has(a.id))} onChange={(e) => setSel(e.target.checked ? new Set(assets.map((a) => a.id)) : new Set())} /></th>
                   <th className="px-3 py-2 text-left font-medium">Activo</th>
                   <th className="px-3 py-2 text-right font-medium">Ingresos</th>
                   <th className="px-3 py-2 text-right font-medium">Gastos</th>
@@ -6121,7 +6191,8 @@ function ActivosTab({ assets, setAssets, agg, rentaAgg, allAgg, onDrill, periodL
               </thead>
               <tbody>
                 {resumen.map(({ a, gasto, ingreso, neto, rent }) => (
-                  <tr key={a.id} className="border-b last:border-0 hover:bg-slate-50" style={{ borderColor: C.line }}>
+                  <tr key={a.id} className="border-b last:border-0 hover:bg-slate-50" style={{ borderColor: C.line, ...(sel.has(a.id) ? { background: C.accentSoft } : {}) }}>
+                    <td className="py-2 pl-3"><input type="checkbox" className="accent-blue-600" aria-label={`Seleccionar ${a.name}`} checked={sel.has(a.id)} onChange={() => toggleSel(a.id)} /></td>
                     <td className="px-3 py-2"><button type="button" onClick={() => setEditing(a)} className="text-left font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded" title="Ver / editar este activo"><span className="mr-1.5">{a.emoji}</span>{a.name}</button></td>
                     <td className="px-3 py-2 text-right" style={tnum}>
                       {ingreso > 0
@@ -6143,7 +6214,18 @@ function ActivosTab({ assets, setAssets, agg, rentaAgg, allAgg, onDrill, periodL
                 ))}
               </tbody>
               <tfoot>
+                {sub && sub.n < assets.length && (
+                  <tr className="border-t font-semibold" style={{ borderColor: C.lineStrong, background: C.accentSoft }}>
+                    <td />
+                    <td className="px-3 py-2 text-left" style={{ color: C.accent }}>Seleccionados ({sub.n})</td>
+                    <td className="px-3 py-2 text-right" style={{ ...tnum, color: C.income }}>{fmtE0(sub.ing)}</td>
+                    <td className="px-3 py-2 text-right" style={{ ...tnum, color: C.expense }}>{fmtE0(sub.gas)}</td>
+                    <td className="px-3 py-2 text-right" style={{ ...tnum, color: sub.neto >= 0 ? C.income : C.expense }}>{sub.neto >= 0 ? "+" : ""}{fmtE0(sub.neto)}</td>
+                    <td className="px-3 py-2 text-right" style={tnum}>{sub.rent == null ? <span className="text-slate-300">–</span> : <span style={{ color: sub.rent >= 0 ? C.income : C.expense }}>{fmtPct(sub.rent)}</span>}</td>
+                  </tr>
+                )}
                 <tr className="border-t font-semibold" style={{ borderColor: C.lineStrong }}>
+                  <td />
                   <td className="px-3 py-2 text-left text-slate-500">Total</td>
                   <td className="px-3 py-2 text-right" style={{ ...tnum, color: C.income }}>{fmtE0(totIng)}</td>
                   <td className="px-3 py-2 text-right" style={{ ...tnum, color: C.expense }}>{fmtE0(totGas)}</td>
@@ -8533,7 +8615,7 @@ export {
   matchRule, ruleConditionsHold, sortedRules, ruleId, isConditional,
   DEFAULT_RULES, PRIO, DEFAULT_MATERIALIDAD,
   classifyForImport, dedupeAgainst, movKey, normalizePattern, auditRules, learnedRule, needsAmount, ambiguousPatterns,
-  CATEGORIES, rebuildRules, deserializeMovs, calcRentaInmueble, calcImputacion, conciliar, viviendaPorDefecto, VIVIENDA, computeBankSaldo, refundIndex, refundFromHistory,
+  CATEGORIES, rebuildRules, deserializeMovs, tipoActivo, calcRentaInmueble, calcImputacion, conciliar, viviendaPorDefecto, VIVIENDA, computeBankSaldo, refundIndex, refundFromHistory,
   runQuery, totalsOf,
   MDLite,
   makeAccessLink, abrirAcceso, parseAccessLink, parseEsNumber, parseDateAny, tokenizeCSV, detectDelimiter, analyzeRows, buildMovements,
