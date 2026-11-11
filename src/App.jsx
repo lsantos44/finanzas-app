@@ -74,7 +74,7 @@ const CATEGORIES_TRANSFER = ["Bizum", "Traspasos entre cuentas", "Ahorro e inver
 const CATEGORIES_GASTO = [
   "Supermercado", "Restauración", "Ocio", "Suscripciones", "Combustible",
   "Transporte", "Parking", "Taller y mantenimiento", "Seguros", "Impuestos",
-  "Vivienda", "Suministros", "Telecomunicaciones", "Hogar", "Compras",
+  "Vivienda", "Hipoteca y préstamos", "Suministros", "Telecomunicaciones", "Hogar", "Compras",
   "Salud", "Ropa", "Deporte", "Mascota", "Educación", "Viajes", "Regalos",
   "Donaciones", "Comisiones", "Otros",
 ];
@@ -104,7 +104,7 @@ const GROUP_EMOJI = ["🏃", "✈️", "🎉", "🎄", "💍", "🍼", "🏖️"
    MACRO-CATEGORÍAS (nivel superior del desglose jerárquico)
    ============================================================ */
 const MACROS = [
-  { name: "Hogar", emoji: "🏠", kind: "gasto", cats: ["Vivienda", "Suministros", "Hogar", "Telecomunicaciones"] },
+  { name: "Hogar", emoji: "🏠", kind: "gasto", cats: ["Vivienda", "Hipoteca y préstamos", "Suministros", "Hogar", "Telecomunicaciones"] },
   { name: "Alimentación", emoji: "🛒", kind: "gasto", cats: ["Supermercado", "Restauración"] },
   { name: "Movilidad", emoji: "🚗", kind: "gasto", cats: ["Combustible", "Transporte", "Parking", "Taller y mantenimiento"] },
   { name: "Compras y ocio", emoji: "🛍️", kind: "gasto", cats: ["Ocio", "Suscripciones", "Compras", "Ropa", "Regalos", "Viajes"] },
@@ -295,8 +295,9 @@ const MERCHANT_RULES = [
   R("IMPUESTO CIRCULACION", "Impuestos", "Coche"), R("DGT", "Impuestos", "Coche"),
   R("PEAJE", "Transporte"), R("AUTOPISTA", "Transporte"), R("AUSOL", "Transporte"),
   // — Vivienda / casa
-  R("HIPOTECA", "Vivienda", VIVIENDA), R("PRESTAMO HIPOTECARIO", "Vivienda", VIVIENDA),
-  R("CUOTA HIPOTECA", "Vivienda", VIVIENDA), R("ALQUILER", "Vivienda", VIVIENDA),
+  // La cuota de la hipoteca, aparte: lleva capital, que no es gasto deducible en la renta.
+  R("HIPOTECA", "Hipoteca y préstamos", VIVIENDA), R("PRESTAMO HIPOTECARIO", "Hipoteca y préstamos", VIVIENDA),
+  R("CUOTA HIPOTECA", "Hipoteca y préstamos", VIVIENDA), R("ALQUILER", "Vivienda", VIVIENDA),
   R("COMUNIDAD PROPIETARIOS", "Vivienda", VIVIENDA), R("COMUNIDAD DE PROP", "Vivienda", VIVIENDA),
   R("ADMINISTRADOR FINCAS", "Vivienda", VIVIENDA), R("COMUNIDAD", "Vivienda", VIVIENDA),
   R("IBI", "Impuestos", VIVIENDA), R("SEGURO HOGAR", "Seguros", VIVIENDA), R("OCASO", "Seguros", VIVIENDA),
@@ -713,6 +714,13 @@ function deserializeMovs(raw) {
   // Las devoluciones de un comercio conocido guardadas como ingreso pasan a la categoría de
   // gasto del comercio, donde restan (Amazon → Compras). Una sola vez por movimiento (`dv`):
   // si luego lo devuelves a ingreso a mano, se respeta.
+  // Cuotas de hipoteca guardadas como «Vivienda» pasan a su categoría (una vez por movimiento):
+  // mezcladas, el informe de la renta deducía el capital como si fuera gasto de la finca.
+  for (const m of list) {
+    if (m.hp || m.category !== "Vivienda" || !(m.amount < 0)) continue;
+    m.hp = 1;
+    if (ES_HIPOTECA.test(m.pattern || m.concept || "")) m.category = "Hipoteca y préstamos";
+  }
   const refunds = refundIndex(list);
   for (const m of list) {
     if ((m.dv || 0) >= 2 || !(m.amount > 0) || m.splits?.length || (m.category !== "Devoluciones y ayudas" && m.category !== "Otros ingresos")) continue;
@@ -730,10 +738,13 @@ function deserializeMovs(raw) {
 const customRulesOf = (rules) => rules.filter((r) => r.scope === "personal");
 const disabledBaseIdsOf = (rules) => rules.filter((r) => r.scope !== "personal" && r.active === false).map(ruleId);
 
+const ES_HIPOTECA = /HIPOTEC|PRESTAMO HIPOT/i;
 const rebuildRules = (customRules, disabledIds) => {
   const off = new Set(disabledIds || []);
+  // Tus reglas de hipoteca a «Vivienda» pasan a la categoría propia de la cuota del préstamo.
+  const cat = (r) => (r.cat === "Vivienda" && ES_HIPOTECA.test(r.k || "") ? "Hipoteca y préstamos" : migrateCat(r.cat));
   return [
-    ...(customRules || []).map((r) => ({ ...r, cat: migrateCat(r.cat), scope: "personal", prio: r.prio ?? PRIO.personal })),
+    ...(customRules || []).map((r) => ({ ...r, cat: cat(r), scope: "personal", prio: r.prio ?? PRIO.personal })),
     ...DEFAULT_RULES.map((r) => (off.has(ruleId(r)) ? { ...r, active: false } : r)),
   ];
 };
@@ -1190,7 +1201,7 @@ function ruleConditionsHold(r, amount, date) {
    compra con tarjeta no te paga; si entra dinero, es que te la han devuelto). */
 const REFUND_RE = /DEVOLUC|DEVOL\b|REEMBOLSO|REFUND|RETROCESION|ANULACION|ANUL\b|ABONO COMPRA/;
 const CARD_OP_RE = /^(COMPRA|PAGO (CON )?TARJ|PAGO MOVIL|TARJ)/;
-const REFUND_NEEDS_MARK = new Set(["Vivienda", "Comisiones", "Otros"]);
+const REFUND_NEEDS_MARK = new Set(["Vivienda", "Hipoteca y préstamos", "Comisiones", "Otros"]);
 
 function matchRule(pattern, amount, rules, date = null, concept = "") {
   const p = stripAccents(String(pattern).toUpperCase());
@@ -2323,7 +2334,7 @@ function buildMonthClose({ movs, receiptTrends, upcoming, saldoSerie, dataRange,
   };
 }
 
-const RECEIPT_CATS = new Set(["Suministros", "Telecomunicaciones", "Vivienda", "Seguros", "Impuestos", "Comisiones", "Suscripciones", "Educación"]);
+const RECEIPT_CATS = new Set(["Suministros", "Telecomunicaciones", "Vivienda", "Hipoteca y préstamos", "Seguros", "Impuestos", "Comisiones", "Suscripciones", "Educación"]);
 
 /* Umbral de materialidad: por debajo de este importe no merece la pena molestarte.
    Un café de 1,60 € mal categorizado no mueve ninguna decisión; preguntarte por él
@@ -2375,7 +2386,7 @@ function viviendaPorDefecto(assets, movs) {
   const marcado = (assets || []).find((a) => a.uso === "vivienda");
   if (marcado) return marcado.name;
   const n = new Map();
-  for (const m of movs || []) if (m.assetName && (m.category === "Suministros" || m.category === "Vivienda")) n.set(m.assetName, (n.get(m.assetName) || 0) + 1);
+  for (const m of movs || []) if (m.assetName && (m.category === "Suministros" || m.category === "Vivienda" || m.category === "Hipoteca y préstamos")) n.set(m.assetName, (n.get(m.assetName) || 0) + 1);
   let mejor = null, max = 0;
   for (const [a, c] of n) if (c > max) { mejor = a; max = c; }
   return mejor || "Casa";
@@ -2622,7 +2633,8 @@ function resolveMacroNames(names, unknown) {
 
 function filterMovs(ctx, a = {}, diag) {
   const unknown = [];
-  let out = ctx.movs;
+  // Como en el Resumen: los extraordinarios (una herencia, una venta) quedan fuera salvo que se pidan.
+  let out = a.incluir_extraordinarios ? ctx.movs : ctx.movs.filter((m) => !m.extra);
   const d1 = parseLooseDate(a.desde);
   const d2 = parseLooseDate(a.hasta, true);
   if (d1) out = out.filter((m) => m.date >= d1);
@@ -2657,12 +2669,29 @@ function filterMovs(ctx, a = {}, diag) {
   return out;
 }
 
-const totalsOf = (list) => ({
-  movimientos: list.length,
-  gasto: r2(list.filter((m) => m.amount < 0).reduce((s, m) => s - m.amount, 0)),
-  ingreso: r2(list.filter((m) => m.amount > 0).reduce((s, m) => s + m.amount, 0)),
-  get neto() { return r2(this.ingreso - this.gasto); },
-});
+/* Totales con las MISMAS reglas que el Resumen (makeAgg): cada reparto cuenta en su categoría,
+   los traspasos internos (a otra cuenta tuya, a tu bróker) no son gasto ni ingreso, y una
+   devolución resta del gasto de su categoría en vez de sumar como ingreso. Antes el asistente
+   daba cifras distintas de las de la app. `parteOk` limita a las categorías/activos pedidos. */
+function totalsOf(list, assets = [], parteOk = null) {
+  let gasto = 0, ingreso = 0, traspasos = 0;
+  for (const m of list) for (const p of expandParts(m, assets)) {
+    if (parteOk && !parteOk(p)) continue;
+    if (INTERNAL_SET.has(p.cat)) { traspasos += Math.abs(p.amount); continue; }
+    if (p.amount < 0) gasto += -p.amount;
+    else if (GASTO_SET.has(p.cat) && hasExplicitCat(m)) gasto -= p.amount; // devolución
+    else ingreso += p.amount;
+  }
+  return { movimientos: list.length, gasto: r2(gasto), ingreso: r2(ingreso), neto: r2(ingreso - gasto), ...(traspasos ? { traspasos_internos: r2(traspasos) } : {}) };
+}
+// Qué parte de un movimiento cuenta para el filtro de categoría/macro/activo de la consulta.
+function parteFiltro(ctx, a = {}) {
+  const ign = [];
+  const cats = asArr(a.categorias ?? a.categoria), macros = asArr(a.macros ?? a.macro ?? a.supra_categorias), acts = asArr(a.activos ?? a.activo);
+  if (!cats.length && !macros.length && !acts.length) return null;
+  const cs = cats.length ? resolveCatNames(cats, ign) : null, ms = macros.length ? resolveMacroNames(macros, ign) : null;
+  return (p) => (!cs || cs.has(p.cat)) && (!ms || ms.has(macroOf(p.cat))) && (!acts.length || acts.some((x) => eqi(p.asset || "Sin activo", x)));
+}
 
 /* Un nombre que no existe hay que DECIRLO, y ofrecer los validos en la misma respuesta para
    que el modelo se corrija en el mismo turno. Callarlo es lo que hacia que el asistente
@@ -2681,8 +2710,8 @@ function avisoNombres(ctx, nombres) {
 function runQuery(ctx, args = {}) {
   const desconocidos = [];
   const list = filterMovs(ctx, args, desconocidos);
-  const t = totalsOf(list);
-  const total = { movimientos: t.movimientos, gasto: t.gasto, ingreso: t.ingreso, neto: t.neto };
+  const t = totalsOf(list, ctx.assets, parteFiltro(ctx, args));
+  const total = t;
   const out = { total };
   if (desconocidos.length) out.aviso = avisoNombres(ctx, desconocidos);
   if (!list.length) {
@@ -2725,27 +2754,31 @@ function runQuery(ctx, args = {}) {
   if (dimRaw) {
     const dim = eqi(dimRaw, "anio") || eqi(dimRaw, "año") ? "año" : String(dimRaw).toLowerCase();
     const acc = new Map();
-    const push = (key, amount, sample) => {
+    const okParte = parteFiltro(ctx, args);
+    const push = (key, amount, sample, cat, mov) => {
+      if (cat && INTERNAL_SET.has(cat)) return; // traspasos: ni gasto ni ingreso
       if (!acc.has(key)) acc.set(key, { gasto: 0, ingreso: 0, n: 0, sample });
       const x = acc.get(key);
-      if (amount < 0) x.gasto += -amount; else x.ingreso += amount;
+      if (amount < 0) x.gasto += -amount;
+      else if (cat && GASTO_SET.has(cat) && mov && hasExplicitCat(mov)) x.gasto -= amount; // devolución
+      else x.ingreso += amount;
       x.n++;
     };
     if (dim === "etiqueta") {
-      for (const g of ctx.groups) for (const m of list) if (movInGroup(m, g)) push(g.name, m.amount, m.concept);
+      for (const g of ctx.groups) for (const m of list) if (movInGroup(m, g)) for (const p of expandParts(m, ctx.assets)) if (!okParte || okParte(p)) push(g.name, p.amount, m.concept, p.cat, m);
     } else {
       for (const m of list) {
-        const parts = m.splits?.length ? m.splits.map((s) => ({ cat: s.cat, amount: (m.amount * s.pct) / 100 })) : [{ cat: m.category || "Otros", amount: m.amount }];
-        for (const p of parts) {
+        for (const p of expandParts(m, ctx.assets)) {
+          if (okParte && !okParte(p)) continue;
           const key = dim === "categoria" ? p.cat
             : dim === "macro" ? macroOf(p.cat)
             : dim === "comercio" ? m.pattern
-            : dim === "activo" ? (assetOfMovCtx(ctx, m) || "Sin activo")
+            : dim === "activo" ? (p.asset || "Sin activo")
             : dim === "mes" ? monthKey(m.date)
             : dim === "año" ? String(m.date.getFullYear())
             : null;
           if (key === null) { out.nota = "agrupar_por no reconocido: " + dimRaw; return out; }
-          push(key, p.amount, m.concept);
+          push(key, p.amount, m.concept, p.cat, m);
         }
       }
     }
@@ -2781,7 +2814,7 @@ function runList(ctx, args = {}) {
     : orden === "fecha_asc" ? a.date - b.date
     : b.date - a.date);
   const limite = Math.max(1, Math.min(40, args.limite || 20));
-  const t = totalsOf(list);
+  const t = totalsOf(list, ctx.assets, parteFiltro(ctx, args));
   const tagsOf = (m) => ctx.groups.filter((g) => movInGroup(m, g)).map((g) => g.name);
   return {
     ...(desconocidos.length ? { aviso: avisoNombres(ctx, desconocidos) } : {}),
@@ -2890,6 +2923,7 @@ const FILTER_SCHEMA = {
   etiquetas: { type: "array", items: { type: "string" }, description: "Nombres exactos de etiquetas" },
   texto: { type: "string", description: "Busca este texto en concepto/comercio" },
   importe_min: { type: "number" }, importe_max: { type: "number" },
+  incluir_extraordinarios: { type: "boolean", description: "Incluir los movimientos marcados como extraordinarios (por defecto no cuentan, como en la app)" },
 };
 function buildAgentTools(detail) {
   const tools = [
@@ -4756,7 +4790,9 @@ function PendientesPanel({ movsPend, amb, assets, setAssets, applyPending, aiOn,
                         <div className="flex items-baseline justify-between gap-2">
                           <div className="min-w-0 flex-1">
                             <div className="text-xs text-slate-500" style={tnum}>{fmtDate(m.date)}
-                              {m.currency && <span className="ml-1.5 text-slate-400">· orig {Math.abs(m.origAmount).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {m.currency}</span>}
+                              {m.currency && (m.origAmount != null
+                                ? <span className="ml-1.5 text-slate-400">· orig {Math.abs(m.origAmount).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {m.currency}</span>
+                                : <span className="ml-1.5 font-medium" style={{ color: C.warn }}>· importe en {m.currency}: conviértelo a euros</span>)}
                             </div>
                             {m.note && noting !== m.id && <button type="button" onClick={() => { setNoting(m.id); setNoteText(m.note); }} className="mt-0.5 inline-flex max-w-full items-center rounded px-1 py-0.5 text-[11px] font-medium" style={{ background: C.accentSoft, color: C.accent }}><span className="truncate">🏷️ {m.note}</span></button>}
                           </div>
@@ -5704,6 +5740,9 @@ function AssetModal({ asset, onSave, onDelete, onClose }) {
 // De categoría de la app a apartado de «inmuebles arrendados» en Renta Web. Es una propuesta:
 // la app no sabe si una comisión es de la hipoteca o si «Vivienda» es la comunidad, así que lo
 // dudoso lleva su aviso. Lo no listado cae en «Otros», a revisar uno a uno.
+// La cuota del préstamo NO se deduce entera: solo sus intereses, que el extracto no separa del
+// capital. Se enseña como referencia y no entra en el rendimiento neto.
+const RENTA_CUOTA = "Cuota del préstamo (solo los intereses son deducibles)";
 const RENTA_CONCEPTO = {
   Impuestos: "Tributos y tasas (IBI, basuras)",
   Seguros: "Primas de seguros",
@@ -5713,8 +5752,10 @@ const RENTA_CONCEPTO = {
   Telecomunicaciones: "Suministros y servicios",
   Vivienda: "Comunidad y servicios de la finca",
   Comisiones: "Intereses y gastos de financiación",
+  "Hipoteca y préstamos": RENTA_CUOTA,
 };
 const RENTA_REVISAR = {
+  [RENTA_CUOTA]: "No se deduce entera: incluye capital. Pon en «Intereses y gastos de financiación» solo los intereses del año (certificado del banco o cuadro de amortización).",
   "Comunidad y servicios de la finca": "Si aquí hay cuotas de hipoteca, solo los intereses son deducibles y van en financiación.",
   "Intereses y gastos de financiación": "Solo cuenta lo del préstamo de este inmueble. Junto con reparación y conservación, no puede superar los ingresos.",
   "Reparación y conservación": "Las mejoras (ampliar, reformar a fondo) no van aquí: se amortizan.",
@@ -5739,13 +5780,15 @@ function RentaReport({ assets, agg, periodLabel, onClose }) {
     const ingreso = agg.byAssetIncome.get(a.name) || 0;
     const gasto = agg.byAsset.get(a.name) || 0;
     const cats = [...(agg.byAssetCat.get(a.name) || new Map()).entries()].filter(([, v]) => v > 0).sort((x, y) => y[1] - x[1]);
-    return { a, ingreso, gasto, neto: ingreso - gasto, cats, conceptos: rentaConceptos(cats) };
+    // La cuota del préstamo se muestra pero no se resta: el capital no es gasto deducible.
+    const cuota = cats.filter(([c]) => RENTA_CONCEPTO[c] === RENTA_CUOTA).reduce((t, [, v]) => t + v, 0);
+    return { a, ingreso, gasto, cuota, neto: ingreso - (gasto - cuota), cats, conceptos: rentaConceptos(cats) };
   });
   const alquiler = rows.filter((r) => r.a.uso === "alquiler");
   const anual = /^Año \d{4}$/.test(periodLabel || "");
   const vivienda = rows.filter((r) => r.a.uso === "vivienda");
   const totIng = alquiler.reduce((s, r) => s + r.ingreso, 0);
-  const totGas = alquiler.reduce((s, r) => s + r.gasto, 0);
+  const totGas = alquiler.reduce((s, r) => s + r.gasto - r.cuota, 0); // sin la cuota del préstamo (capital)
 
   // CSV para Excel (punto y coma, coma decimal, BOM): una fila por apartado de Renta Web, más
   // los datos que la app no puede saber y Renta Web te va a pedir igualmente.
@@ -5769,7 +5812,8 @@ function RentaReport({ assets, agg, periodLabel, onClose }) {
       f("Ingresos íntegros", num(r.ingreso), "Ingresos asignados al inmueble");
       for (const [ap, e] of r.conceptos) f(ap, num(e.total), e.cats.join(", "), RENTA_REVISAR[ap] || "");
       f("Amortización del inmueble", "", "", "Completar: 3 % del mayor entre precio de compra (con gastos) y valor catastral, solo la construcción, sin el suelo");
-      f("Rendimiento neto (antes de amortización y reducción)", num(r.neto));
+      if (r.cuota > 0) f("Intereses y gastos de financiación (de la cuota)", "", "", `Completar: solo los intereses de los ${num(r.cuota)} € de cuotas; el capital no se deduce`);
+      f(r.cuota > 0 ? "Rendimiento neto (sin la cuota ni la amortización; resta los intereses)" : "Rendimiento neto (antes de amortización y reducción)", num(r.neto));
     }
     try {
       const csv = "\ufeff" + filas.map((l) => l.map(esc).join(";")).join("\r\n");
@@ -5855,7 +5899,7 @@ function RentaReport({ assets, agg, periodLabel, onClose }) {
   );
 }
 
-function ActivosTab({ assets, setAssets, agg, allAgg, onDrill, periodLabel }) {
+function ActivosTab({ assets, setAssets, agg, rentaAgg, allAgg, onDrill, periodLabel }) {
   const [report, setReport] = useState(false);
   useBackClose(report, () => setReport(false));
   const [editing, setEditing] = useState(null);
@@ -6051,7 +6095,7 @@ function ActivosTab({ assets, setAssets, agg, allAgg, onDrill, periodLabel }) {
         </div>
       </>)}
       {editing && <AssetModal asset={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSave={save} onDelete={() => { setAssets((as) => as.filter((a) => a.id !== editing.id)); setEditing(null); }} />}
-      {report && <RentaReport assets={assets} agg={agg} periodLabel={periodLabel} onClose={() => setReport(false)} />}
+      {report && <RentaReport assets={assets} agg={rentaAgg || agg} periodLabel={periodLabel} onClose={() => setReport(false)} />}
     </div>
   );
 }
@@ -6372,7 +6416,9 @@ function ClasificacionTab({ movs, assets, groups, onRecat, onReasset, onReassetA
                         <div className="flex items-baseline justify-between gap-2">
                           <div className="min-w-0 flex-1">
                             <div className="text-xs text-slate-500" style={tnum}>{fmtDate(m.date)}
-                              {m.currency && <span className="ml-1.5 text-slate-400">· orig {Math.abs(m.origAmount).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {m.currency}</span>}
+                              {m.currency && (m.origAmount != null
+                                ? <span className="ml-1.5 text-slate-400">· orig {Math.abs(m.origAmount).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {m.currency}</span>
+                                : <span className="ml-1.5 font-medium" style={{ color: C.warn }}>· importe en {m.currency}: conviértelo a euros</span>)}
                               {m.confirmed === false && <span className="ml-1.5"><Pill color={C.warn} soft={C.warnSoft}>por revisar</Pill></span>}
                               {isRefund(m) && <span className="ml-1.5 rounded bg-emerald-50 px-1 py-0.5 text-[10px] font-medium text-emerald-700" title="Devolución: resta del gasto de su categoría, no cuenta como ingreso">devolución</span>}
                               {m.extra && <span className="ml-1.5 rounded px-1 py-0.5 text-[10px]" style={{ background: C.accentSoft, color: C.accent }}>extraordinario</span>}
@@ -6490,7 +6536,7 @@ function InteligenciaTab({ movs, agg, allAgg, recurring, receiptTrends, outlierM
   // 2) Recurrentes. Hipoteca, préstamos, alquiler y comunidad NO son suscripciones:
   // van a su propio bloque. El resto (streaming, cuotas, recibos) sí.
   const LOAN_RE = /HIPOTEC|PRESTAMO|^PREST|^PRES\b/;
-  const isLoanHousing = (r) => r.category === "Vivienda" || LOAN_RE.test(r.pattern);
+  const isLoanHousing = (r) => r.category === "Vivienda" || r.category === "Hipoteca y préstamos" || LOAN_RE.test(r.pattern);
   const recAll = recurring.map((r) => ({ ...r, stale: (lastData - r.lastDate) / 86400000 > (STALE_GAP[r.cadence] || 400) }));
   const subs = recAll.filter((r) => !isLoanHousing(r));
   const prestamos = recAll.filter((r) => isLoanHousing(r)).sort((a, b) => b.annual - a.annual);
@@ -7761,6 +7807,20 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
                         );
                       })()}
                       {typeof c.balance === "number" && <p className="mt-1 text-[11px] font-medium text-slate-600" style={tnum}>Saldo real: {nfEUR.format(c.balance)}{c.balanceAt ? ` · ${new Date(c.balanceAt).toLocaleDateString("es-ES")}` : ""}</p>}
+                      {/* Conciliación: si los movimientos no explican los saldos del banco, falta o sobra alguno. */}
+                      {(() => {
+                        const q = bank.concil?.[c.id];
+                        if (!q || q.dias < 2) return null;
+                        const fd = (k) => new Date(k + "T12:00:00").toLocaleDateString("es-ES");
+                        if (!q.descuadres.length) return <p className="mt-0.5 text-[11px]" style={{ ...tnum, color: C.income }}>✓ Los movimientos cuadran con el saldo del banco del {fd(q.desde)} al {fd(q.hasta)}.</p>;
+                        const d0 = q.descuadres[0];
+                        return (
+                          <p className="mt-0.5 rounded px-1.5 py-1 text-[11px] leading-relaxed" style={{ ...tnum, background: C.warnSoft, color: C.warn }}>
+                            Descuadre de {nfEUR.format(Math.abs(d0.diferencia))} el {fd(d0.dia)}: {d0.diferencia < 0 ? "falta algún movimiento" : "sobra algún movimiento (¿un duplicado?)"}.
+                            {q.descuadres.length > 1 ? ` Y ${q.descuadres.length - 1} día${q.descuadres.length > 2 ? "s" : ""} más.` : ""} Revisa ese día en la búsqueda.
+                          </p>
+                        );
+                      })()}
                       {/* «Última» era la hora de preguntar, no de recibir: con la conexión muerta parecía sana. */}
                       {c.lastNewest && <p className="mt-0.5 text-[11px] text-slate-500" style={tnum}>Último movimiento recibido: {c.lastNewest}</p>}
                       {c.lastSync && <p className="mt-0.5 text-[11px] text-slate-400" style={tnum}>Última consulta: {new Date(c.lastSync).toLocaleString("es-ES")}{typeof c.lastCount === "number" ? ` · ${nfNum.format(c.lastCount)} movimientos devueltos` : ""}</p>}
@@ -8271,10 +8331,51 @@ export {
   matchRule, ruleConditionsHold, sortedRules, ruleId, isConditional,
   DEFAULT_RULES, PRIO, DEFAULT_MATERIALIDAD,
   classifyForImport, dedupeAgainst, movKey, normalizePattern, auditRules, learnedRule, needsAmount, ambiguousPatterns,
-  CATEGORIES, rebuildRules, deserializeMovs, viviendaPorDefecto, VIVIENDA, computeBankSaldo, refundIndex, refundFromHistory,
+  CATEGORIES, rebuildRules, deserializeMovs, conciliar, viviendaPorDefecto, VIVIENDA, computeBankSaldo, refundIndex, refundFromHistory,
+  runQuery, totalsOf,
   makeAccessLink, abrirAcceso, parseAccessLink, parseEsNumber, parseDateAny, tokenizeCSV, detectDelimiter, analyzeRows, buildMovements,
   buildMonthClose, missingIncome, upcomingIncome, upcomingCharges, detectRecurring, analyzeReceiptTrends,
 };
+
+/* Conciliación: ¿cuadran los movimientos con el saldo que da el banco tras cada uno? Día a día,
+   el saldo al cerrar debe ser el del día anterior más los movimientos del día, y tiene que ser
+   uno de los saldos que el banco puso a esos movimientos (dentro del día el orden no se sabe).
+   Si no, falta o sobra algún movimiento (un duplicado, un hueco). Devuelve null si el banco
+   no da saldos, o { dias, desde, hasta, descuadres: [{ dia, diferencia }] }. */
+function conciliar(movs, conn) {
+  const dia = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const porDia = new Map();
+  for (const m of movs) {
+    if (!m.bankId || m.file !== (conn.aspsp || "Banco") || typeof m.bs !== "number") continue;
+    if (conn.accountUid && m.accountUid && m.accountUid !== conn.accountUid) continue;
+    const k = dia(m.date);
+    if (!porDia.has(k)) porDia.set(k, []);
+    porDia.get(k).push(m);
+  }
+  if (!porDia.size) return null;
+  const dias = [...porDia.keys()].sort();
+  const cerca = (a, b) => Math.abs(a - b) < 0.015;
+  const descuadres = [];
+  let cierre = null;
+  for (const k of dias) {
+    const ms = porDia.get(k);
+    const suma = ms.reduce((t, m) => t + m.amount, 0);
+    const saldos = ms.map((m) => m.bs);
+    if (cierre === null) {
+      // Primer día: la apertura es el saldo de antes de alguno de sus movimientos.
+      const ap = ms.map((m) => m.bs - m.amount).find((o) => saldos.some((x) => cerca(x, o + suma)));
+      cierre = ap !== undefined ? ap + suma : saldos[saldos.length - 1];
+      continue;
+    }
+    const esperado = cierre + suma;
+    const ok = saldos.find((x) => cerca(x, esperado));
+    if (ok !== undefined) { cierre = ok; continue; }
+    const real = saldos.reduce((b, x) => (Math.abs(x - esperado) < Math.abs(b - esperado) ? x : b), saldos[0]);
+    descuadres.push({ dia: k, diferencia: Math.round((real - esperado) * 100) / 100 });
+    cierre = real; // se sigue desde lo que dice el banco, para no arrastrar el mismo error
+  }
+  return { dias: dias.length, desde: dias[0], hasta: dias[dias.length - 1], descuadres };
+}
 
 // Saldo del banco al día (ver el comentario en App, junto a su uso).
 function computeBankSaldo(connections, movs) {
@@ -9319,7 +9420,13 @@ function AppMain() {
       const [y, mo, d] = String(r.date || "").split("-").map(Number);
       if (!(y && mo && d)) return false;
       const t = new Date(y, mo - 1, d, 12, 0, 0).getTime();
-      return arr.some((t2) => Math.abs(t2 - t) <= 4 * DAY);
+      // Cada movimiento de tu histórico solo puede «absorber» UNO del banco. Antes, dos cargos
+      // reales del mismo importe en la misma semana (dos cafés, dos recargas) se descartaban
+      // los dos si en tu Excel había uno solo.
+      const i = arr.findIndex((t2) => Math.abs(t2 - t) <= 4 * DAY);
+      if (i < 0) return false;
+      arr.splice(i, 1);
+      return true;
     };
     const fresh = list.filter((r) => {
       if (r.bankId && existing.has(r.bankId)) return false; // ya importado por el banco
@@ -9327,8 +9434,10 @@ function AppMain() {
       return true;
     }).map((r) => {
       const [y, mo, d] = String(r.date || "").split("-").map(Number);
-      const date = (y && mo && d) ? new Date(y, mo - 1, d, 12, 0, 0) : new Date();
+      const sinFecha = !(y && mo && d);
+      const date = sinFecha ? new Date() : new Date(y, mo - 1, d, 12, 0, 0);
       return {
+        ...(sinFecha ? { sinFecha: true } : {}), // el banco no dio fecha: hoy, y a revisar
         id: MOV_ID++, date, concept: r.concept || "Sin concepto", amount: Math.round((Number(r.amount) || 0) * 100) / 100,
         saldo: null, pattern: normalizePattern(r.concept || ""), file: sourceLabel || "Banco", bankId: r.bankId || undefined,
         ...(typeof r.saldo === "number" && isFinite(r.saldo) ? { bs: r.saldo } : {}), // saldo tras el movimiento (banco)
@@ -9341,7 +9450,9 @@ function AppMain() {
     if (!fresh.length) return 0;
     for (const m of fresh) if (m.bankId) existing.add(m.bankId); // visible ya para la siguiente ingesta
     const dec = classifyForImport(fresh, movs, rules, { materialidad, assetMem, vivienda: viviendaPorDefecto(assets, movs) });
-    const applied = fresh.map((m) => { const x = dec.get(m.id); return { ...m, category: x.cat, assetName: x.asset || undefined, confirmed: x.confirmed }; });
+    // En otra moneda o sin fecha no se da por bueno: el importe se sumaría como si fueran euros
+    // (o en un día que no es). Queda «por revisar», donde se puede convertir el importe.
+    const applied = fresh.map((m) => { const x = dec.get(m.id); return { ...m, category: x.cat, assetName: x.asset || undefined, confirmed: m.currency || m.sinFecha ? false : x.confirmed }; });
     for (const n of new Set(applied.map((a) => a.assetName).filter(Boolean))) ensureAsset(n);
     setMovs((ms) => [...ms, ...applied]);
     const pend = applied.filter((m) => m.confirmed === false).length;
@@ -10161,6 +10272,8 @@ function AppMain() {
      saldo contable y su fecha y se suman los contabilizados después; si el banco da el saldo
      tras cada movimiento, se usa ese directamente. Sin movimientos nuevos, el saldo leído. */
   const bankSaldo = useMemo(() => computeBankSaldo(bankCfg.connections, movs), [bankCfg, movs]);
+  // Solo se calcula con Ajustes abierto: recorre todos los movimientos del banco.
+  const conciliaciones = useMemo(() => (settingsOpen ? Object.fromEntries((bankCfg.connections || []).map((c) => [c.id, conciliar(movs, c)])) : {}), [settingsOpen, bankCfg, movs]);
   const cierre = useMemo(() => buildMonthClose({ movs, receiptTrends, upcoming, saldoSerie, dataRange, realSaldo: bankSaldo ? bankSaldo.amount : null, saldoEstimado: !!bankSaldo?.estimado }), [movs, receiptTrends, upcoming, saldoSerie, dataRange, bankSaldo]);
 
   const createGroupFromProposal = useCallback((p) => {
@@ -10170,7 +10283,7 @@ function AppMain() {
     });
   }, []);
 
-  const makeAgg = useCallback((range, useFilters) => {
+  const makeAgg = useCallback((range, useFilters, { conExtra = false } = {}) => {
     const [a, b] = range;
     const byCat = new Map(), byAsset = new Map(), byAssetCat = new Map(), byAssetIncome = new Map();
     const bucketCat = new Map(), bucketTot = new Map();
@@ -10195,7 +10308,7 @@ function AppMain() {
       // Los extraordinarios (herencia, ventas puntuales, una derrama) quedan fuera del análisis
       // para no distorsionar medias y proyecciones, pero se contabilizan aparte: excluirlos sin
       // decirlo hacía que el total del gráfico no cuadrase con el dinero que salió de verdad.
-      if (m.extra) {
+      if (m.extra && !conExtra) {
         if (grpF.size) {
           const inSelX = groups.some((g) => grpF.has(g.name) && movInGroup(m, g));
           if (!inSelX) continue;
@@ -10274,6 +10387,10 @@ function AppMain() {
   }, [movs, assets, groups, filters.cats, filters.assetsSel, filters.groupsSel, granularity]);
 
   const agg = useMemo(() => (periodRange ? makeAgg(periodRange, true) : null), [makeAgg, periodRange]);
+  // Para el informe de la renta: el periodo elegido, SIN los filtros de pantalla (un filtro de
+  // categoría o etiqueta dejaba el informe fiscal incompleto sin avisar) y CON los
+  // extraordinarios (una derrama o una reparación grande sí es gasto del inmueble).
+  const rentaAgg = useMemo(() => (periodRange ? makeAgg(periodRange, false, { conExtra: true }) : null), [makeAgg, periodRange]);
   // Movimientos que respetan TODOS los filtros de arriba (fecha, categorías, activos,
   // grupos) y sin los de la papelera. Para la pestaña Clasificación.
   const filteredMovs = useMemo(() => {
@@ -10293,9 +10410,10 @@ function AppMain() {
   const allAgg = useMemo(() => (dataRange ? makeAgg(dataRange, false) : null), [makeAgg, dataRange]);
 
   const agentCtx = useMemo(() => ({
-    movs, assets, groups, budgets, receiptTrends, recurring, dataRange,
+    // Sin la papelera: el asistente contaba movimientos que tú ya habías borrado.
+    movs: liveMovs, assets, groups, budgets, receiptTrends, recurring, dataRange,
     mesesData: allAgg?.mesesData || 0,
-  }), [movs, assets, groups, budgets, receiptTrends, recurring, dataRange, allAgg]);
+  }), [liveMovs, assets, groups, budgets, receiptTrends, recurring, dataRange, allAgg]);
 
   const monthlySpark = useMemo(() => {
     const m = new Map();
@@ -10546,7 +10664,7 @@ function AppMain() {
               <div className="flex"><Seg ariaLabel="Activos o etiquetas" value={subAct} onChange={setSubAct}
                 options={[{ v: "activos", l: "🏠 Activos" }, { v: "etiquetas", l: "🏷️ Etiquetas" }]} /></div>
               {subAct === "activos"
-                ? <ActivosTab assets={assets} setAssets={setAssets} agg={agg} allAgg={allAgg} onDrill={setDrill} periodLabel={describePeriod(filters)} />
+                ? <ActivosTab assets={assets} setAssets={setAssets} agg={agg} rentaAgg={rentaAgg} allAgg={allAgg} onDrill={setDrill} periodLabel={describePeriod(filters)} />
                 : <GruposTab groups={groups} setGroups={setGroups} groupStats={groupStats} allGroupStats={allGroupStats}
                     movsAll={movs} annualFactor={allAgg.annualFactor} mesesData={allAgg.mesesData} onDrill={setDrill} />}
             </div>
@@ -10652,7 +10770,7 @@ function AppMain() {
             onToggleAuto: (v) => { persistSync({ auto: v }); setSyncMsg({ kind: "info", text: v ? "Sincronización automática activada." : "Sincronización automática desactivada." }); } }}
           bank={{ workerUrl: bankCfg.workerUrl || "", token: bankCfg.token || "", connections: bankCfg.connections || [],
             aspsps: bankAspsps, accountsByConn: bankAccountsByConn, addCountry: bankAddCountry, addSel: bankAddSel, busy: bankBusy, msg: bankMsg,
-            auto: !!bankCfg.auto, cron: cronInfo,
+            auto: !!bankCfg.auto, cron: cronInfo, concil: conciliaciones,
             onChange: persistBank, onSetAddCountry: setBankAddCountry, onSetAddSel: setBankAddSel, onLoadAspsps: bankLoadAspsps, onAddConnect: bankAddConnect,
             onToggleAuto: (v) => persistBank((b) => ({ ...b, auto: v })),
             diag: bankDiag, onDiagnose: bankDiagnose, onReconnect: bankReconnect,
