@@ -934,7 +934,7 @@ function mergeBank(local, incoming) {
     ...local,
     // La URL y el token que acabas de escribir mandan sobre los de la copia; si están vacíos,
     // se heredan, que es lo que permite configurar un dispositivo nuevo de una sola vez.
-    workerUrl: local.workerUrl || incoming.workerUrl || "",
+    workerUrl: local.workerUrl || (/^https:\/\//.test(incoming.workerUrl || "") ? incoming.workerUrl : ""),
     token: local.token || incoming.token || "",
     connections: takeConns ? iConns : lConns,
     auto: local.auto || incoming.auto || false,
@@ -5717,7 +5717,14 @@ function RentaReport({ assets, agg, periodLabel, onClose }) {
   // los datos que la app no puede saber y Renta Web te va a pedir igualmente.
   const exportar = () => {
     const num = (v) => r2(v).toFixed(2).replace(".", ",");
-    const esc = (v) => /[;"\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+    // Una celda que empieza por = + - @ la ejecuta Excel como fórmula: un nombre de inmueble como
+    // «=HYPERLINK(…)» (o uno llegado en una copia ajena) se ejecutaría al abrir el archivo.
+    // Los importes van sin tocar (un negativo como «-12,50» lleva «-» legítimo).
+    const esc = (v) => {
+      let t = String(v);
+      if (/^[=+\-@\t\r]/.test(t) && !/^-?\d+(,\d+)?$/.test(t)) t = "'" + t;
+      return /[;"\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+    };
     const filas = [["Periodo", "Inmueble", "Apartado de Renta Web", "Importe (€)", "Origen en la app", "Qué revisar"]];
     for (const r of alquiler) {
       const f = (ap, imp, orig = "", rev = "") => filas.push([periodLabel, r.a.name, ap, imp, orig, rev]);
@@ -7482,8 +7489,10 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
   const [primerosOcultos, setPrimerosOcultos] = useState(() => { try { return !!localStorage.getItem("finz:primeros-ocultos"); } catch { return false; } });
   const fileRef = useRef(null);
   const custom = ai.provider !== "claude";
-  const setAiField = (k, v) => setAi((c) => ({ ...c, [k]: v }));
-  const applyPreset = (p) => setAi((c) => ({ ...c, provider: "openai_compat", baseUrl: p.baseUrl, model: p.model }));
+  // La clave de un proveedor no debe viajar a otro: al cambiar de servidor se vacía.
+  const hostDe = (u) => { try { return new URL(u).host; } catch { return String(u || ""); } };
+  const setAiField = (k, v) => setAi((c) => ({ ...c, [k]: v, ...(k === "baseUrl" && hostDe(v) !== hostDe(c.baseUrl) ? { apiKey: "" } : {}) }));
+  const applyPreset = (p) => setAi((c) => ({ ...c, provider: "openai_compat", baseUrl: p.baseUrl, model: p.model, ...(hostDe(p.baseUrl) !== hostDe(c.baseUrl) ? { apiKey: "" } : {}) }));
   const openSnaps = async () => { setSnapsOpen(true); setSnaps(await onListSnaps()); };
   const [rulesOpen, setRulesOpen] = useState(false);
   const [audit, setAudit] = useState(null);
@@ -8393,7 +8402,9 @@ function AppMain() {
   const [assets, setAssets] = useState([]);
   const [groups, setGroups] = useState([]);
   const [reducible, setReducible] = useState(new Set(DEFAULT_REDUCIBLE));
-  const [aiOn, setAiOn] = useState(true);
+  // Apagada hasta que la actives: nada sale hacia un proveedor de IA sin que lo hayas decidido.
+  // (Quien ya la tenía activada la conserva: el valor guardado manda.)
+  const [aiOn, setAiOn] = useState(false);
   const [ai, setAi] = useState(DEFAULT_AI_CFG);
   const [aiProfiles, setAiProfiles] = useState([]); // perfiles de IA guardados: {id,label,provider,baseUrl,model,apiKey}
   // Apagado por defecto: dar acceso al detalle línea a línea debe ser una decisión
@@ -8656,16 +8667,19 @@ function AppMain() {
     } catch (e) { setError("No se pudo exportar la copia: " + e.message); }
   }, [rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, movs, ruleStats, materialidad]);
 
-  const applyBackupPayload = useCallback((p) => {
+  const applyBackupPayload = useCallback((p, { deArchivo = false } = {}) => {
     const ms = deserializeMovs(JSON.stringify(p.movs));
-    applyCfg(JSON.stringify(p.cfg), { setAssets, setGroups, setBudgets, setReducible, setRules, setAiOn, setAi, setAiProfiles, setAiDetail, setRuleStats, setMaterialidad, setAssetMem });
+    // Un archivo puede venir de cualquiera (una «plantilla de reglas» compartida). No debe poder
+    // cambiar a dónde van tus datos: ni el servidor ni el proveedor de IA ni si la IA está activa.
+    const cfg = deArchivo ? { ...p.cfg, ai: undefined, aiProfiles: undefined, aiOn: undefined, aiDetail: undefined } : p.cfg;
+    applyCfg(JSON.stringify(cfg), { setAssets, setGroups, setBudgets, setReducible, setRules, setAiOn, setAi, setAiProfiles, setAiDetail, setRuleStats, setMaterialidad, setAssetMem });
     // La config del banco viaja en las copias del servidor (no en las exportadas, que se comparten):
     // así conectas una vez y el resto de dispositivos hereda sesión, cuenta y token.
     // La copia del servidor puede ser ANTERIOR a la sesión bancaria que acabas de crear en este
     // dispositivo: al volver del banco se hace un arranque completo y el "traer" automático
     // llegaba después, borrando la sesión nueva (y a veces worker y token). Solo se aplica si
     // la copia es más reciente, y nunca si viene vacía habiendo config local.
-    const merged = mergeBank(loadBank(), p.bank);
+    const merged = deArchivo ? null : mergeBank(loadBank(), p.bank);
     if (merged) { saveBank(merged); try { window.dispatchEvent(new Event("finz-bank-updated")); } catch { /* noop */ } }    let mx = 0;
     for (const m of ms) if (typeof m.id === "number" && m.id > mx) mx = m.id;
     MOV_ID = mx + 1;
@@ -8678,7 +8692,7 @@ function AppMain() {
       const text = await file.text();
       const p = JSON.parse(text);
       if (!p || !p.movs || !p.cfg) return { ok: false, text: "El archivo no parece una copia de esta aplicación." };
-      const n = applyBackupPayload(p);
+      const n = applyBackupPayload(p, { deArchivo: true });
       return { ok: true, text: `Copia restaurada: ${nfNum.format(n)} movimientos.` };
     } catch (e) { return { ok: false, text: "No se pudo importar: " + e.message }; }
   }, [applyBackupPayload]);
@@ -8834,20 +8848,31 @@ function AppMain() {
   }, [syncPull, syncPush, persistSync]);
   const [entrarOpen, setEntrarOpen] = useState(null); // null | { inicial?: {u,t}, auto?: bool }
   const entrar = useCallback(async (u, t) => {
-    const prev = loadBank();
+    const prev = loadBank(), prevSync = loadSync();
+    if (!/^https:\/\//.test(u) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(u)) return { ok: false, text: "La dirección del backend debe empezar por https://." };
+    // Cambiar de servidor manda tus datos a otro sitio: un enlace ajeno no debe poder hacerlo
+    // sin que lo veas. Se enseña el servidor de antes y el nuevo.
+    const host = (x) => { try { return new URL(x).host; } catch { return x; } };
+    if (prev.workerUrl && prev.workerUrl !== u && !window.confirm(`Vas a cambiar tu servidor:\n\nAhora: ${host(prev.workerUrl)}\nNuevo: ${host(u)}\n\nHazlo solo si el enlace es tuyo y lo esperabas. Tus datos se guardarán en el nuevo servidor.`)) {
+      return { ok: false, text: "Cancelado: sigues con tu servidor de siempre." };
+    }
+    // Mientras se comprueba, nada se sube solo; si algo falla, se deja todo como estaba.
+    const deshacer = (res) => { saveBank(prev); setBankCfg(loadBank()); persistSync(prevSync); return res; };
+    syncBootRef.current = true;
+    syncSuppressRef.current = Date.now() + 60000;
+    clearTimeout(syncTimer.current);
+    persistSync({ auto: false });
     // A disco ANTES de traer: syncPull lee la URL y el token de ahí, no del estado de React.
     saveBank({ ...prev, workerUrl: u, token: t || prev.token || "" });
     setBankCfg(loadBank());
     try {
       const st = await bankFetch("/store/status", 20000);
-      if (st.status === 401) return { ok: false, text: "El backend responde, pero el token no es correcto." };
-      if (!st.ok) return { ok: false, text: `El backend devolvió ${st.status}. Revisa la dirección.` };
-    } catch (e) { return { ok: false, text: "No se pudo contactar con el backend: " + e.message }; }
-    // Que el «traer al abrir» no dispare otro traer en paralelo al activar la casilla.
-    syncBootRef.current = true;
-    syncSuppressRef.current = Date.now() + 6000;
+      if (st.status === 401) return deshacer({ ok: false, text: "El backend responde, pero el token no es correcto." });
+      if (!st.ok) return deshacer({ ok: false, text: `El backend devolvió ${st.status}. Revisa la dirección.` });
+    } catch (e) { return deshacer({ ok: false, text: "No se pudo contactar con el backend: " + e.message }); }
     const r = await syncPull({ confirmReplace: true });
-    if (!r?.ok) return r || { ok: false, text: "No se pudo traer la copia." };
+    if (!r?.ok) return deshacer(r || { ok: false, text: "No se pudo traer la copia." });
+    syncSuppressRef.current = Date.now() + 6000;
     persistSync({ auto: true });
     recordarAcceso(u, t);
     const nb = (loadBank().connections || []).length;
@@ -8924,6 +8949,17 @@ function AppMain() {
       // regla tiene que valer aquí y dentro del updater, o el mensaje diría una cosa y el
       // estado haría otra.
       const isFresh = (pd) => !!pd && (!pd.at || Date.now() - pd.at < 30 * 60000);
+      // Con backend actualizado la vuelta trae &n= (el código del pending): vale durante un día.
+      // Sin él (backend antiguo), como antes: un pending de menos de media hora.
+      const n = p.get("n");
+      const pendOk = (pd) => !!pd && (n ? pd.nonce === n && Date.now() - (pd.at || 0) < 86400000 : isFresh(pd));
+      // Una vuelta que esta app no ha pedido (enlace ajeno o reenviado) no toca tus bancos sin
+      // preguntarte: antes bastaba un enlace para sustituir la sesión de tu único banco.
+      if (!pendOk(disk.pending) && !window.confirm("Ha llegado una conexión bancaria que no has iniciado ahora desde esta app.\n\n¿Vienes de autorizar tu banco? Si no, pulsa Cancelar y no se cambiará nada.")) {
+        p.delete("bank_session"); p.delete("n");
+        window.history.replaceState({}, "", window.location.pathname + (p.toString() ? "?" + p.toString() : ""));
+        return;
+      }
       // Qué hacer con la sesión que llega. Antes, sin un pending fresco se creaba una conexión
       // llamada «Banco»: pasa si vuelves del banco en OTRO navegador (la app del banco abre el
       // predeterminado) o tardas más de media hora. Esa conexión viajaba por la sincronización y
@@ -8932,7 +8968,7 @@ function AppMain() {
       // nada pero solo tienes un banco, es casi seguro su renovación.
       const decide = (b) => {
         const conns = b.connections || [];
-        if (isFresh(b.pending)) {
+        if (pendOk(b.pending)) {
           const pd = b.pending;
           const target = pd.reconnectId && conns.some((c) => c.id === pd.reconnectId) ? pd.reconnectId : null;
           return { target, aspsp: pd.aspsp || "", country: pd.country || "ES", psu: pd.psu || "" };
@@ -8955,7 +8991,7 @@ function AppMain() {
         const conn = { id: "bc" + Date.now() + Math.random().toString(36).slice(2, 5), aspsp: d.aspsp, country: d.country, psu: d.psu, sessionPsu: d.psu, sessionId: sid, accountUid: "", accountName: "", lastSync: null };
         return { ...b, connections: [...(b.connections || []), conn], pending: null };
       });
-      p.delete("bank_session");
+      p.delete("bank_session"); p.delete("n");
       window.history.replaceState({}, "", window.location.pathname + (p.toString() ? "?" + p.toString() : ""));
       // Lo que antes había que saber hacer a mano al volver: elegir la cuenta y sincronizar. Si
       // la sesión trae una sola cuenta (o es una renovación que se reencuentra por IBAN), se
@@ -9027,12 +9063,15 @@ function AppMain() {
     // El pending tiene que estar EN DISCO antes de abandonar la página: persistBank solo
     // programa un cambio de estado y su updater (el que llama a saveBank) puede no llegar a
     // ejecutarse antes de la navegación. Por eso perdíamos el nombre del banco al volver.
-    const next = { ...loadBank(), pending: { aspsp, country: cty, reconnectId: reconnectId || null, psu: psu || "", at: Date.now() } };
+    // `nonce`: código de un solo uso que el backend devuelve al volver (&n=). Solo una vuelta con
+    // ese código es la que pediste; un enlace ?bank_session= que te manden no lo tiene.
+    const nonce = b64u(crypto.getRandomValues(new Uint8Array(16)));
+    const next = { ...loadBank(), pending: { aspsp, country: cty, reconnectId: reconnectId || null, psu: psu || "", at: Date.now(), nonce } };
     saveBank(next);
     setBankCfg(next);
     // El tipo de titular viaja en la URL: pedir "personal" sobre cuentas de empresa deja firmar
     // el consentimiento y luego revienta cada petición de datos con ASPSP_ERROR.
-    window.location.href = `${url}/bank/auth?aspsp=${encodeURIComponent(aspsp)}&country=${encodeURIComponent(cty)}${psu ? `&psu=${encodeURIComponent(psu)}` : ""}`;
+    window.location.href = `${url}/bank/auth?aspsp=${encodeURIComponent(aspsp)}&country=${encodeURIComponent(cty)}${psu ? `&psu=${encodeURIComponent(psu)}` : ""}&nonce=${nonce}`;
   }, []);
 
   const bankAddConnect = useCallback(() => bankStartAuth(bankAddSel, bankAddCountry, null, bankAddPsu), [bankStartAuth, bankAddSel, bankAddCountry, bankAddPsu]);
