@@ -4,10 +4,13 @@
 # - connect-src https:: la app habla con TU backend y con el proveedor de IA que elijas, y ambos
 #   son direcciones de cada persona; por eso no se puede cerrar más.
 # - frame-ancestors 'none': nadie puede meter la app dentro de otra página para engañarte.
+# - Las fuentes se sirven desde aquí: ninguna visita avisa a Google ni a nadie más.
+# - Strict-Transport-Security: el navegador recuerda usar siempre https en este dominio.
 # - Referrer-Policy no-referrer: ninguna dirección de la app (con ?bank_session o similares) se
 #   filtra a otras webs al pulsar un enlace.
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self' https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+  Strict-Transport-Security: max-age=31536000
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
