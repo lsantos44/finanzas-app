@@ -739,10 +739,11 @@ const customRulesOf = (rules) => rules.filter((r) => r.scope === "personal");
 const disabledBaseIdsOf = (rules) => rules.filter((r) => r.scope !== "personal" && r.active === false).map(ruleId);
 
 const ES_HIPOTECA = /HIPOTEC|PRESTAMO HIPOT/i;
-const rebuildRules = (customRules, disabledIds) => {
+const rebuildRules = (customRules, disabledIds, version = 4) => {
   const off = new Set(disabledIds || []);
   // Tus reglas de hipoteca a «Vivienda» pasan a la categoría propia de la cuota del préstamo.
-  const cat = (r) => (r.cat === "Vivienda" && ES_HIPOTECA.test(r.k || "") ? "Hipoteca y préstamos" : migrateCat(r.cat));
+  // Solo al venir de una configuración anterior (v<4): luego puedes volver a cambiarla.
+  const cat = (r) => (version < 4 && r.cat === "Vivienda" && ES_HIPOTECA.test(r.k || "") ? "Hipoteca y préstamos" : migrateCat(r.cat));
   return [
     ...(customRules || []).map((r) => ({ ...r, cat: cat(r), scope: "personal", prio: r.prio ?? PRIO.personal })),
     ...DEFAULT_RULES.map((r) => (off.has(ruleId(r)) ? { ...r, active: false } : r)),
@@ -804,7 +805,7 @@ function auditRules(rules, movs, stats = {}) {
 
 const serializeCfg = ({ rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem }) =>
   JSON.stringify({
-    v: 3, customRules: customRulesOf(rules), disabledRules: disabledBaseIdsOf(rules),
+    v: 4, customRules: customRulesOf(rules), disabledRules: disabledBaseIdsOf(rules),
     assets, groups, budgets, reducible: [...reducible], aiOn, ai, aiProfiles: aiProfiles || [], aiDetail,
     ruleStats: ruleStats || {}, materialidad,
     // Comercio -> activo. Vive en la CONFIG, no en los movimientos: así borrar una carga
@@ -817,7 +818,7 @@ function applyCfg(raw, setters) {
   if (Array.isArray(c.groups)) setters.setGroups(c.groups);
   if (c.budgets && typeof c.budgets === "object") setters.setBudgets(c.budgets);
   if (Array.isArray(c.reducible)) setters.setReducible(new Set(c.reducible));
-  if (Array.isArray(c.customRules)) setters.setRules(rebuildRules(c.customRules, c.disabledRules));
+  if (Array.isArray(c.customRules)) setters.setRules(rebuildRules(c.customRules, c.disabledRules, Number(c.v) || 0));
   if (typeof c.aiOn === "boolean") setters.setAiOn(c.aiOn);
   // Las claves de IA no viajan en las copias (ni exportadas ni del servidor). Al aplicar una, se
   // conserva la clave que ya hubiera aquí, pero solo para el MISMO servicio: mandarla a otra
@@ -5688,8 +5689,28 @@ function ResumenTab({ agg, allAgg, granularity, setGranularity, onDrill, onPickM
 /* ============================================================
    PESTAÑA ACTIVOS
    ============================================================ */
-function AssetModal({ asset, onSave, onDelete, onClose }) {
+// Campo numérico de la ficha fiscal (vacío = sin dato).
+function CampoFicha({ label, value, onChange, suf, ayuda, step = "any" }) {
+  return (
+    <label className="block text-xs text-slate-600">
+      <span className="font-medium">{label}</span>
+      <span className="mt-1 flex items-center gap-1.5">
+        <input type="number" inputMode="decimal" step={step} value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+          className="w-full min-w-0 rounded-lg border px-2.5 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ ...tnum, borderColor: C.line }} />
+        {suf && <span className="text-slate-400">{suf}</span>}
+      </span>
+      {ayuda && <span className="mt-0.5 block text-[11px] text-slate-500">{ayuda}</span>}
+    </label>
+  );
+}
+
+function AssetModal({ asset, allAssets = [], onSave, onDelete, onClose }) {
   const [name, setName] = useState(asset?.name || "");
+  const [fiscal, setFiscal] = useState(asset?.fiscal || {});
+  const setF = (k, v) => setFiscal((f) => ({ ...f, [k]: v }));
+  const anioRenta = new Date().getFullYear() - 1; // la renta que se declara ahora es la del año pasado
+  // Categorías que ya usa otro activo: un gasto solo puede ir a uno (el primero de la lista).
+  const enOtro = (c) => allAssets.find((a) => a.id !== asset?.id && (a.categories || []).includes(c));
   const [emoji, setEmoji] = useState(asset?.emoji || "📦");
   const [cats, setCats] = useState(new Set(asset?.categories || []));
   const [value, setValue] = useState(asset?.value != null ? String(asset.value) : "");
@@ -5707,8 +5728,42 @@ function AssetModal({ asset, onSave, onDelete, onClose }) {
           <label className="text-xs font-medium text-slate-600">Uso</label>
           <p className="mb-1.5 mt-0.5 text-xs text-slate-400">Para el informe por inmueble: distingue lo que alquilas de tu vivienda.</p>
           <Seg ariaLabel="Uso del activo" value={uso} onChange={setUso}
-            options={[{ v: "alquiler", l: "🔑 En alquiler" }, { v: "vivienda", l: "🏠 Vivienda habitual" }, { v: "otro", l: "Otro" }]} />
+            options={[{ v: "alquiler", l: "🔑 En alquiler" }, { v: "vivienda", l: "🏠 Vivienda habitual" }, { v: "segunda", l: "🏖️ Sin alquilar" }, { v: "otro", l: "Otro" }]} />
+          {uso === "vivienda" && <p className="mt-1 text-[11px] text-slate-500">Los recibos de luz, agua, comunidad o IBI que reconozca la app irán a este activo.</p>}
         </div>
+        {(uso === "alquiler" || uso === "segunda") && (
+          <details className="rounded-xl border p-3" style={{ borderColor: C.line }} open={!asset?.fiscal}>
+            <summary className="cursor-pointer text-xs font-semibold text-slate-700">Ficha fiscal para la renta <span className="font-normal text-slate-500">(con ella la app calcula amortización, reducción e imputación)</span></summary>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <label className="col-span-2 block text-xs text-slate-600"><span className="font-medium">Referencia catastral</span>
+                <input value={fiscal.refCatastral || ""} onChange={(e) => setF("refCatastral", e.target.value || undefined)} placeholder="Está en el recibo del IBI"
+                  className="mt-1 w-full rounded-lg border px-2.5 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ borderColor: C.line }} /></label>
+              <CampoFicha label="Tu titularidad" suf="%" value={fiscal.titularidad} onChange={(v) => setF("titularidad", v)} ayuda="100 si es solo tuyo" />
+              <CampoFicha label="Valor catastral" suf="€" value={fiscal.valorCatastral} onChange={(v) => setF("valorCatastral", v)} ayuda="Recibo del IBI" />
+              {uso === "alquiler" && <>
+                <CampoFicha label="Días alquilado al año" value={fiscal.diasArrendado} step="1" onChange={(v) => setF("diasArrendado", v)} ayuda="365 si todo el año" />
+                <CampoFicha label="Construcción" suf="%" value={fiscal.pctConstruccion} onChange={(v) => setF("pctConstruccion", v)} ayuda="Valor catastral de la construcción ÷ total" />
+                <CampoFicha label="Coste de compra" suf="€" value={fiscal.coste} onChange={(v) => setF("coste", v)} ayuda="Precio más gastos e impuestos" />
+                <label className="block text-xs text-slate-600"><span className="font-medium">Reducción</span>
+                  <select value={fiscal.reduccion ?? ""} onChange={(e) => setF("reduccion", e.target.value === "" ? undefined : Number(e.target.value))}
+                    className="mt-1 w-full rounded-lg border bg-white px-2 py-1.5 text-sm" style={{ borderColor: C.line }}>
+                    <option value="">Sin indicar</option>
+                    <option value="0">0 % (no es vivienda)</option>
+                    <option value="60">60 % (contrato antes del 26/05/2023, o con obras de rehabilitación)</option>
+                    <option value="50">50 % (contrato desde el 26/05/2023)</option>
+                    <option value="70">70 % (joven en zona tensionada / vivienda pública)</option>
+                    <option value="90">90 % (rebaja de renta en zona tensionada)</option>
+                  </select>
+                  <span className="mt-0.5 block text-[11px] text-slate-500">Depende de la fecha y tipo de contrato</span></label>
+                <CampoFicha label={`Intereses del préstamo ${anioRenta}`} suf="€" value={fiscal.intereses?.[anioRenta]} onChange={(v) => setFiscal((f) => ({ ...f, intereses: { ...(f.intereses || {}), [anioRenta]: v } }))} ayuda="Certificado del banco; 0 si no hay" />
+              </>}
+              <label className="col-span-2 flex items-center gap-2 text-xs text-slate-600">
+                <input type="checkbox" className="accent-blue-600" checked={!!fiscal.catastralRevisado} onChange={(e) => setF("catastralRevisado", e.target.checked)} />
+                Valor catastral revisado en los últimos 10 años (imputa el 1,1 % en vez del 2 %)
+              </label>
+            </div>
+          </details>
+        )}
         <div>
           <label className="text-xs font-medium text-slate-600">Valoración actual <span className="font-normal text-slate-400">(opcional)</span></label>
           <div className="mt-1 flex items-center gap-2">
@@ -5721,16 +5776,20 @@ function AssetModal({ asset, onSave, onDelete, onClose }) {
           <div className="text-xs font-medium text-slate-600">Categorías que agrupa</div>
           <p className="mb-2 mt-0.5 text-xs text-slate-400">Todo gasto de estas categorías cuenta para el activo, salvo que un movimiento tenga otro activo asignado a mano.</p>
           <div className="grid max-h-56 grid-cols-2 gap-x-3 overflow-y-auto rounded-xl border p-2" style={{ borderColor: C.line }}>
-            {CATEGORIES_GASTO.map((c) => (
-              <label key={c} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-slate-50">
-                <input type="checkbox" className="accent-blue-600" checked={cats.has(c)} onChange={(e) => { const s = new Set(cats); e.target.checked ? s.add(c) : s.delete(c); setCats(s); }} />{c}
+            {/* Gastos y, debajo, ingresos: el alquiler cobrado también tiene que poder ir al piso por
+                categoría (antes solo se podía asignar movimiento a movimiento). */}
+            {[...CATEGORIES_GASTO, ...CATEGORIES_INGRESO].map((c, i) => (
+              <label key={c} className={`flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-slate-50 ${i === CATEGORIES_GASTO.length ? "col-span-2 mt-1 border-t pt-2" : ""}`} style={i === CATEGORIES_GASTO.length ? { borderColor: C.line } : undefined}>
+                <input type="checkbox" className="accent-blue-600" checked={cats.has(c)} onChange={(e) => { const s = new Set(cats); e.target.checked ? s.add(c) : s.delete(c); setCats(s); }} />
+                <span className="min-w-0">{c}{cats.has(c) && enOtro(c) && <span className="block text-[10px] leading-tight" style={{ color: C.warn }}>también en «{enOtro(c).name}»</span>}</span>
               </label>
             ))}
           </div>
+          {[...cats].some(enOtro) && <p className="mt-1 text-[11px]" style={{ color: C.warn }}>Una categoría compartida va entera al primer activo de la lista. Para repartir, asigna el activo a mano en cada movimiento.</p>}
         </div>
         <div className="flex justify-between gap-2">
           {asset ? <Btn kind="danger" onClick={onDelete}><Trash2 size={14} /> Eliminar</Btn> : <span />}
-          <div className="flex gap-2"><Btn onClick={onClose}>Cancelar</Btn><Btn kind="primary" disabled={!name.trim()} onClick={() => { const v = parseFloat(String(value).replace(",", ".")); onSave({ name: name.trim(), emoji, categories: [...cats], value: isFinite(v) && v > 0 ? v : undefined, uso }); }}>Guardar</Btn></div>
+          <div className="flex gap-2"><Btn onClick={onClose}>Cancelar</Btn><Btn kind="primary" disabled={!name.trim()} onClick={() => { const v = parseFloat(String(value).replace(",", ".")); onSave({ name: name.trim(), emoji, categories: [...cats], value: isFinite(v) && v > 0 ? v : undefined, uso, ...((uso === "alquiler" || uso === "segunda") ? { fiscal } : {}) }); }}>Guardar</Btn></div>
         </div>
       </div>
     </Modal>
@@ -5771,22 +5830,77 @@ const rentaConceptos = (cats) => {
   return [...m.entries()].sort((x, y) => y[1].total - x[1].total);
 };
 
+/* Cálculo de la renta de un inmueble alquilado para un año (rendimiento del capital
+   inmobiliario, IRPF). Pura y probada. Usa la ficha fiscal del activo (`fiscal`):
+     titularidad %, diasArrendado, valorCatastral, pctConstruccion %, coste (precio de compra
+     más gastos), reduccion % (50/60/70/90 según contrato), intereses {año: €}, catastralRevisado.
+   Reglas: los gastos de los días sin alquilar no se deducen (prorrateo por días); intereses +
+   reparación no pueden superar los ingresos (el exceso se arrastra 4 años); amortización del 3 %
+   sobre el mayor entre coste y valor catastral, solo la construcción; la reducción solo se
+   aplica a un rendimiento positivo; los días sin alquilar imputan renta (1,1 % o 2 % del valor
+   catastral). `faltan` dice qué dato falta para que el cálculo sea completo. Orientativo. */
+function calcRentaInmueble({ ingreso, gastoDeducible, reparacion = 0, fiscal = {}, anio }) {
+  const diasAnio = anio && ((anio % 4 === 0 && anio % 100 !== 0) || anio % 400 === 0) ? 366 : 365;
+  const faltan = [];
+  const num = (v) => (typeof v === "number" && isFinite(v) ? v : null);
+  let dias = num(fiscal.diasArrendado);
+  if (dias === null) { faltan.push("días alquilado"); dias = diasAnio; }
+  dias = Math.max(0, Math.min(diasAnio, dias));
+  const prorr = dias / diasAnio;
+  const interesesAnio = num(fiscal.intereses?.[anio]);
+  if (interesesAnio === null) faltan.push("intereses del préstamo de ese año (0 si no hay)");
+  const intereses = (interesesAnio || 0) * prorr;
+  const rep = reparacion * prorr;
+  const otros = Math.max(0, gastoDeducible - reparacion) * prorr;
+  const limite = Math.min(intereses + rep, ingreso);
+  const exceso = Math.max(0, intereses + rep - ingreso);
+  const vc = num(fiscal.valorCatastral), pc = num(fiscal.pctConstruccion), coste = num(fiscal.coste);
+  let amortizacion = null;
+  if (pc === null || (vc === null && coste === null)) faltan.push("valor catastral o coste de compra y % de construcción");
+  else amortizacion = 0.03 * Math.max(vc || 0, coste || 0) * (pc / 100) * prorr;
+  const neto = ingreso - otros - limite - (amortizacion || 0);
+  const pctRed = num(fiscal.reduccion);
+  if (pctRed === null) faltan.push("reducción por alquiler de vivienda (0 si no aplica)");
+  const reduccion = neto > 0 ? neto * (pctRed || 0) / 100 : 0;
+  const netoReducido = neto - reduccion;
+  const tit = (num(fiscal.titularidad) ?? 100) / 100;
+  // Días sin alquilar (y no vivienda habitual): imputación de rentas.
+  const imputacion = vc !== null && dias < diasAnio ? vc * (fiscal.catastralRevisado ? 0.011 : 0.02) * (diasAnio - dias) / diasAnio : 0;
+  const red = (v) => Math.round(v * 100) / 100;
+  return {
+    diasAnio, dias, ingreso: red(ingreso), gastos: red(otros), interesesYReparacion: red(limite), exceso: red(exceso),
+    amortizacion: amortizacion === null ? null : red(amortizacion), neto: red(neto), pctReduccion: pctRed || 0,
+    reduccion: red(reduccion), netoReducido: red(netoReducido), titularidad: tit * 100, tuParte: red(netoReducido * tit),
+    imputacion: red(imputacion * tit), faltan,
+  };
+}
+// Inmueble a disposición (segunda vivienda, vacío): no alquila, imputa renta por los días del año.
+function calcImputacion({ fiscal = {}, anio }) {
+  const r = calcRentaInmueble({ ingreso: 0, gastoDeducible: 0, fiscal: { ...fiscal, diasArrendado: 0, intereses: { [anio]: 0 }, reduccion: 0, pctConstruccion: fiscal.pctConstruccion ?? 0 }, anio });
+  return { imputacion: r.imputacion, falta: typeof fiscal.valorCatastral === "number" ? null : "valor catastral" };
+}
+
 /* Informe por inmueble para el periodo seleccionado (un año natural = informe anual, útil
    para la renta). Por cada activo «en alquiler»: alquiler cobrado, gastos desglosados por
    categoría y rendimiento neto. La vivienda habitual se muestra aparte (no es rendimiento
    de alquiler). Es orientativo: no sustituye al asesoramiento fiscal. */
 function RentaReport({ assets, agg, periodLabel, onClose }) {
+  const anio = Number((/^Año (\d{4})$/.exec(periodLabel || "") || [])[1]) || null;
   const rows = assets.map((a) => {
     const ingreso = agg.byAssetIncome.get(a.name) || 0;
     const gasto = agg.byAsset.get(a.name) || 0;
     const cats = [...(agg.byAssetCat.get(a.name) || new Map()).entries()].filter(([, v]) => v > 0).sort((x, y) => y[1] - x[1]);
     // La cuota del préstamo se muestra pero no se resta: el capital no es gasto deducible.
     const cuota = cats.filter(([c]) => RENTA_CONCEPTO[c] === RENTA_CUOTA).reduce((t, [, v]) => t + v, 0);
-    return { a, ingreso, gasto, cuota, neto: ingreso - (gasto - cuota), cats, conceptos: rentaConceptos(cats) };
+    const conceptos = rentaConceptos(cats);
+    const reparacion = conceptos.find(([ap]) => ap === "Reparación y conservación")?.[1].total || 0;
+    const calc = anio && a.uso === "alquiler" ? calcRentaInmueble({ ingreso, gastoDeducible: gasto - cuota, reparacion, fiscal: a.fiscal || {}, anio }) : null;
+    return { a, ingreso, gasto, cuota, neto: ingreso - (gasto - cuota), cats, conceptos, calc };
   });
   const alquiler = rows.filter((r) => r.a.uso === "alquiler");
   const anual = /^Año \d{4}$/.test(periodLabel || "");
   const vivienda = rows.filter((r) => r.a.uso === "vivienda");
+  const segunda = rows.filter((r) => r.a.uso === "segunda");
   const totIng = alquiler.reduce((s, r) => s + r.ingreso, 0);
   const totGas = alquiler.reduce((s, r) => s + r.gasto - r.cuota, 0); // sin la cuota del préstamo (capital)
 
@@ -5803,17 +5917,32 @@ function RentaReport({ assets, agg, periodLabel, onClose }) {
       return /[;"\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
     };
     const filas = [["Periodo", "Inmueble", "Apartado de Renta Web", "Importe (€)", "Origen en la app", "Qué revisar"]];
+    for (const r of segunda) {
+      const im = anio ? calcImputacion({ fiscal: r.a.fiscal || {}, anio }) : null;
+      filas.push([periodLabel, r.a.name, "Imputación de rentas inmobiliarias", im && !im.falta ? num(im.imputacion) : "", "Inmueble sin alquilar", im?.falta ? "Completar: valor catastral en la ficha fiscal" : ""]);
+    }
     for (const r of alquiler) {
       const f = (ap, imp, orig = "", rev = "") => filas.push([periodLabel, r.a.name, ap, imp, orig, rev]);
-      f("Referencia catastral", "", "", "Completar: está en el recibo del IBI");
-      f("Porcentaje de titularidad", "", "", "Completar: si es a medias, cada titular declara su parte");
-      f("Días arrendado en el año", "", "", "Completar: los gastos de días sin alquilar no son deducibles");
+      const fi = r.a.fiscal || {}, c = r.calc;
+      f("Referencia catastral", fi.refCatastral || "", "", fi.refCatastral ? "" : "Completar: está en el recibo del IBI");
+      f("Porcentaje de titularidad", fi.titularidad != null ? num(fi.titularidad) : "", "", fi.titularidad != null ? "" : "Completar: si es a medias, cada titular declara su parte");
+      f("Días arrendado en el año", fi.diasArrendado != null ? String(fi.diasArrendado) : "", "", fi.diasArrendado != null ? "" : "Completar: los gastos de días sin alquilar no son deducibles");
       f("NIF del inquilino y fecha del contrato", "", "", "Completar: la fecha decide la reducción (50-90 % en contratos desde el 26/05/2023; 60 % antes)");
       f("Ingresos íntegros", num(r.ingreso), "Ingresos asignados al inmueble");
       for (const [ap, e] of r.conceptos) f(ap, num(e.total), e.cats.join(", "), RENTA_REVISAR[ap] || "");
-      f("Amortización del inmueble", "", "", "Completar: 3 % del mayor entre precio de compra (con gastos) y valor catastral, solo la construcción, sin el suelo");
-      if (r.cuota > 0) f("Intereses y gastos de financiación (de la cuota)", "", "", `Completar: solo los intereses de los ${num(r.cuota)} € de cuotas; el capital no se deduce`);
-      f(r.cuota > 0 ? "Rendimiento neto (sin la cuota ni la amortización; resta los intereses)" : "Rendimiento neto (antes de amortización y reducción)", num(r.neto));
+      if (c && c.amortizacion != null) f("Amortización del inmueble", num(c.amortizacion), "3 % × mayor(coste, valor catastral) × % construcción × días");
+      else f("Amortización del inmueble", "", "", "Completar: 3 % del mayor entre precio de compra (con gastos) y valor catastral, solo la construcción, sin el suelo (o rellena la ficha fiscal del activo)");
+      if (r.cuota > 0 && !(c && fi.intereses?.[anio] != null)) f("Intereses y gastos de financiación (de la cuota)", "", "", `Completar: solo los intereses de los ${num(r.cuota)} € de cuotas; el capital no se deduce`);
+      if (c && !c.faltan.length) {
+        f("Intereses + reparación deducibles (con límite)", num(c.interesesYReparacion), "", c.exceso > 0 ? `Exceso de ${num(c.exceso)} €: se arrastra a los 4 años siguientes` : "");
+        f("Rendimiento neto", num(c.neto), "Calculado con la ficha fiscal");
+        f(`Reducción (${c.pctReduccion} %)`, num(c.reduccion));
+        f("Rendimiento neto reducido", num(c.netoReducido));
+        if (c.titularidad !== 100) f(`Tu parte (${num(c.titularidad)} %)`, num(c.tuParte));
+        if (c.imputacion > 0) f("Imputación de rentas (días sin alquilar)", num(c.imputacion));
+      } else {
+        f(r.cuota > 0 ? "Rendimiento neto (sin la cuota ni la amortización; resta los intereses)" : "Rendimiento neto (antes de amortización y reducción)", num(r.neto), "", c?.faltan.length ? "Falta en la ficha fiscal: " + c.faltan.join(", ") : "");
+      }
     }
     try {
       const csv = "\ufeff" + filas.map((l) => l.map(esc).join(";")).join("\r\n");
@@ -5830,7 +5959,7 @@ function RentaReport({ assets, agg, periodLabel, onClose }) {
       <div className="space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="max-w-md text-xs text-slate-500">Rendimiento de cada inmueble <span className="font-medium">en el periodo seleccionado</span>. Elige un año arriba para el informe anual de la renta.</p>
-          <Btn kind="primary" onClick={exportar} disabled={!alquiler.length}><Download size={14} /> Exportar para la renta</Btn>
+          <Btn kind="primary" onClick={exportar} disabled={!alquiler.length && !segunda.length}><Download size={14} /> Exportar para la renta</Btn>
         </div>
         {!anual && (
           <p className="rounded-lg px-3 py-2 text-xs" style={{ background: C.warnSoft, color: C.warn }}>
@@ -5842,7 +5971,7 @@ function RentaReport({ assets, agg, periodLabel, onClose }) {
           <Card className="p-6 text-center text-sm text-slate-500">
             Ningún activo marcado como <span className="font-medium">«En alquiler»</span>. Edita tus inmuebles (icono ✏️) y pon su uso para que aparezcan aquí.
           </Card>
-        ) : alquiler.map(({ a, ingreso, gasto, neto, conceptos }) => (
+        ) : alquiler.map(({ a, ingreso, gasto, neto, conceptos, calc }) => (
           <Card key={a.id} className="p-4">
             <div className="flex items-center justify-between gap-2">
               <h3 className="font-semibold"><span className="mr-1.5">{a.emoji}</span>{a.name}</h3>
@@ -5853,6 +5982,21 @@ function RentaReport({ assets, agg, periodLabel, onClose }) {
               <div><div className="text-[10px] font-medium uppercase tracking-wide text-slate-400">Gastos</div><div className="text-lg font-semibold" style={{ ...tnum, color: C.expense }}>{fmtE0(gasto)}</div></div>
               <div><div className="text-[10px] font-medium uppercase tracking-wide text-slate-400">Neto</div><div className="text-lg font-semibold" style={{ ...tnum, color: neto >= 0 ? C.income : C.expense }}>{neto >= 0 ? "+" : ""}{fmtE0(neto)}</div></div>
             </div>
+            {calc && (
+              <div className="mt-3 rounded-lg p-2.5 text-xs" style={{ background: C.surfaceAlt }}>
+                <div className="mb-1 font-semibold text-slate-700">Cálculo para la renta {anio}</div>
+                {calc.faltan.length > 0 ? (
+                  <p style={{ color: C.warn }}>Para calcularlo, completa en la ficha fiscal del activo (✏️): {calc.faltan.join(", ")}.</p>
+                ) : (
+                  <div className="space-y-0.5" style={tnum}>
+                    {[["Ingresos íntegros", calc.ingreso], [`Gastos (${calc.dias} de ${calc.diasAnio} días alquilado)`, -calc.gastos], ["Intereses + reparación (con límite)", -calc.interesesYReparacion], ["Amortización", -calc.amortizacion], ["Rendimiento neto", calc.neto], [`Reducción ${calc.pctReduccion} %`, -calc.reduccion], ["Rendimiento neto reducido", calc.netoReducido], ...(calc.titularidad !== 100 ? [[`Tu parte (${calc.titularidad} %)`, calc.tuParte]] : []), ...(calc.imputacion > 0 ? [["Imputación por días sin alquilar", calc.imputacion]] : [])].map(([l, v]) => (
+                      <div key={l} className="flex justify-between gap-2"><span className="text-slate-600">{l}</span><span className="font-medium text-slate-700">{fmtE0(v)}</span></div>
+                    ))}
+                    {calc.exceso > 0 && <p className="pt-1" style={{ color: C.warn }}>Intereses y reparación superan los ingresos en {fmtE0(calc.exceso)}: ese exceso se deduce en los 4 años siguientes.</p>}
+                  </div>
+                )}
+              </div>
+            )}
             {conceptos.length > 0 && (
               <div className="mt-3 border-t pt-2" style={{ borderColor: C.line }}>
                 <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">Gastos por apartado de Renta Web</div>
@@ -5882,6 +6026,19 @@ function RentaReport({ assets, agg, periodLabel, onClose }) {
           </Card>
         )}
 
+        {anio && segunda.map(({ a }) => {
+          const im = calcImputacion({ fiscal: a.fiscal || {}, anio });
+          return (
+            <Card key={a.id} className="p-4">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="font-semibold"><span className="mr-1.5">{a.emoji}</span>{a.name}</h3>
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">🏖️ Sin alquilar</span>
+              </div>
+              <p className="mt-1 text-xs text-slate-600">{im.falta ? <span style={{ color: C.warn }}>Pon el valor catastral en su ficha fiscal (✏️) para calcular la imputación de rentas.</span> : <>Imputación de rentas {anio}: <strong style={tnum}>{fmtE0(im.imputacion)}</strong> (se suma a tu base general).</>}</p>
+            </Card>
+          );
+        })}
+
         {vivienda.map(({ a, gasto }) => (
           <Card key={a.id} className="p-4">
             <div className="flex items-center justify-between gap-2">
@@ -5899,23 +6056,32 @@ function RentaReport({ assets, agg, periodLabel, onClose }) {
   );
 }
 
-function ActivosTab({ assets, setAssets, agg, rentaAgg, allAgg, onDrill, periodLabel }) {
+function ActivosTab({ assets, setAssets, agg, rentaAgg, allAgg, onDrill, periodLabel, onRenameAsset, onDeleteAsset }) {
   const [report, setReport] = useState(false);
   useBackClose(report, () => setReport(false));
   const [editing, setEditing] = useState(null);
   useBackClose(!!editing, () => setEditing(null));
   const save = (data) => {
     if (editing === "new") setAssets((as) => [...as, { id: "a" + Date.now(), ...data }]);
-    else setAssets((as) => as.map((a) => (a.id === editing.id ? { ...a, ...data } : a)));
+    else {
+      if (data.name !== editing.name) onRenameAsset?.(editing.name, data.name);
+      setAssets((as) => as.map((a) => (a.id === editing.id ? { ...a, ...data } : a)));
+    }
     setEditing(null);
   };
   // Resumen por activo en el PERIODO (real, no proyectado), para el vistazo rápido.
   // La rentabilidad, en cambio, es anual y sobre el valor: la misma neta proyectada que enseña
   // la tarjeta de cada activo, para que tabla y tarjeta no digan cosas distintas.
+  // Anualizado con el periodo DEL ACTIVO (de su primer a su último movimiento), no con el de
+  // todos tus datos: un piso alquilado hace 6 meses, con 3 años de extractos, salía ~6 veces bajo.
+  const factorDe = (a) => {
+    const rg = allAgg.byAssetRange?.get(a.name);
+    return rg ? 12 / Math.max(1, monthsCoveredOf(rg[0], rg[1])) : allAgg.annualFactor;
+  };
   const resumen = assets.map((a) => {
     const gasto = agg.byAsset.get(a.name) || 0;
     const ingreso = agg.byAssetIncome.get(a.name) || 0;
-    const netoAnual = ((allAgg.byAssetIncome.get(a.name) || 0) - (allAgg.byAsset.get(a.name) || 0)) * allAgg.annualFactor;
+    const netoAnual = ((allAgg.byAssetIncome.get(a.name) || 0) - (allAgg.byAsset.get(a.name) || 0)) * factorDe(a);
     return { a, gasto, ingreso, neto: ingreso - gasto, netoAnual, rent: a.value ? netoAnual / a.value : null };
   }).sort((x, y) => y.neto - x.neto);
   const totIng = resumen.reduce((s, r) => s + r.ingreso, 0);
@@ -5929,7 +6095,7 @@ function ActivosTab({ assets, setAssets, agg, rentaAgg, allAgg, onDrill, periodL
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="max-w-xl text-sm text-slate-500">Un activo agrupa lo que ingresa y cuesta algo tuyo (un piso en alquiler, el coche, la mascota…). Abajo, el detalle y la proyección anual de cada uno.</p>
         <div className="flex flex-wrap items-center gap-2">
-          {assets.some((a) => a.uso === "alquiler") && <Btn onClick={() => setReport(true)}><FileText size={15} /> Informe por inmueble</Btn>}
+          {assets.some((a) => a.uso === "alquiler" || a.uso === "segunda") && <Btn onClick={() => setReport(true)}><FileText size={15} /> Informe por inmueble</Btn>}
           <Btn kind="primary" onClick={() => setEditing("new")}><Plus size={15} /> Nuevo activo</Btn>
         </div>
       </div>
@@ -5992,9 +6158,10 @@ function ActivosTab({ assets, setAssets, agg, rentaAgg, allAgg, onDrill, periodL
           {assets.map((a) => {
             const real = agg.byAsset.get(a.name) || 0;
             const full = allAgg.byAsset.get(a.name) || 0;
-            const proj = full * allAgg.annualFactor;
+            const factorA = factorDe(a);
+            const proj = full * factorA;
             const incomeFull = allAgg.byAssetIncome.get(a.name) || 0;
-            const incomeProj = incomeFull * allAgg.annualFactor;
+            const incomeProj = incomeFull * factorA;
             const ingresoReal = agg.byAssetIncome.get(a.name) || 0;
             const netoReal = ingresoReal - real;
             const netProj = incomeProj - proj;
@@ -6094,7 +6261,7 @@ function ActivosTab({ assets, setAssets, agg, rentaAgg, allAgg, onDrill, periodL
           })}
         </div>
       </>)}
-      {editing && <AssetModal asset={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSave={save} onDelete={() => { setAssets((as) => as.filter((a) => a.id !== editing.id)); setEditing(null); }} />}
+      {editing && <AssetModal asset={editing === "new" ? null : editing} allAssets={assets} onClose={() => setEditing(null)} onSave={save} onDelete={() => { if (onDeleteAsset ? onDeleteAsset(editing) : true) setEditing(null); }} />}
       {report && <RentaReport assets={assets} agg={rentaAgg || agg} periodLabel={periodLabel} onClose={() => setReport(false)} />}
     </div>
   );
@@ -8331,7 +8498,7 @@ export {
   matchRule, ruleConditionsHold, sortedRules, ruleId, isConditional,
   DEFAULT_RULES, PRIO, DEFAULT_MATERIALIDAD,
   classifyForImport, dedupeAgainst, movKey, normalizePattern, auditRules, learnedRule, needsAmount, ambiguousPatterns,
-  CATEGORIES, rebuildRules, deserializeMovs, conciliar, viviendaPorDefecto, VIVIENDA, computeBankSaldo, refundIndex, refundFromHistory,
+  CATEGORIES, rebuildRules, deserializeMovs, calcRentaInmueble, calcImputacion, conciliar, viviendaPorDefecto, VIVIENDA, computeBankSaldo, refundIndex, refundFromHistory,
   runQuery, totalsOf,
   makeAccessLink, abrirAcceso, parseAccessLink, parseEsNumber, parseDateAny, tokenizeCSV, detectDelimiter, analyzeRows, buildMovements,
   buildMonthClose, missingIncome, upcomingIncome, upcomingCharges, detectRecurring, analyzeReceiptTrends,
@@ -8899,7 +9066,7 @@ function AppMain() {
     bank: { ...loadBank(), token: "" },
   }), [rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem, movs]);
 
-  const syncPush = useCallback(async ({ silent, force } = {}) => {
+  const syncPush = useCallback(async ({ silent, force, payload } = {}) => {
     const url = bankBase();
     if (!url) { if (!silent) setSyncMsg({ kind: "err", text: "Pon la URL del backend (tu Worker) en la sección de arriba." }); return; }
     setSyncBusy(true); if (!silent) setSyncMsg(null);
@@ -8931,7 +9098,7 @@ function AppMain() {
       }
       const res = await fetch(url + "/store", {
         method: "PUT", headers: { ...bankHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ baseVersion, payload: syncPayload() }),
+        body: JSON.stringify({ baseVersion, payload: payload || syncPayload() }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.status === 409) {
@@ -8996,7 +9163,9 @@ function AppMain() {
       syncSuppressRef.current = Date.now() + 6000;
       const n = applyBackupPayload(data.payload);
       setSyncBusy(false);
-      const p = await syncPush({ silent: true });
+      // Se sube la versión recuperada tal cual (con la conexión bancaria de ahora, sin token):
+      // syncPayload todavía tiene el estado de antes de recuperar y subiría eso.
+      const p = await syncPush({ silent: true, payload: { ...data.payload, updatedAt: Date.now(), bank: { ...loadBank(), token: "" } } });
       setSyncMsg(p?.ok ? { kind: "ok", text: `Recuperada la versión ${v.version}: ${nfNum.format(n)} movimientos. Guardada como versión nueva.` }
         : { kind: "err", text: `Recuperada la versión ${v.version} en este dispositivo, pero no se ha podido guardar en el servidor: revisa el aviso de arriba.` });
     } catch (e) { setSyncMsg({ kind: "err", text: "No se pudo recuperar: " + e.message }); }
@@ -9035,7 +9204,7 @@ function AppMain() {
     if (!booted || !syncCfg.auto || !bankBase() || syncConflict) return;
     if (Date.now() < syncSuppressRef.current) return;
     // Anotado en disco al momento: si cierras antes de los 25 s, al volver se sabe que hay que subir.
-    saveSync({ ...loadSync(), pendiente: Date.now() });
+    persistSync({ pendiente: Date.now() });
     clearTimeout(syncTimer.current);
     syncTimer.current = setTimeout(() => syncPush({ silent: true }), 25000);
     return () => clearTimeout(syncTimer.current);
@@ -9085,7 +9254,9 @@ function AppMain() {
       return { ok: false, text: "Cancelado: sigues con tu servidor de siempre." };
     }
     // Mientras se comprueba, nada se sube solo; si algo falla, se deja todo como estaba.
-    const deshacer = (res) => { saveBank(prev); setBankCfg(loadBank()); persistSync(prevSync); return res; };
+    // saveBank no deja sustituir una config con datos por una vacía (su red de seguridad); aquí sí
+    // hay que volver a la vacía de un dispositivo nuevo, así que se escribe directamente.
+    const deshacer = (res) => { if (bankIsEmpty(prev)) setItemSeguro(BANK_KEY, JSON.stringify(prev)); else saveBank(prev); setBankCfg(loadBank()); persistSync(prevSync); return res; };
     syncBootRef.current = true;
     syncSuppressRef.current = Date.now() + 60000;
     clearTimeout(syncTimer.current);
@@ -10000,6 +10171,27 @@ function AppMain() {
       });
     }
   };
+  // Todo se agrupa por NOMBRE de activo: renombrar sin propagar dejaba el activo a cero y sus
+  // movimientos huérfanos. Se cambia en movimientos, memoria comercio→activo, reglas y filtros.
+  const renameAsset = (viejo, nuevo) => {
+    if (!viejo || !nuevo || viejo === nuevo) return;
+    setMovs((ms) => ms.map((m) => (m.assetName === viejo ? { ...m, assetName: nuevo } : m)));
+    setAssetMem((p) => Object.fromEntries(Object.entries(p).map(([k, v]) => [k, v === viejo ? nuevo : v])));
+    setRules((rs) => rs.map((r) => (r.asset === viejo ? { ...r, asset: nuevo } : r)));
+    setFilters((f) => (f.assetsSel?.has(viejo) ? { ...f, assetsSel: new Set([...f.assetsSel].map((x) => (x === viejo ? nuevo : x))) } : f));
+  };
+  // Borrar pide confirmación y limpia las referencias: antes la siguiente importación lo volvía
+  // a crear desde la memoria comercio→activo. Los movimientos vuelven a asignarse por categoría.
+  const deleteAsset = (a) => {
+    const n = movs.filter((m) => m.assetName === a.name).length;
+    if (!window.confirm(`¿Eliminar «${a.name}»?${n ? `\n\n${nfNum.format(n)} movimientos asignados a mano dejarán de estarlo (no se borran).` : ""}`)) return false;
+    setAssets((as) => as.filter((x) => x.id !== a.id));
+    setMovs((ms) => ms.map((m) => (m.assetName === a.name ? { ...m, assetName: undefined } : m)));
+    setAssetMem((p) => Object.fromEntries(Object.entries(p).filter(([, v]) => v !== a.name)));
+    setRules((rs) => rs.map((r) => (r.asset === a.name ? { ...r, asset: undefined } : r)));
+    setFilters((f) => (f.assetsSel?.has(a.name) ? { ...f, assetsSel: new Set([...f.assetsSel].filter((x) => x !== a.name)) } : f));
+    return true;
+  };
   const reasset = (mov, assetName) => {
     if (assetName) ensureAsset(assetName);
     // Por movimiento individual: un mismo comercio puede repartirse entre activos
@@ -10286,6 +10478,7 @@ function AppMain() {
   const makeAgg = useCallback((range, useFilters, { conExtra = false } = {}) => {
     const [a, b] = range;
     const byCat = new Map(), byAsset = new Map(), byAssetCat = new Map(), byAssetIncome = new Map();
+    const byAssetRange = new Map(); // activo -> [primer, último] movimiento: su anualización es la suya
     const bucketCat = new Map(), bucketTot = new Map();
     const byInternoCat = new Map();
     let gasto = 0, ingresos = 0, interno = 0;
@@ -10331,6 +10524,7 @@ function AppMain() {
         parts.push(p);
         if (!dMin || m.date < dMin) dMin = m.date;
         if (!dMax || m.date > dMax) dMax = m.date;
+        if (p.asset) { const rg = byAssetRange.get(p.asset); if (!rg) byAssetRange.set(p.asset, [m.date, m.date]); else { if (m.date < rg[0]) rg[0] = m.date; if (m.date > rg[1]) rg[1] = m.date; } }
         const bk = isDay ? m.date.toISOString().slice(0, 10) : isYear ? String(m.date.getFullYear()) : monthKey(m.date);
         if (!bucketTot.has(bk)) bucketTot.set(bk, { gasto: 0, ingreso: 0 });
         if (INTERNAL_SET.has(p.cat)) {
@@ -10380,7 +10574,7 @@ function AppMain() {
     });
     const assetsArr = assets.map((x) => ({ ...x, total: byAsset.get(x.name) || 0 }));
     return {
-      parts, gasto, ingresos, interno, byCat, byInternoCat, byAsset, byAssetCat, byAssetIncome, buckets, topCats, assets: assetsArr,
+      parts, gasto, ingresos, interno, byCat, byInternoCat, byAsset, byAssetCat, byAssetIncome, byAssetRange, buckets, topCats, assets: assetsArr,
       extraGasto, extraIngreso, extraGastoIds: [...extraGastoIds], extraIngresoIds: [...extraIngresoIds],
       rangeDays, mesesData, annualFactor, mediaMensual: gasto / mesesData, gastoProj: gasto * annualFactor,
     };
@@ -10664,7 +10858,7 @@ function AppMain() {
               <div className="flex"><Seg ariaLabel="Activos o etiquetas" value={subAct} onChange={setSubAct}
                 options={[{ v: "activos", l: "🏠 Activos" }, { v: "etiquetas", l: "🏷️ Etiquetas" }]} /></div>
               {subAct === "activos"
-                ? <ActivosTab assets={assets} setAssets={setAssets} agg={agg} rentaAgg={rentaAgg} allAgg={allAgg} onDrill={setDrill} periodLabel={describePeriod(filters)} />
+                ? <ActivosTab assets={assets} setAssets={setAssets} agg={agg} rentaAgg={rentaAgg} allAgg={allAgg} onDrill={setDrill} periodLabel={describePeriod(filters)} onRenameAsset={renameAsset} onDeleteAsset={deleteAsset} />
                 : <GruposTab groups={groups} setGroups={setGroups} groupStats={groupStats} allGroupStats={allGroupStats}
                     movsAll={movs} annualFactor={allAgg.annualFactor} mesesData={allAgg.mesesData} onDrill={setDrill} />}
             </div>
