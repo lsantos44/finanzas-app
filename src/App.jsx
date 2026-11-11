@@ -1056,7 +1056,7 @@ function normalizePattern(concept) {
     const rest = s.slice(pm[0].length).trim();
     s = (!rest || PROCESSOR_TAIL_RE.test(rest)) ? pm[1] : rest;
   }
-  s = s.replace(/[0-9]/g, " ").replace(/[/\\:;,._'"()\-]+/g, " ").replace(/\s+/g, " ").trim();
+  s = s.replace(/[0-9]/g, " ").replace(/[/\\:;,._'"()-]+/g, " ").replace(/\s+/g, " ").trim();
   if (!s) return "SIN CONCEPTO";
   // Cadena conocida con sufijo de local: nos quedamos con la marca (un único comercio).
   const chm = CHAIN_RE.exec(s);
@@ -8193,9 +8193,37 @@ export {
   matchRule, ruleConditionsHold, sortedRules, ruleId, isConditional,
   DEFAULT_RULES, PRIO, DEFAULT_MATERIALIDAD,
   classifyForImport, dedupeAgainst, movKey, normalizePattern, auditRules, learnedRule, needsAmount, ambiguousPatterns,
-  CATEGORIES, rebuildRules, deserializeMovs,
+  CATEGORIES, rebuildRules, deserializeMovs, computeBankSaldo, refundIndex, refundFromHistory,
+  makeAccessLink, abrirAcceso, parseAccessLink, parseEsNumber, parseDateAny, tokenizeCSV, detectDelimiter, analyzeRows, buildMovements,
   buildMonthClose, missingIncome, upcomingIncome, upcomingCharges, detectRecurring, analyzeReceiptTrends,
 };
+
+// Saldo del banco al día (ver el comentario en App, junto a su uso).
+function computeBankSaldo(connections, movs) {
+  const conns = (connections || []).filter((c) => typeof c.balance === "number");
+  if (!conns.length) return null;
+  const dia = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  let total = 0, estimado = false, hasta = null;
+  for (const c of conns) {
+    const base = typeof c.balanceBooked === "number" ? c.balanceBooked : c.balance;
+    const baseDia = String((typeof c.balanceBooked === "number" ? c.balanceBookedAt : c.balanceAt) || (c.balanceRead || c.lastSync ? dia(new Date(c.balanceRead || c.lastSync)) : "")).slice(0, 10);
+    const deLaConexion = (m) => m.bankId && m.file === (c.aspsp || "Banco") && !m.omit;
+    const despues = baseDia ? movs.filter((m) => deLaConexion(m) && dia(m.date) > baseDia) : [];
+    // Llegados DESPUÉS de leer el saldo aunque sean del mismo día (sincronizas a mano por la
+    // mañana y la revisión de la tarde trae otro de hoy): su saldo es más nuevo que el leído.
+    // Lo que llegó ANTES de leer el saldo ya está dentro de él (la sincronización manual trae
+    // los movimientos y luego lee el saldo), así que no cuenta como nuevo.
+    const nuevos = movs.filter((m) => deLaConexion(m) && (m.at && c.balanceRead ? m.at > c.balanceRead : dia(m.date) > baseDia));
+    if (!nuevos.length) { total += c.balance; continue; }
+    nuevos.sort((a, b) => (a.date - b.date) || ((a.at || 0) - (b.at || 0)));
+    const ult = nuevos[nuevos.length - 1];
+    if (typeof ult.bs === "number") total += ult.bs;
+    else if (despues.length) { total += base + despues.reduce((s, m) => s + m.amount, 0); estimado = true; }
+    else { total += c.balance; continue; }
+    if (!hasta || ult.date > hasta) hasta = ult.date;
+  }
+  return { amount: Math.round(total * 100) / 100, estimado, hasta };
+}
 
 let MOV_ID = 1;
 
@@ -9946,31 +9974,7 @@ function AppMain() {
      límite diario). Así que, si después han llegado movimientos de esa conexión, se parte del
      saldo contable y su fecha y se suman los contabilizados después; si el banco da el saldo
      tras cada movimiento, se usa ese directamente. Sin movimientos nuevos, el saldo leído. */
-  const bankSaldo = useMemo(() => {
-    const conns = (bankCfg.connections || []).filter((c) => typeof c.balance === "number");
-    if (!conns.length) return null;
-    const dia = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    let total = 0, estimado = false, hasta = null;
-    for (const c of conns) {
-      const base = typeof c.balanceBooked === "number" ? c.balanceBooked : c.balance;
-      const baseDia = String((typeof c.balanceBooked === "number" ? c.balanceBookedAt : c.balanceAt) || (c.balanceRead || c.lastSync ? dia(new Date(c.balanceRead || c.lastSync)) : "")).slice(0, 10);
-      const deLaConexion = (m) => m.bankId && m.file === (c.aspsp || "Banco") && !m.omit;
-      const despues = baseDia ? movs.filter((m) => deLaConexion(m) && dia(m.date) > baseDia) : [];
-      // Llegados DESPUÉS de leer el saldo aunque sean del mismo día (sincronizas a mano por la
-      // mañana y la revisión de la tarde trae otro de hoy): su saldo es más nuevo que el leído.
-      // Lo que llegó ANTES de leer el saldo ya está dentro de él (la sincronización manual trae
-      // los movimientos y luego lee el saldo), así que no cuenta como nuevo.
-      const nuevos = movs.filter((m) => deLaConexion(m) && (m.at && c.balanceRead ? m.at > c.balanceRead : dia(m.date) > baseDia));
-      if (!nuevos.length) { total += c.balance; continue; }
-      nuevos.sort((a, b) => (a.date - b.date) || ((a.at || 0) - (b.at || 0)));
-      const ult = nuevos[nuevos.length - 1];
-      if (typeof ult.bs === "number") total += ult.bs;
-      else if (despues.length) { total += base + despues.reduce((s, m) => s + m.amount, 0); estimado = true; }
-      else { total += c.balance; continue; }
-      if (!hasta || ult.date > hasta) hasta = ult.date;
-    }
-    return { amount: Math.round(total * 100) / 100, estimado, hasta };
-  }, [bankCfg, movs]);
+  const bankSaldo = useMemo(() => computeBankSaldo(bankCfg.connections, movs), [bankCfg, movs]);
   const cierre = useMemo(() => buildMonthClose({ movs, receiptTrends, upcoming, saldoSerie, dataRange, realSaldo: bankSaldo ? bankSaldo.amount : null, saldoEstimado: !!bankSaldo?.estimado }), [movs, receiptTrends, upcoming, saldoSerie, dataRange, bankSaldo]);
 
   const createGroupFromProposal = useCallback((p) => {
