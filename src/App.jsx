@@ -826,7 +826,23 @@ function applyCfg(raw, setters) {
 // despues y NO pisarlo.
 const SYNC_KEY = "finz:sync:v1";
 const loadSync = () => { try { return JSON.parse(window.localStorage?.getItem(SYNC_KEY) || "{}") || {}; } catch { return {}; } };
-const saveSync = (v) => { try { window.localStorage?.setItem(SYNC_KEY, JSON.stringify(v)); } catch { /* cuota */ } };
+// Guardar en localStorage sin perder en silencio la conexión bancaria o el estado de la sync.
+// Si no cabe, se sacrifican las copias automáticas más antiguas (son de respaldo) y se
+// reintenta; si ni así, se avisa a la app (evento «finz-cuota»).
+function setItemSeguro(key, value) {
+  for (let intento = 0; intento < 20; intento++) {
+    try { window.localStorage?.setItem(key, value); return true; } catch {
+      const snaps = [];
+      try { for (let i = 0; i < window.localStorage.length; i++) { const k = window.localStorage.key(i); if (k && k.startsWith(SNAP_PREFIX)) snaps.push(k); } } catch { /* sin acceso */ }
+      if (!snaps.length) break;
+      snaps.sort((a, b) => +a.slice(SNAP_PREFIX.length) - +b.slice(SNAP_PREFIX.length));
+      try { window.localStorage.removeItem(snaps[0]); } catch { break; }
+    }
+  }
+  try { window.dispatchEvent(new Event("finz-cuota")); } catch { /* noop */ }
+  return false;
+}
+const saveSync = (v) => setItemSeguro(SYNC_KEY, JSON.stringify(v));
 
 const BANK_KEY = "finz:bank:v1";
 // Formato: { workerUrl, token, connections:[{id,aspsp,country,sessionId,accountUid,accountName,lastSync}], pending }.
@@ -949,8 +965,8 @@ const saveBank = (v) => {
     // Red de seguridad: nunca sustituir una config con datos por una vacía. Esto es lo que
     // dejaba la app "como nueva" (sin worker, sin token) tras una reconexión.
     if (bankIsEmpty(v) && !bankIsEmpty(prev) && !prev.broken) return;
-    window.localStorage?.setItem(BANK_KEY, JSON.stringify({ ...v, updatedAt: Date.now() }));
-  } catch { /* cuota */ }
+    setItemSeguro(BANK_KEY, JSON.stringify({ ...v, updatedAt: Date.now() }));
+  } catch { /* lectura previa ilegible */ }
 };
 // El motivo real de un fallo bancario viene en el cuerpo de la respuesta del Worker (que a su
 // vez reenvía el de Enable Banking). Un «HTTP 400» pelado no permite arreglar nada, así que
@@ -1905,7 +1921,8 @@ function buildAlerts({ movs, budgets, receiptTrends, outliers }) {
     });
   }
 
-  alerts.sort((a, b) => (a.sev === b.sev ? 0 : a.sev === "alta" ? -1 : 1));
+  const SEV = { alta: 0, media: 1, baja: 2 }; // antes: (media, baja) y (baja, media) daban ambos 1 y el orden salía al azar
+  alerts.sort((a, b) => (SEV[a.sev] ?? 3) - (SEV[b.sev] ?? 3));
   // Id estable por aviso, para poder marcarlo como visto y que no reaparezca.
   for (const a of alerts) a.id = `${a.kind}|${a.drill?.key ?? a.titulo}`;
   return alerts.slice(0, 5);
@@ -2674,7 +2691,7 @@ function runQuery(ctx, args = {}) {
         }
         out.en_el_periodo = {
           movimientos: enPeriodo.length,
-          sin_confirmar: enPeriodo.filter((m) => !m.confirmed).length,
+          sin_confirmar: enPeriodo.filter((m) => m.confirmed === false).length,
           gasto_por_categoria: [...porCat.entries()].sort((x, y) => y[1] - x[1]).slice(0, 8).map(([c, v]) => ({ categoria: c, gasto: r2(v) })),
         };
         out.nota = "En esa categoria no hay nada, pero el periodo SI tiene movimientos (ver en_el_periodo). "
@@ -5144,7 +5161,8 @@ function AlertsCard({ alerts, onDrill, onOpenPending, onDismiss }) {
       </div>
       {alerts.map((a, i) => (
         <div key={a.id || i} className="flex items-start gap-1 border-b px-4 py-2.5 last:border-0" style={{ borderColor: C.line }}>
-          <button type="button" onClick={() => (a.openPending ? onOpenPending?.() : a.drill && onDrill(a.drill))}
+          {/* Los avisos miran todo tu histórico: su detalle también (con el periodo elegido salía vacío). */}
+          <button type="button" onClick={() => (a.openPending ? onOpenPending?.() : a.drill && onDrill({ ...a.drill, todo: true }))}
             className="flex min-w-0 flex-1 items-start gap-2.5 rounded-lg py-0.5 text-left hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
             <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full" style={{ background: a.sev === "alta" ? C.expense : a.sev === "baja" ? C.accent : C.warn }} />
             <span className="min-w-0 flex-1">
@@ -6218,7 +6236,7 @@ function ClasificacionTab({ movs, assets, groups, onRecat, onReasset, onReassetA
       g.absList.push(Math.abs(m.amount));
       g.cats.add(m.splits ? "· dividido" : (m.category || "Otros"));
       g.assets.add(m.assetName === undefined ? "·auto" : (m.assetName || ""));
-      if (!m.confirmed) g.pend++;
+      if (m.confirmed === false) g.pend++;
       if (m.note) { g.notes++; g.noteVals.add(m.note); }
     }
     const arr = [...map.values()];
@@ -6339,7 +6357,7 @@ function ClasificacionTab({ movs, assets, groups, onRecat, onReasset, onReassetA
                           <div className="min-w-0 flex-1">
                             <div className="text-xs text-slate-500" style={tnum}>{fmtDate(m.date)}
                               {m.currency && <span className="ml-1.5 text-slate-400">· orig {Math.abs(m.origAmount).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {m.currency}</span>}
-                              {!m.confirmed && <span className="ml-1.5"><Pill color={C.warn} soft={C.warnSoft}>por revisar</Pill></span>}
+                              {m.confirmed === false && <span className="ml-1.5"><Pill color={C.warn} soft={C.warnSoft}>por revisar</Pill></span>}
                               {isRefund(m) && <span className="ml-1.5 rounded bg-emerald-50 px-1 py-0.5 text-[10px] font-medium text-emerald-700" title="Devolución: resta del gasto de su categoría, no cuenta como ingreso">devolución</span>}
                               {m.extra && <span className="ml-1.5 rounded px-1 py-0.5 text-[10px]" style={{ background: C.accentSoft, color: C.accent }}>extraordinario</span>}
                               {outliers?.has?.(m.id) && <span className="ml-1.5"><Pill color={C.warn} soft={C.warnSoft}>atípico</Pill></span>}
@@ -8501,6 +8519,12 @@ function AppMain() {
   const bootProtectRef = useRef(false);
   const [snapCount, setSnapCount] = useState(0);
   const [snapTooBig, setSnapTooBig] = useState(false);
+  // Sin espacio en el navegador para la conexión bancaria o la sincronización: hay que verlo.
+  useEffect(() => {
+    const h = () => setSaveState("error");
+    window.addEventListener("finz-cuota", h);
+    return () => window.removeEventListener("finz-cuota", h);
+  }, []);
   // Telemetría por regla: id -> { n, abs, last }. Y el umbral por debajo del cual
   // un movimiento no merece que te preguntemos.
   const [ruleStats, setRuleStats] = useState({});
@@ -8515,7 +8539,15 @@ function AppMain() {
       try {
         const [cRaw, mRaw] = await Promise.all([STORE.get(STORE_KEYS.cfg), STORE.get(STORE_KEYS.movs)]);
         if (cancel) return;
-        if (cRaw) { try { applyCfg(cRaw, { setAssets, setGroups, setBudgets, setReducible, setRules, setAiOn, setAi, setAiProfiles, setAiDetail, setRuleStats, setMaterialidad, setAssetMem }); } catch { /* copia corrupta: se ignora */ } }
+        if (cRaw) {
+          try { applyCfg(cRaw, { setAssets, setGroups, setBudgets, setReducible, setRules, setAiOn, setAi, setAiProfiles, setAiDetail, setRuleStats, setMaterialidad, setAssetMem }); } catch {
+            // Antes se ignoraba y, un segundo después, el autoguardado escribía la configuración
+            // de fábrica encima: reglas, activos, grupos y presupuestos perdidos sin aviso. Ahora
+            // se guarda aparte tal cual (recuperable) y se avisa.
+            setItemSeguro("finz:cfg:ilegible:" + Date.now(), cRaw);
+            setError("Tu configuración guardada (reglas, activos, grupos) no se ha podido leer. He guardado una copia aparte; si la tienes en el servidor o en una copia .json, restáurala desde Ajustes.");
+          }
+        }
         if (mRaw) {
           try {
             const ms = deserializeMovs(mRaw);
@@ -8665,7 +8697,7 @@ function AppMain() {
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 3000);
     } catch (e) { setError("No se pudo exportar la copia: " + e.message); }
-  }, [rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, movs, ruleStats, materialidad]);
+  }, [rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, movs, ruleStats, materialidad, assetMem]);
 
   const applyBackupPayload = useCallback((p, { deArchivo = false } = {}) => {
     const ms = deserializeMovs(JSON.stringify(p.movs));
@@ -8930,6 +8962,7 @@ function AppMain() {
   const [bankAddPsu, setBankAddPsu] = useState("personal");  // titular: personal o empresa
 
   const [vueltaAjena, setVueltaAjena] = useState(null); // URL de vuelta del banco caída en otro navegador
+  const [vueltaBanco, setVueltaBanco] = useState(null); // sesión recién traída del banco, por terminar de conectar
   // Al volver del banco, ?bank_session=… : creamos una conexión con el banco que estaba pendiente.
   useEffect(() => {
     try {
@@ -8997,28 +9030,14 @@ function AppMain() {
       // la sesión trae una sola cuenta (o es una renovación que se reencuentra por IBAN), se
       // hace solo; con varias, se cargan para que solo haya que elegir. Y la sincronización al
       // abrir queda encendida, que si no nadie la activa.
-      setTimeout(async () => {
-        const conn = (loadBank().connections || []).find((c) => c.sessionId === sid);
-        if (!conn) return;
-        persistBank((b) => ({ ...b, auto: true }));
-        if (conn.accountIban) { bankSyncOne(conn.id); return; }
-        try {
-          const r = await bankFetch(`/bank/accounts?session=${encodeURIComponent(sid)}`, 30000);
-          const list = r.ok ? ((await r.json()).accounts || []) : [];
-          setBankAccountsByConn((m) => ({ ...m, [conn.id]: list }));
-          if (list.length === 1) {
-            bankPickAccount(conn.id, list[0].uid, list[0].name || list[0].iban, list[0].iban);
-            setBankMsg({ kind: "ok", text: "Banco conectado. Bajando tus movimientos…" });
-            setTimeout(() => bankSyncOne(conn.id), 300);
-          } else if (list.length > 1) {
-            setBankMsg({ kind: "info", text: `Banco conectado. Tienes ${list.length} cuentas: elige en el desplegable cuál seguir y pulsa Sincronizar.` });
-          }
-        } catch { /* se queda el mensaje de siempre: Ver cuentas y Sincronizar a mano */ }
-      }, 400);
+      // Se sigue cuando la app haya cargado tus datos (efecto «vueltaBanco», más abajo): hacerlo
+      // aquí usaba las funciones del primer render, con la lista de movimientos aún vacía, así
+      // que se clasificaba sin tus reglas y sin descartar lo que ya tenías de tus Excel.
+      setVueltaBanco(sid);
       if (!plan.aspsp) setBankMsg({ kind: "err", text: "Has vuelto del banco, pero este navegador no sabe de qué banco era (¿empezaste en otro navegador?). La conexión funciona para sincronizar; si algún día hay que renovarla, quítala y añade tu banco de nuevo." });
       else setBankMsg({ kind: "ok", text: renew ? "Permiso renovado. La cuenta hay que volver a elegirla (al renovar cambian los identificadores): pulsa «Ver cuentas» y luego Sincronizar." : "Banco conectado. Elige la cuenta y sincroniza." });
       setSettingsOpen(true);
-    } catch { /* ignore */ }
+    } catch (e) { setBankMsg({ kind: "err", text: "Has vuelto del banco, pero no se ha podido guardar la conexión: " + ((e && e.message) || e) + ". Vuelve a intentarlo desde Ajustes → Banco." }); }
   }, [persistBank]);
 
   const bankHeaders = () => { const b = loadBank(); return b.token ? { Authorization: "Bearer " + b.token } : {}; };
@@ -9230,7 +9249,7 @@ function AppMain() {
     const applied = fresh.map((m) => { const x = dec.get(m.id); return { ...m, category: x.cat, assetName: x.asset || undefined, confirmed: x.confirmed }; });
     for (const n of new Set(applied.map((a) => a.assetName).filter(Boolean))) ensureAsset(n);
     setMovs((ms) => [...ms, ...applied]);
-    const pend = applied.filter((m) => !m.confirmed).length;
+    const pend = applied.filter((m) => m.confirmed === false).length;
     if (pend > 0) { aiAutoRanRef.current = false; setPendingNotice(pend); }
     return fresh.length;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -9392,6 +9411,36 @@ function AppMain() {
       await bankSyncOne(c.id, opts); // secuencial
     }
   }, [bankSyncOne]);
+
+  // Al volver del banco: elegir la cuenta y sincronizar, que antes había que saber hacer a mano.
+  // Con una sola cuenta (o una renovación que se reencuentra por IBAN) se hace solo; con varias,
+  // se cargan para elegir. Espera a `booted` para trabajar con tus datos y tus reglas ya cargados.
+  useEffect(() => {
+    if (!booted || !vueltaBanco) return;
+    const sid = vueltaBanco;
+    setVueltaBanco(null);
+    (async () => {
+      const conn = (loadBank().connections || []).find((c) => c.sessionId === sid);
+      if (!conn) return;
+      persistBank((b) => ({ ...b, auto: true }));
+      if (conn.accountIban) { bankSyncOne(conn.id); return; }
+      try {
+        const r = await bankFetch(`/bank/accounts?session=${encodeURIComponent(sid)}`, 30000);
+        const list = r.ok ? ((await r.json()).accounts || []) : [];
+        setBankAccountsByConn((m) => ({ ...m, [conn.id]: list }));
+        if (list.length === 1) {
+          bankPickAccount(conn.id, list[0].uid, list[0].name || list[0].iban, list[0].iban);
+          setBankMsg({ kind: "ok", text: "Banco conectado. Bajando tus movimientos…" });
+          setTimeout(() => bankSyncOne(conn.id), 300);
+        } else if (list.length > 1) {
+          setBankMsg({ kind: "info", text: `Banco conectado. Tienes ${list.length} cuentas: elige en el desplegable cuál seguir y pulsa Sincronizar.` });
+        } else if (!r.ok) {
+          setBankMsg({ kind: "err", text: `Banco conectado, pero no he podido ver tus cuentas (el backend respondió ${r.status}). Pulsa «Ver cuentas» y luego Sincronizar.` });
+        }
+      } catch (e) { setBankMsg({ kind: "err", text: "Banco conectado, pero no he podido ver tus cuentas: " + e.message + ". Pulsa «Ver cuentas» y luego Sincronizar." }); }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [booted, vueltaBanco]);
 
   // Sincronización automática al abrir: si está activada y hace >12 h de la última, baja lo reciente
   // (ventana de 90 días, barata) de todos los bancos, en silencio. La dedup evita duplicados.
@@ -9633,7 +9682,7 @@ function AppMain() {
       });
       setMovs((ms) => [...ms, ...applied]);
       if (sampleRef.current) { setGroups((gs) => (gs.length ? gs : SAMPLE_GROUPS.map((g) => ({ ...g })))); sampleRef.current = false; }
-      const pend = applied.filter((m) => !m.confirmed).length;
+      const pend = applied.filter((m) => m.confirmed === false).length;
       setImp(null);
       setTab("resumen");
       // Un CSV nuevo trae comercios nuevos: merece una ronda de sugerencias.
@@ -9971,6 +10020,9 @@ function AppMain() {
 
   // Los movimientos en papelera (omit) no deben alimentar recurrentes, atípicos ni recibos.
   const liveMovs = useMemo(() => movs.filter((m) => !m.omit), [movs]);
+  // Movimientos del panel de detalle: los del periodo elegido, o todos si lo abre un aviso.
+  // Memorizado: antes se creaba un array nuevo en cada render y la lista se recalculaba siempre.
+  const drillMovs = useMemo(() => (drill?.todo ? liveMovs : liveMovs.filter((m) => periodRange && m.date >= periodRange[0] && m.date <= periodRange[1])), [drill, liveMovs, periodRange]);
   const recurring = useMemo(() => detectRecurring(liveMovs), [liveMovs]);
   const outliers = useMemo(() => computeOutliers(liveMovs), [liveMovs]);
   const receiptTrends = useMemo(() => analyzeReceiptTrends(liveMovs), [liveMovs]);
@@ -10464,7 +10516,7 @@ function AppMain() {
       {drill && agg && (
         <DrillPanel
           drill={drill} assets={assets} groups={groups} outliers={outliers}
-          movs={liveMovs.filter((m) => periodRange && m.date >= periodRange[0] && m.date <= periodRange[1])}
+          movs={drillMovs}
           onClose={() => setDrill(null)} onRecat={recat} onReasset={reasset} onReassetAll={reassetAll} onCreateAsset={createAsset} onToggleExtra={toggleExtra}
           onToggleGroup={toggleGroup} onCreateGroup={createGroupFromMov} onNote={setNote} onDelete={deleteMovs} onSetAmount={setAmount}
           onEditMov={(m) => setMovEdit({ mode: "edit", mov: m })}
