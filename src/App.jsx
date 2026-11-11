@@ -7846,6 +7846,43 @@ function Grupo({ titulo, estado, ok, abierto = false, forzar = false, children }
   );
 }
 
+/* Tu servidor no se actualiza solo: si le faltan capacidades que esta app usa, se dice cuáles
+   y qué ganas al actualizarlo. */
+const RASGOS_BACKEND = {
+  "nonce-banco": "volver del banco de forma segura",
+  "borrar-servidor": "borrar tus datos también del servidor",
+  "historial-30-dias": "guardar una versión por día del último mes",
+  "saldo-por-movimiento": "saldo al día con las revisiones automáticas",
+  "permiso-180-dias": "permiso del banco de hasta 180 días (la mitad de reconexiones)",
+};
+function AvisoBackend({ info }) {
+  if (!info) return null;
+  const faltan = info.viejo ? Object.values(RASGOS_BACKEND) : Object.entries(RASGOS_BACKEND).filter(([k]) => !info.rasgos.includes(k)).map(([, v]) => v);
+  if (!faltan.length) return null;
+  return (
+    <div className="mt-2 rounded-lg px-2.5 py-2 text-[11px] leading-relaxed" style={{ background: C.warnSoft, color: C.warn }}>
+      <strong>Tu servidor está desactualizado.</strong> Al actualizarlo tendrás: {faltan.join("; ")}.
+      <span className="block">Para actualizarlo, pega el archivo <code>src/worker.js</code> nuevo del repositorio MisFinanzas en tu copia de GitHub (se publica solo) o, si lo instalaste a mano, en el editor de tu Worker en Cloudflare. Tus datos no se tocan. La guía lo explica en «Actualizar tu servidor».</span>
+    </div>
+  );
+}
+/* Diagnóstico para pedir ayuda: se copia y se pega en un mensaje. No lleva datos personales. */
+function CopiarDiagnostico({ generar }) {
+  const [hecho, setHecho] = useState(null);
+  if (!generar) return null;
+  const copiar = async () => {
+    const t = generar();
+    try { await navigator.clipboard.writeText(t); setHecho("copiado"); } catch { setHecho(t); }
+  };
+  return (
+    <div>
+      <button type="button" onClick={copiar} className="text-xs font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ color: C.accent }}>Copiar diagnóstico</button>
+      <span className="ml-1.5 text-[11px] text-slate-500">{hecho === "copiado" ? "Copiado: pégalo en tu mensaje de ayuda. No incluye importes, conceptos ni contraseñas." : "Estado de la app para pedir ayuda, sin datos personales."}</span>
+      {hecho && hecho !== "copiado" && <textarea readOnly value={hecho} aria-label="Diagnóstico" className="mt-1 h-32 w-full rounded-lg border p-2 font-mono text-[10px]" style={{ borderColor: C.line }} />}
+    </div>
+  );
+}
+
 /* Versiones guardadas en tu backend, para recuperar cualquiera (un borrado sin querer, una
    importación equivocada, un «Subir» de más). Antes el servidor las guardaba pero la app no
    ofrecía forma de volver a ellas. */
@@ -7972,6 +8009,7 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
         {sync && (
         <section>
           <h3 className="text-sm font-semibold">Sincronizar con tu backend</h3>
+          <AvisoBackend info={sync.backendInfo} />
           <p className="mt-1 text-xs text-slate-500">
             Guarda tus datos en tu propio Worker, usando la URL y el token de arriba. No necesita Google ni volver a autorizar nada: una vez puesto, funciona siempre. Funciona en todos tus dispositivos.
           </p>
@@ -7998,6 +8036,7 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
               </div>
             )}
             <VersionesServidor sync={sync} />
+            <CopiarDiagnostico generar={sync.onDiagnostico} />
 
             <label className="flex cursor-pointer items-center gap-2 pt-1 text-sm text-slate-700">
               <input type="checkbox" className="accent-blue-600" checked={!!sync.auto} onChange={(e) => sync.onToggleAuto(e.target.checked)} disabled={sync.busy} />
@@ -9471,6 +9510,33 @@ function AppMain() {
       .catch(() => setCronInfo(null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsOpen, bankCfg.workerUrl]);
+  // Versión del backend: cada persona tiene el suyo y no se actualiza solo. Si le faltan
+  // capacidades que esta app usa, se avisa en Ajustes con qué gana al actualizarlo.
+  const [backendInfo, setBackendInfo] = useState(null); // null | { version, rasgos } | { viejo: true }
+  useEffect(() => {
+    if (!settingsOpen || !bankBase()) return;
+    fetch(bankBase() + "/version").then((r) => (r.ok ? r.json() : null))
+      .then((d) => setBackendInfo(d && Array.isArray(d.rasgos) ? d : { viejo: true }))
+      .catch(() => setBackendInfo(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsOpen, bankCfg.workerUrl]);
+  // Diagnóstico para pedir ayuda: estado de la app SIN datos personales (ni importes, ni
+  // conceptos, ni token, ni claves). Se copia al portapapeles.
+  const diagnostico = () => {
+    const b = loadBank(), sy = loadSync();
+    const host = (() => { try { return new URL(b.workerUrl).host; } catch { return b.workerUrl ? "(dirección no válida)" : "(sin backend)"; } })();
+    const fecha = (t) => (t ? new Date(t).toISOString() : null);
+    return JSON.stringify({
+      generado: new Date().toISOString(), app: BUILD_STAMP, navegador: navigator.userAgent, almacenamiento: STORE.kind, guardado: saveState,
+      movimientos: movs.length, enPapelera: movs.filter((m) => m.omit).length, porRevisar: movs.filter((m) => m.confirmed === false && !m.omit).length,
+      rango: dataRange ? [isoDay(dataRange[0]), isoDay(dataRange[1])] : null, activos: assets.length, reglasPropias: rules.filter((x) => x.scope === "personal").length,
+      backend: { host, version: backendInfo?.version || (backendInfo?.viejo ? "antigua" : null), rasgos: backendInfo?.rasgos || null },
+      sincronizacion: { automatica: !!sy.auto, version: sy.version || 0, pendiente: !!sy.pendiente, ultimaSubida: fecha(sy.lastPush), ultimaBajada: fecha(sy.lastPull), conflicto: !!syncConflict },
+      bancos: (b.connections || []).map((c) => ({ banco: c.aspsp || "(sin nombre)", cuentaElegida: !!c.accountUid, ultimaConsulta: fecha(c.lastSync), ultimoMovimiento: c.lastNewest || null, caducado: !!c.expired, limiteDiario: c.limitedAt || null, error: c.lastError || null })),
+      revisionAutomatica: cronInfo ? (cronInfo.viejo ? "backend antiguo" : { cuando: fecha(cronInfo.at), nuevos: cronInfo.nuevos, errores: cronInfo.errores, omitidas: cronInfo.omitidas }) : null,
+      ia: { activa: !!aiOn, proveedor: ai?.provider, servidor: (() => { try { return ai?.baseUrl ? new URL(ai.baseUrl).host : null; } catch { return null; } })(), detalle: !!aiDetail },
+    }, null, 2);
+  };
   useEffect(() => {
     const h = () => setBankCfg(loadBank());
     window.addEventListener("finz-bank-updated", h);
@@ -11122,6 +11188,7 @@ function AppMain() {
           onRulesAudit={rulesAudit} onToggleRule={toggleRule} onRemoveRule={removeCustomRule} onUpdateRuleCat={updateRuleCat}
           sync={{ busy: syncBusy, msg: syncMsg, conflict: syncConflict, auto: !!syncCfg.auto, version: syncCfg.version || 0, lastPush: syncCfg.lastPush || 0, lastPull: syncCfg.lastPull || 0,
             onPush: (o) => syncPush(o), onPull: (o) => syncPull({ confirmReplace: true, ...o }), onHistory: syncHistory, onRestore: syncRestore,
+            backendInfo, onDiagnostico: diagnostico,
             onToggleAuto: (v) => { persistSync({ auto: v }); setSyncMsg({ kind: "info", text: v ? "Sincronización automática activada." : "Sincronización automática desactivada." }); } }}
           bank={{ workerUrl: bankCfg.workerUrl || "", token: bankCfg.token || "", connections: bankCfg.connections || [],
             aspsps: bankAspsps, accountsByConn: bankAccountsByConn, addCountry: bankAddCountry, addSel: bankAddSel, busy: bankBusy, msg: bankMsg,
