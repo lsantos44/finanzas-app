@@ -16,6 +16,7 @@ async function preparar(page, { pendiente }) {
       { id: 1, date: "2026-11-01T12:00:00.000Z", concept: "RECUPERADO A", pattern: "RECUPERADO A", amount: -10, category: "Compras", confirmed: true },
       { id: 2, date: "2026-11-02T12:00:00.000Z", concept: "RECUPERADO B", pattern: "RECUPERADO B", amount: -20, category: "Compras", confirmed: true },
     ] }, cfg: {} } }) });
+    if (ruta === "/version") return route.fulfill({ status: 200, headers: cors, body: JSON.stringify({ version: "2026-10-01", rasgos: ["nonce-banco"] }) });
     if (ruta === "/store/history") return route.fulfill({ status: 200, headers: cors, body: JSON.stringify({ versions: [{ version: 7, updatedAt: Date.now() }, { version: 5, updatedAt: Date.now() - 86400000 }] }) });
     if (ruta === "/store" && req.method() === "PUT") subidas.push(JSON.parse(req.postData() || "{}"));
     if (ruta === "/store" && req.method() === "PUT") return route.fulfill({ status: 200, headers: cors, body: JSON.stringify({ ok: true, version: 8, updatedAt: Date.now() }) });
@@ -60,4 +61,20 @@ test("recuperar una versión sube la recuperada, no la de antes", async ({ page 
   await expect.poll(() => peticiones.subidas.length).toBeGreaterThan(0);
   const subida = peticiones.subidas.at(-1).payload;
   expect(subida.movs.movs.map((m) => m.concept)).toEqual(["RECUPERADO A", "RECUPERADO B"]);
+});
+
+test("avisa de un servidor desactualizado y copia un diagnóstico sin datos privados", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const peticiones = await preparar(page, { pendiente: false });
+  await page.goto("/");
+  await expect.poll(() => peticiones.includes("GET /store")).toBe(true);
+  await page.getByRole("button", { name: "Ajustes y datos" }).click();
+  await page.getByRole("button", { name: /Tus datos y sincronización/ }).click();
+  await expect(page.getByText(/Tu servidor está desactualizado/)).toBeVisible();
+  await page.getByRole("button", { name: "Copiar diagnóstico" }).click();
+  await expect(page.getByText(/Copiado: pégalo/)).toBeVisible();
+  const texto = await page.evaluate(() => navigator.clipboard.readText());
+  const d = JSON.parse(texto);
+  expect(d.backend.host).toBe("backend-de-prueba.example");
+  expect(texto).not.toMatch(/"token"|Bearer|ACTUAL SERVIDOR/);
 });
