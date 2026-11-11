@@ -4761,7 +4761,7 @@ function PendientesPanel({ movsPend, amb, assets, setAssets, applyPending, aiOn,
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-contain" style={{ touchAction: "pan-y" }}>
           {groups.map((g) => {
             const e = edits[g.key] || {};
             const cat = e.cat ?? "";
@@ -5022,6 +5022,17 @@ function DrillPanel({ drill, movs, assets, groups, outliers, onClose, onRecat, o
   const [amtMin, setAmtMin] = useState("");        // importe (valor absoluto) desde
   const [amtMax, setAmtMax] = useState("");        // importe (valor absoluto) hasta
   const isSearch = drill.type === "search";
+  // Como el resto de diálogos: bloquea la página de detrás y se cierra con Escape. Sin esto, en
+  // el iPhone, deslizar dentro del panel movía la página de debajo, que es más ancha que la
+  // pantalla (la barra de filtros), y todo se desplazaba de lado.
+  const cerrarRef = useRef(onClose);
+  cerrarRef.current = onClose;
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") cerrarRef.current?.(); };
+    window.addEventListener("keydown", h);
+    lockBodyScroll();
+    return () => { window.removeEventListener("keydown", h); unlockBodyScroll(); };
+  }, []);
   useEffect(() => { setShown(60); setNoting(null); setConfirmDel(null); setAmtEdit(null); setQ(""); setSignSel("todos"); setAmtMin(""); setAmtMax(""); }, [drill?.key, drill?.type, drill?.label]);
   const openAmt = (m) => { setAmtEdit(m.id); setAmtText(Math.abs(m.amount).toFixed(2)); setAmtCur("EUR"); setAmtRate(""); };
   const saveAmt = (m) => {
@@ -5073,9 +5084,9 @@ function DrillPanel({ drill, movs, assets, groups, outliers, onClose, onRecat, o
   const showCat = true;
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end">
+    <div className="fixed inset-0 z-40 flex justify-end overflow-hidden overscroll-none">
       <div className="absolute inset-0 bg-slate-900/30 anim-fade" onClick={onClose} />
-      <aside className="relative flex h-full w-full max-w-lg flex-col bg-white shadow-2xl anim-slide" role="dialog" aria-label={`Movimientos de ${drill.label}`}>
+      <aside className="relative flex h-full w-full max-w-lg flex-col overflow-x-hidden bg-white shadow-2xl anim-slide" role="dialog" aria-modal="true" aria-label={`Movimientos de ${drill.label}`}>
         <div className="flex items-center gap-2 border-b px-3 py-3 sm:px-4" style={{ borderColor: C.line }}>
           <button type="button" onClick={onClose} aria-label="Volver" className="shrink-0 rounded-lg p-2 text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><ChevronLeft size={20} /></button>
           <div className="min-w-0 flex-1">
@@ -5111,7 +5122,7 @@ function DrillPanel({ drill, movs, assets, groups, outliers, onClose, onRecat, o
         ) : (
           <p className="border-b px-4 py-2 text-xs text-slate-500" style={{ borderColor: C.line }}>Corrige aquí lo que esté mal: la categoría se aplica a movimientos similares. Usa <span className="font-medium">Etiquetar</span> para tus clusters (pádel, maratones, vacaciones…).</p>
         )}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-contain" style={{ touchAction: "pan-y" }}>
           {list.slice(0, shown).map((m) => {
             // "Otros" = movimientos del mismo comercio distintos de este (los que una
             // acción "aplicar a todos" tocaría de verdad). No contamos el actual: así el
@@ -5127,7 +5138,9 @@ function DrillPanel({ drill, movs, assets, groups, outliers, onClose, onRecat, o
                   <div className="min-w-0 flex-1">
                     <div className="break-words text-sm" title={m.concept}>{m.concept}</div>
                     <div className="text-xs text-slate-500" style={tnum}>{fmtDate(m.date)}
-                      {m.currency && <span className="ml-2 text-slate-400">· orig {Math.abs(m.origAmount).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {m.currency}</span>}
+                      {m.currency && (m.origAmount != null
+                        ? <span className="ml-2 text-slate-400">· orig {Math.abs(m.origAmount).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {m.currency}</span>
+                        : <span className="ml-2 font-medium" style={{ color: C.warn }}>· importe en {m.currency}: conviértelo a euros</span>)}
                       {outliers.has(m.id) && <span className="ml-2"><Pill color={C.warn} soft={C.warnSoft}>atípico</Pill></span>}
                       {m.splits && <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[11px]">dividido</span>}
                       {isRefund(m) && <span className="ml-2 rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700" title="Devolución: resta del gasto de su categoría, no cuenta como ingreso">devolución</span>}
