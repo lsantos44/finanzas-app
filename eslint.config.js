@@ -26,5 +26,5 @@ export default [
       "no-empty": ["error", { allowEmptyCatch: true }],
     },
   },
-  { files: ["test/**", "*.config.js"], languageOptions: { globals: { ...globals.node } } },
+  { files: ["test/**", "e2e/**", "*.config.js"], languageOptions: { globals: { ...globals.node } } },
 ];
