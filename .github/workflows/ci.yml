@@ -21,7 +21,9 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
-      - run: npx playwright install --with-deps chromium
+      # Las dependencias del navegador vienen de los repositorios de Ubuntu, que a veces fallan por
+      # red: se reintenta y, en último caso, se usa el navegador sin ellas (el runner trae casi todas).
+      - run: npx playwright install --with-deps chromium || (sleep 30 && npx playwright install --with-deps chromium) || npx playwright install chromium
       - run: npm run e2e
       - uses: actions/upload-artifact@v4
         if: failure()
