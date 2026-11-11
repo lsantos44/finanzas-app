@@ -253,6 +253,10 @@ const PRIO = {
   generic: 30,    // palabras del propio concepto (LUZ, ALIMENTACION…)
 };
 
+/* Activo «tu vivienda»: un papel, no un nombre. Las reglas de fábrica de luz, agua, comunidad,
+   IBI o hipoteca lo usan y, al clasificar, se convierte en el activo de vivienda de cada
+   persona (ver viviendaPorDefecto). Antes llevaban el nombre de un piso concreto. */
+const VIVIENDA = "@vivienda";
 /* Regla simple de texto. `prio` por defecto: comercio concreto. */
 const R = (k, cat, asset, prio = PRIO.merchant) => ({ k, cat, asset, prio, scope: "base" });
 /* Regla condicional: además del texto, exige signo / importe / día del mes. */
@@ -291,22 +295,22 @@ const MERCHANT_RULES = [
   R("IMPUESTO CIRCULACION", "Impuestos", "Coche"), R("DGT", "Impuestos", "Coche"),
   R("PEAJE", "Transporte"), R("AUTOPISTA", "Transporte"), R("AUSOL", "Transporte"),
   // — Vivienda / casa
-  R("HIPOTECA", "Vivienda", "Algodonales 10"), R("PRESTAMO HIPOTECARIO", "Vivienda", "Algodonales 10"),
-  R("CUOTA HIPOTECA", "Vivienda", "Algodonales 10"), R("ALQUILER", "Vivienda", "Algodonales 10"),
-  R("COMUNIDAD PROPIETARIOS", "Vivienda", "Algodonales 10"), R("COMUNIDAD DE PROP", "Vivienda", "Algodonales 10"),
-  R("ADMINISTRADOR FINCAS", "Vivienda", "Algodonales 10"), R("COMUNIDAD", "Vivienda", "Algodonales 10"),
-  R("IBI", "Impuestos", "Algodonales 10"), R("SEGURO HOGAR", "Seguros", "Algodonales 10"), R("OCASO", "Seguros", "Algodonales 10"),
+  R("HIPOTECA", "Vivienda", VIVIENDA), R("PRESTAMO HIPOTECARIO", "Vivienda", VIVIENDA),
+  R("CUOTA HIPOTECA", "Vivienda", VIVIENDA), R("ALQUILER", "Vivienda", VIVIENDA),
+  R("COMUNIDAD PROPIETARIOS", "Vivienda", VIVIENDA), R("COMUNIDAD DE PROP", "Vivienda", VIVIENDA),
+  R("ADMINISTRADOR FINCAS", "Vivienda", VIVIENDA), R("COMUNIDAD", "Vivienda", VIVIENDA),
+  R("IBI", "Impuestos", VIVIENDA), R("SEGURO HOGAR", "Seguros", VIVIENDA), R("OCASO", "Seguros", VIVIENDA),
   // — Suministros
-  R("IBERDROLA", "Suministros", "Algodonales 10"), R("ENDESA", "Suministros", "Algodonales 10"),
-  R("NATURGY", "Suministros", "Algodonales 10"), R("HOLALUZ", "Suministros", "Algodonales 10"),
-  R("TOTALENERGIES", "Suministros", "Algodonales 10"), R("TOTAL ENERGIES", "Suministros", "Algodonales 10"),
-  R("OCTOPUS ENERGY", "Suministros", "Algodonales 10"), R("PLENITUDE", "Suministros", "Algodonales 10"),
-  R("PEPEENERGY", "Suministros", "Algodonales 10"), R("REPSOL LUZ", "Suministros", "Algodonales 10"),
-  R("CANAL DE ISABEL", "Suministros", "Algodonales 10"), R("CANAL ISABEL", "Suministros", "Algodonales 10"),
-  R("AGUAS DE", "Suministros", "Algodonales 10"), R("EMASESA", "Suministros", "Algodonales 10"),
-  R("AQUALIA", "Suministros", "Algodonales 10"), R("HIDRALIA", "Suministros", "Algodonales 10"),
-  R("EMIVASA", "Suministros", "Algodonales 10"), R("AQUASERVICE", "Suministros", "Algodonales 10"),
-  R("GAS NATURAL", "Suministros", "Algodonales 10"),
+  R("IBERDROLA", "Suministros", VIVIENDA), R("ENDESA", "Suministros", VIVIENDA),
+  R("NATURGY", "Suministros", VIVIENDA), R("HOLALUZ", "Suministros", VIVIENDA),
+  R("TOTALENERGIES", "Suministros", VIVIENDA), R("TOTAL ENERGIES", "Suministros", VIVIENDA),
+  R("OCTOPUS ENERGY", "Suministros", VIVIENDA), R("PLENITUDE", "Suministros", VIVIENDA),
+  R("PEPEENERGY", "Suministros", VIVIENDA), R("REPSOL LUZ", "Suministros", VIVIENDA),
+  R("CANAL DE ISABEL", "Suministros", VIVIENDA), R("CANAL ISABEL", "Suministros", VIVIENDA),
+  R("AGUAS DE", "Suministros", VIVIENDA), R("EMASESA", "Suministros", VIVIENDA),
+  R("AQUALIA", "Suministros", VIVIENDA), R("HIDRALIA", "Suministros", VIVIENDA),
+  R("EMIVASA", "Suministros", VIVIENDA), R("AQUASERVICE", "Suministros", VIVIENDA),
+  R("GAS NATURAL", "Suministros", VIVIENDA),
   // — Telecomunicaciones
   R("MOVISTAR", "Telecomunicaciones"), R("VODAFONE", "Telecomunicaciones"),
   R("ORANGE", "Telecomunicaciones"), R("YOIGO", "Telecomunicaciones"),
@@ -472,9 +476,9 @@ const SAFETY_RULES = [
    al comercio: "RECIBO ALIMENTACION", "FACTURA LUZ", "PAGO COMBUSTIBLE"… */
 const GENERIC_WORD_RULES = [
   R("ALIMENTACION", "Supermercado"), R("COMESTIBLES", "Supermercado"),
-  R("ELECTRICIDAD", "Suministros", "Algodonales 10"), R("ENERGIA", "Suministros", "Algodonales 10"),
-  R("LUZ", "Suministros", "Algodonales 10"), R("AGUA", "Suministros", "Algodonales 10"), R("GAS", "Suministros", "Algodonales 10"),
-  R("BASURA", "Suministros", "Algodonales 10"), R("ALCANTARILLADO", "Suministros", "Algodonales 10"),
+  R("ELECTRICIDAD", "Suministros", VIVIENDA), R("ENERGIA", "Suministros", VIVIENDA),
+  R("LUZ", "Suministros", VIVIENDA), R("AGUA", "Suministros", VIVIENDA), R("GAS", "Suministros", VIVIENDA),
+  R("BASURA", "Suministros", VIVIENDA), R("ALCANTARILLADO", "Suministros", VIVIENDA),
   R("TELEFONIA", "Telecomunicaciones"), R("TELEFONO", "Telecomunicaciones"),
   R("INTERNET", "Telecomunicaciones"), R("FIBRA", "Telecomunicaciones"),
   R("COMBUSTIBLE", "Combustible", "Coche"), R("GASOLINA", "Combustible", "Coche"), R("GASOLEO", "Combustible", "Coche"),
@@ -704,8 +708,6 @@ function deserializeMovs(raw) {
     ...m,
     date: new Date(m.date),
     category: m.category ? migrateCat(m.category) : m.category,
-    // El activo "Casa" se fusionó con "Algodonales 10" (era un duplicado de la vivienda).
-    assetName: m.assetName === "Casa" ? "Algodonales 10" : m.assetName,
     splits: m.splits?.length ? m.splits.map((s) => ({ ...s, cat: migrateCat(s.cat) })) : m.splits,
   })).filter((m) => m.date instanceof Date && !isNaN(m.date));
   // Las devoluciones de un comercio conocido guardadas como ingreso pasan a la categoría de
@@ -775,7 +777,7 @@ function auditRules(rules, movs, stats = {}) {
     if (tot >= 3 && domCat !== r.cat && domN / tot > 0.6) conflict = true;
     const st = stats[ruleId(r)] || { n: 0, abs: 0, last: null };
     out.push({
-      id: ruleId(r), k: r.k, cat: r.cat, asset: r.asset || null,
+      id: ruleId(r), k: r.k, cat: r.cat, asset: r.asset === VIVIENDA ? "tu vivienda" : (r.asset || null),
       active: r.active !== false, scope: r.scope || "base", conditional: isConditional(r),
       sign: r.sign ?? null, min: r.min ?? null, max: r.max ?? null,
       dayMin: r.dayMin ?? null, dayMax: r.dayMax ?? null, confirm: !!r.confirm,
@@ -1092,7 +1094,7 @@ function identifiesMerchant(pattern) {
    sí. Lo que se aprende de ellas va atado al importe (±15 %): corregir la transferencia de
    85 € del parking no debe arrastrar la de 500 € que va a los fondos. */
 const TRANSF_CONCEPT_RE = /^(TRANSF|TRASPASO|ORDEN DE TRANSF)/;
-// Por la conexión con el banco el concepto es el destinatario («LUIS SANTOS…»), sin rastro de
+// Por la conexión con el banco el concepto es el destinatario («ANA PÉREZ…»), sin rastro de
 // que sea una transferencia. Por eso también cuenta el historial: un mismo concepto con
 // movimientos del mismo signo en categorías distintas se decide por importe (`amb`).
 const ambKey = (m) => `${m.pattern}|${m.amount < 0 ? "-" : "+"}`;
@@ -2348,7 +2350,21 @@ function refundFromHistory(m, idx) {
   return n / total >= 0.7 ? top : null;
 }
 
-function classifyForImport(freshMovs, existingMovs, rules, { materialidad = DEFAULT_MATERIALIDAD, assetMem = {} } = {}) {
+/* A qué activo van los recibos de la vivienda (reglas con VIVIENDA):
+   1) el activo marcado como «vivienda» en Activos;
+   2) si no, el activo al que ya mandas más gastos de Suministros y Vivienda (tu historial);
+   3) si no, «Casa», que se crea al primer recibo. */
+function viviendaPorDefecto(assets, movs) {
+  const marcado = (assets || []).find((a) => a.uso === "vivienda");
+  if (marcado) return marcado.name;
+  const n = new Map();
+  for (const m of movs || []) if (m.assetName && (m.category === "Suministros" || m.category === "Vivienda")) n.set(m.assetName, (n.get(m.assetName) || 0) + 1);
+  let mejor = null, max = 0;
+  for (const [a, c] of n) if (c > max) { mejor = a; max = c; }
+  return mejor || "Casa";
+}
+
+function classifyForImport(freshMovs, existingMovs, rules, { materialidad = DEFAULT_MATERIALIDAD, assetMem = {}, vivienda = "Casa" } = {}) {
   const behavior = buildBehaviorModel(existingMovs || []);
   const refunds = refundIndex(existingMovs);
   const amb = ambiguousPatterns(existingMovs);
@@ -2373,7 +2389,7 @@ function classifyForImport(freshMovs, existingMovs, rules, { materialidad = DEFA
       // Una regla defensiva clasifica, pero pide que lo mires: crea el pendiente a propósito.
       dec.set(m.id, {
         // La memoria de activos manda sobre la regla solo si la regla no trae activo propio.
-        cat: r.cat, asset: r.asset || assetMem[m.pattern] || null,
+        cat: r.cat, asset: (r.asset === VIVIENDA ? vivienda : r.asset) || assetMem[m.pattern] || null,
         confirmed: !r.confirm, source: "regla", rule: r.k ? r : null,
       });
       continue;
@@ -8202,7 +8218,7 @@ export {
   matchRule, ruleConditionsHold, sortedRules, ruleId, isConditional,
   DEFAULT_RULES, PRIO, DEFAULT_MATERIALIDAD,
   classifyForImport, dedupeAgainst, movKey, normalizePattern, auditRules, learnedRule, needsAmount, ambiguousPatterns,
-  CATEGORIES, rebuildRules, deserializeMovs, computeBankSaldo, refundIndex, refundFromHistory,
+  CATEGORIES, rebuildRules, deserializeMovs, viviendaPorDefecto, VIVIENDA, computeBankSaldo, refundIndex, refundFromHistory,
   makeAccessLink, abrirAcceso, parseAccessLink, parseEsNumber, parseDateAny, tokenizeCSV, detectDelimiter, analyzeRows, buildMovements,
   buildMonthClose, missingIncome, upcomingIncome, upcomingCharges, detectRecurring, analyzeReceiptTrends,
 };
@@ -9226,7 +9242,7 @@ function AppMain() {
     });
     if (!fresh.length) return 0;
     for (const m of fresh) if (m.bankId) existing.add(m.bankId); // visible ya para la siguiente ingesta
-    const dec = classifyForImport(fresh, movs, rules, { materialidad, assetMem });
+    const dec = classifyForImport(fresh, movs, rules, { materialidad, assetMem, vivienda: viviendaPorDefecto(assets, movs) });
     const applied = fresh.map((m) => { const x = dec.get(m.id); return { ...m, category: x.cat, assetName: x.asset || undefined, confirmed: x.confirmed }; });
     for (const n of new Set(applied.map((a) => a.assetName).filter(Boolean))) ensureAsset(n);
     setMovs((ms) => [...ms, ...applied]);
@@ -9234,7 +9250,7 @@ function AppMain() {
     if (pend > 0) { aiAutoRanRef.current = false; setPendingNotice(pend); }
     return fresh.length;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [movs, rules, materialidad]);
+  }, [movs, rules, materialidad, assetMem, assets]);
 
   // Candado: todas las sincronizaciones pasan por la misma cola. Es la segunda mitad de la
   // corrección de duplicados: aunque el ref de ids ya cierra la carrera, dos descargas
@@ -9582,7 +9598,7 @@ function AppMain() {
         }
         return base;
       });
-      const decByMov = classifyForImport(fresh, movs, rules, { materialidad, assetMem });
+      const decByMov = classifyForImport(fresh, movs, rules, { materialidad, assetMem, vivienda: viviendaPorDefecto(assets, movs) });
       // Aplicar a los movimientos
       const assetNames = new Set();
       const applied = fresh.map((m) => {

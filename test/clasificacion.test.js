@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { classifyForImport, learnedRule, DEFAULT_RULES, PRIO, normalizePattern } from "../src/App.jsx";
+import { classifyForImport, learnedRule, DEFAULT_RULES, PRIO, normalizePattern, viviendaPorDefecto, VIVIENDA } from "../src/App.jsx";
 import { mk } from "./helpers.js";
 
 const cat = (dec, m) => dec.get(m.id).cat;
 
 describe("transferencias: lo aprendido va atado al importe", () => {
-  for (const concepto of ["TRANSF. PERIODICA", "TRANSFER INMEDIATA", "LUIS SANTOS GALAN", "Movimiento"]) {
+  for (const concepto of ["TRANSF. PERIODICA", "TRANSFER INMEDIATA", "ANA PEREZ GOMEZ", "Movimiento"]) {
     it(`85 € garaje y 500 € fondos no se mezclan (${concepto})`, () => {
       const hist = [];
       for (let mes = 3; mes < 9; mes++) hist.push(mk(concepto, -85, new Date(2026, mes, 3), "Parking"));
@@ -58,5 +58,20 @@ describe("reglas básicas", () => {
     const fresh = [mk("ASADOR EL TORO", -3000, "2026-01-05")];
     const dec = classifyForImport(fresh, [], DEFAULT_RULES);
     expect(cat(dec, fresh[0])).not.toBe("Restauración");
+  });
+});
+
+describe("vivienda: un papel, no el nombre de un piso", () => {
+  it("las reglas de fábrica no llevan nombres propios de activos", () => {
+    const nombres = new Set(DEFAULT_RULES.map((r) => r.asset).filter(Boolean));
+    expect([...nombres].sort()).toEqual([...nombres].filter((n) => n === VIVIENDA || /^(Coche|Mascota)$/.test(n)).sort());
+  });
+  it("los recibos van al activo marcado como vivienda, al de tu historial o a «Casa»", () => {
+    const f = [mk("RECIBO IBERDROLA CLIENTES", -60, "2026-11-03")];
+    const conVivienda = classifyForImport(f, [], DEFAULT_RULES, { vivienda: viviendaPorDefecto([{ name: "Piso Centro", uso: "vivienda" }], []) });
+    expect(conVivienda.get(f[0].id).asset).toBe("Piso Centro");
+    const hist = [{ ...mk("RECIBO ENDESA", -50, "2026-10-03", "Suministros"), assetName: "Mi Piso" }];
+    expect(viviendaPorDefecto([], hist)).toBe("Mi Piso");
+    expect(viviendaPorDefecto([], [])).toBe("Casa");
   });
 });
