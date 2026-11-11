@@ -9151,6 +9151,7 @@ function AppMain() {
         id: MOV_ID++, date, concept: r.concept || "Sin concepto", amount: Math.round((Number(r.amount) || 0) * 100) / 100,
         saldo: null, pattern: normalizePattern(r.concept || ""), file: sourceLabel || "Banco", bankId: r.bankId || undefined,
         ...(typeof r.saldo === "number" && isFinite(r.saldo) ? { bs: r.saldo } : {}), // saldo tras el movimiento (banco)
+        at: Date.now(), // cuándo llegó: decide si su saldo es más nuevo que el leído del banco
         category: null, assetName: undefined, splits: null, groupIds: [], confirmed: false,
         ...(r.accountUid ? { accountUid: r.accountUid } : {}),
         ...(r.currency && r.currency !== "EUR" ? { currency: r.currency } : {}),
@@ -9953,12 +9954,19 @@ function AppMain() {
     for (const c of conns) {
       const base = typeof c.balanceBooked === "number" ? c.balanceBooked : c.balance;
       const baseDia = String((typeof c.balanceBooked === "number" ? c.balanceBookedAt : c.balanceAt) || (c.balanceRead || c.lastSync ? dia(new Date(c.balanceRead || c.lastSync)) : "")).slice(0, 10);
-      const despues = baseDia ? movs.filter((m) => m.bankId && m.file === (c.aspsp || "Banco") && !m.omit && dia(m.date) > baseDia) : [];
-      if (!despues.length) { total += c.balance; continue; }
-      despues.sort((a, b) => a.date - b.date);
-      const ult = despues[despues.length - 1];
-      total += typeof ult.bs === "number" ? ult.bs : base + despues.reduce((s, m) => s + m.amount, 0);
-      estimado = estimado || typeof ult.bs !== "number";
+      const deLaConexion = (m) => m.bankId && m.file === (c.aspsp || "Banco") && !m.omit;
+      const despues = baseDia ? movs.filter((m) => deLaConexion(m) && dia(m.date) > baseDia) : [];
+      // Llegados DESPUÉS de leer el saldo aunque sean del mismo día (sincronizas a mano por la
+      // mañana y la revisión de la tarde trae otro de hoy): su saldo es más nuevo que el leído.
+      // Lo que llegó ANTES de leer el saldo ya está dentro de él (la sincronización manual trae
+      // los movimientos y luego lee el saldo), así que no cuenta como nuevo.
+      const nuevos = movs.filter((m) => deLaConexion(m) && (m.at && c.balanceRead ? m.at > c.balanceRead : dia(m.date) > baseDia));
+      if (!nuevos.length) { total += c.balance; continue; }
+      nuevos.sort((a, b) => (a.date - b.date) || ((a.at || 0) - (b.at || 0)));
+      const ult = nuevos[nuevos.length - 1];
+      if (typeof ult.bs === "number") total += ult.bs;
+      else if (despues.length) { total += base + despues.reduce((s, m) => s + m.amount, 0); estimado = true; }
+      else { total += c.balance; continue; }
       if (!hasta || ult.date > hasta) hasta = ult.date;
     }
     return { amount: Math.round(total * 100) / 100, estimado, hasta };
