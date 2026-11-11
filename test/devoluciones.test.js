@@ -55,3 +55,15 @@ describe("devoluciones: restan del gasto en vez de contar como ingreso", () => {
     expect(deserializeMovs(raw(2))[0].category).toBe("Devoluciones y ayudas"); // ya revisado: se respeta
   });
 });
+
+describe("hipoteca: categoría propia", () => {
+  it("las cuotas nuevas van a «Hipoteca y préstamos» y las guardadas como Vivienda se migran", () => {
+    const f = [mk("RECIBO CUOTA HIPOTECA 1234", -650, "2026-11-01")];
+    expect(classifyForImport(f, [], DEFAULT_RULES).get(f[0].id).cat).toBe("Hipoteca y préstamos");
+    const raw = JSON.stringify({ v: 1, movs: [
+      { id: 1, concept: "PRESTAMO HIPOTECARIO", pattern: "PRESTAMO HIPOTECARIO", amount: -650, date: "2026-10-01T12:00:00Z", category: "Vivienda" },
+      { id: 2, concept: "COMUNIDAD PROPIETARIOS", pattern: "COMUNIDAD PROPIETARIOS", amount: -60, date: "2026-10-01T12:00:00Z", category: "Vivienda" },
+    ] });
+    expect(deserializeMovs(raw).map((m) => m.category)).toEqual(["Hipoteca y préstamos", "Vivienda"]);
+  });
+});
