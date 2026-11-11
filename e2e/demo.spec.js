@@ -25,3 +25,10 @@ test("la demo carga y todas las pestañas se abren sin errores", async ({ page }
   expect(ancho).toBeLessThanOrEqual(1);
   expect(errores).toEqual([]);
 });
+
+test("la página de privacidad existe y enlaza de vuelta a la app", async ({ page }) => {
+  const r = await page.goto("/privacidad.html");
+  expect(r.status()).toBe(200);
+  await expect(page.getByRole("heading", { name: "Privacidad" })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Volver a la app/ })).toBeVisible();
+});
