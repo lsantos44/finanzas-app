@@ -7502,6 +7502,40 @@ function Grupo({ titulo, estado, ok, abierto = false, forzar = false, children }
   );
 }
 
+/* Versiones guardadas en tu backend, para recuperar cualquiera (un borrado sin querer, una
+   importación equivocada, un «Subir» de más). Antes el servidor las guardaba pero la app no
+   ofrecía forma de volver a ellas. */
+function VersionesServidor({ sync }) {
+  const [lista, setLista] = useState(null); // null | { versions } | { error }
+  const [abierto, setAbierto] = useState(false);
+  const abrir = async () => { setAbierto(!abierto); if (!abierto) { setLista(null); setLista(await sync.onHistory()); } };
+  return (
+    <div>
+      <button type="button" onClick={abrir} className="text-xs font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ color: C.accent }} aria-expanded={abierto}>
+        {abierto ? "Ocultar versiones anteriores" : "Versiones anteriores…"}
+      </button>
+      {abierto && (
+        <div className="mt-1.5 rounded-lg border p-2" style={{ borderColor: C.line }}>
+          {!lista && <p className="text-xs text-slate-500">Cargando…</p>}
+          {lista?.error && <p className="text-xs text-rose-700">No se pudo leer el historial: {lista.error}</p>}
+          {lista?.versions && !lista.versions.length && <p className="text-xs text-slate-500">Aún no hay versiones anteriores.</p>}
+          {lista?.versions?.length > 0 && (
+            <ul className="max-h-56 space-y-1 overflow-y-auto">
+              {lista.versions.map((v) => (
+                <li key={v.version} className="flex items-center justify-between gap-2 text-xs" style={tnum}>
+                  <span className="text-slate-600">v{v.version} · {new Date(v.updatedAt).toLocaleString("es-ES")}{v.version === sync.version ? " (actual)" : ""}</span>
+                  {v.version !== sync.version && <Btn size="sm" onClick={() => sync.onRestore(v)} disabled={sync.busy}>Recuperar</Btn>}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-1.5 text-[11px] text-slate-500">Se guardan las 10 últimas y una por día del último mes.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcoming, movsCount, aiOn, setAiOn, ai, setAi, aiDetail, setAiDetail, aiProfiles, onSaveAiProfile, onActivateAiProfile, onDeleteAiProfile, materialidad, setMaterialidad, onExport, onImportFile, onWipe, snapCount, snapTooBig, onListSnaps, onRestoreSnap, imports, onDeleteImport, trashed, onRestoreTrash, onPurgeTrash, onRulesAudit, onToggleRule, onRemoveRule, onUpdateRuleCat, onFindDupes, onTrashDupes, assetMem, onForgetAssetMem, onForgetAllAssetMem, onDrillIds, onAsistente, sync, bank, tabsOcultas, onToggleTab }) {
   const [confirmWipe, setConfirmWipe] = useState(false);
   const [confirmDel, setConfirmDel] = useState(null); // archivo pendiente de confirmar borrado
@@ -7615,9 +7649,10 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
                   <Btn size="sm" onClick={() => sync.onPull({ confirmReplace: true })} disabled={sync.busy}><Download size={13} /> Traer la del servidor</Btn>
                   <Btn size="sm" kind="primary" onClick={() => sync.onPush({ force: true })} disabled={sync.busy}><Upload size={13} /> Subir la de aquí</Btn>
                 </div>
-                <p className="mt-1.5 text-[10px] text-amber-700">«Traer» descarta tus cambios locales; «Subir» pisa la del servidor. El historial del servidor guarda las 10 últimas versiones, así que ninguna de las dos es irreversible.</p>
+                <p className="mt-1.5 text-[10px] text-amber-700">«Traer» descarta tus cambios locales; «Subir» pisa la del servidor. Las dos se pueden deshacer desde «Versiones anteriores».</p>
               </div>
             )}
+            <VersionesServidor sync={sync} />
 
             <label className="flex cursor-pointer items-center gap-2 pt-1 text-sm text-slate-700">
               <input type="checkbox" className="accent-blue-600" checked={!!sync.auto} onChange={(e) => sync.onToggleAuto(e.target.checked)} disabled={sync.busy} />
@@ -8767,6 +8802,7 @@ function AppMain() {
     const url = bankBase();
     if (!url) { if (!silent) setSyncMsg({ kind: "err", text: "Pon la URL del backend (tu Worker) en la sección de arriba." }); return; }
     setSyncBusy(true); if (!silent) setSyncMsg(null);
+    const t0 = Date.now();
     try {
       const base = force ? null : (Number(loadSync().version) || 0);
       // Con `force` hay que leer primero la versión real: subir a ciegas volvería a abrir la
@@ -8800,13 +8836,16 @@ function AppMain() {
       if (res.status === 409) {
         setSyncConflict({ version: data.version, updatedAt: data.updatedAt });
         setSyncMsg({ kind: "err", text: `Otro dispositivo guardó después que tú${data.updatedAt ? ` (${new Date(data.updatedAt).toLocaleString("es-ES")})` : ""}. No he subido nada: elige abajo qué conservar.` });
-        return;
+        return { conflict: true };
       }
       if (!res.ok) throw new Error(data.error || "el backend devolvió " + res.status);
-      persistSync({ version: data.version, lastPush: Date.now() });
+      // Lo pendiente queda subido, salvo que hayas cambiado algo mientras tanto.
+      const pend = Number(loadSync().pendiente) || 0;
+      persistSync({ version: data.version, lastPush: Date.now(), ...(pend && pend <= t0 ? { pendiente: null } : {}) });
       setSyncConflict(null);
       if (!silent) setSyncMsg({ kind: "ok", text: `Guardado en tu Worker (versión ${data.version}).` });
-    } catch (e) { if (!silent) setSyncMsg({ kind: "err", text: "No se pudo guardar: " + e.message }); }
+      return { ok: true };
+    } catch (e) { if (!silent) setSyncMsg({ kind: "err", text: "No se pudo guardar: " + e.message }); return { ok: false }; }
     finally { setSyncBusy(false); }
   }, [persistSync, syncPayload]);
 
@@ -8826,13 +8865,42 @@ function AppMain() {
         return { ok: false, text: "Cancelado. No se ha tocado nada." };
       }
       const n = applyBackupPayload(data.payload);
-      persistSync({ version: data.version, lastPull: Date.now() });
+      persistSync({ version: data.version, lastPull: Date.now(), pendiente: null });
       setSyncConflict(null);
       if (!silent) setSyncMsg({ kind: "ok", text: `Traídos ${nfNum.format(n)} movimientos (versión ${data.version}).` });
       return { ok: true, n, version: data.version };
     } catch (e) { if (!silent) setSyncMsg({ kind: "err", text: "No se pudo traer: " + e.message }); return { ok: false, text: "No se pudo traer: " + e.message }; }
     finally { setSyncBusy(false); }
   }, [applyBackupPayload, persistSync]);
+
+  // Historial del servidor: las 10 últimas versiones y una por día del último mes.
+  const syncHistory = useCallback(async () => {
+    try {
+      const r = await bankFetch("/store/history", 20000);
+      const d = await r.json().catch(() => ({}));
+      return r.ok ? { versions: d.versions || [] } : { error: d.error || "el backend devolvió " + r.status };
+    } catch (e) { return { error: e.message }; }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Recuperar una versión: sustituye lo de aquí y se guarda como versión nueva (la actual sigue
+  // en el historial, así que recuperar también se puede deshacer).
+  const syncRestore = useCallback(async (v) => {
+    const d = new Date(v.updatedAt).toLocaleString("es-ES");
+    if (!window.confirm(`Vas a recuperar la versión ${v.version} (${d}). Lo que tienes ahora se sustituye, pero queda en el historial por si quieres volver.\n\n¿Continuar?`)) return;
+    setSyncBusy(true); setSyncMsg(null);
+    try {
+      const r = await bankFetch("/store/history?version=" + encodeURIComponent(v.version), 30000);
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || !data.payload) throw new Error(data.error || "el backend devolvió " + r.status);
+      syncSuppressRef.current = Date.now() + 6000;
+      const n = applyBackupPayload(data.payload);
+      setSyncBusy(false);
+      const p = await syncPush({ silent: true });
+      setSyncMsg(p?.ok ? { kind: "ok", text: `Recuperada la versión ${v.version}: ${nfNum.format(n)} movimientos. Guardada como versión nueva.` }
+        : { kind: "err", text: `Recuperada la versión ${v.version} en este dispositivo, pero no se ha podido guardar en el servidor: revisa el aviso de arriba.` });
+    } catch (e) { setSyncMsg({ kind: "err", text: "No se pudo recuperar: " + e.message }); }
+    finally { setSyncBusy(false); }
+  }, [applyBackupPayload, syncPush]);
 
   const syncBootRef = useRef(false);
   const syncTimer = useRef(null);
@@ -8847,6 +8915,15 @@ function AppMain() {
     try { if (new URLSearchParams(window.location.search).has("bank_session")) return; } catch { /* noop */ }
     syncBootRef.current = true;
     syncSuppressRef.current = Date.now() + 6000;
+    // Si la última vez cerraste antes de que se subieran tus cambios, traer la copia del servidor
+    // los borraría sin avisar (pasaba al cerrar en menos de 25 s, lo normal en el móvil). Se
+    // suben primero; si otro dispositivo guardó entre medias, decides tú.
+    if (loadSync().pendiente) {
+      syncPush({ silent: true }).then((r) => {
+        if (r?.conflict) setError("Tienes cambios de este dispositivo que no llegaron a subirse, y otro dispositivo ha guardado después. No se ha perdido nada: decide qué conservar en Ajustes → Sincronizar con tu backend.");
+      });
+      return;
+    }
     syncPull({ silent: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [booted, syncCfg.auto]);
@@ -8856,6 +8933,8 @@ function AppMain() {
   useEffect(() => {
     if (!booted || !syncCfg.auto || !bankBase() || syncConflict) return;
     if (Date.now() < syncSuppressRef.current) return;
+    // Anotado en disco al momento: si cierras antes de los 25 s, al volver se sabe que hay que subir.
+    saveSync({ ...loadSync(), pendiente: Date.now() });
     clearTimeout(syncTimer.current);
     syncTimer.current = setTimeout(() => syncPush({ silent: true }), 25000);
     return () => clearTimeout(syncTimer.current);
@@ -10569,7 +10648,7 @@ function AppMain() {
           trashed={trashed} onRestoreTrash={restoreMovs} onPurgeTrash={purgeMovs}
           onRulesAudit={rulesAudit} onToggleRule={toggleRule} onRemoveRule={removeCustomRule} onUpdateRuleCat={updateRuleCat}
           sync={{ busy: syncBusy, msg: syncMsg, conflict: syncConflict, auto: !!syncCfg.auto, version: syncCfg.version || 0, lastPush: syncCfg.lastPush || 0, lastPull: syncCfg.lastPull || 0,
-            onPush: (o) => syncPush(o), onPull: (o) => syncPull({ confirmReplace: true, ...o }),
+            onPush: (o) => syncPush(o), onPull: (o) => syncPull({ confirmReplace: true, ...o }), onHistory: syncHistory, onRestore: syncRestore,
             onToggleAuto: (v) => { persistSync({ auto: v }); setSyncMsg({ kind: "info", text: v ? "Sincronización automática activada." : "Sincronización automática desactivada." }); } }}
           bank={{ workerUrl: bankCfg.workerUrl || "", token: bankCfg.token || "", connections: bankCfg.connections || [],
             aspsps: bankAspsps, accountsByConn: bankAccountsByConn, addCountry: bankAddCountry, addSel: bankAddSel, busy: bankBusy, msg: bankMsg,
