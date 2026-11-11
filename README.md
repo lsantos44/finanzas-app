@@ -37,8 +37,12 @@ versiona: lo genera el servidor de compilación.
 
 ## Dónde se guardan los datos
 
-1. **Siempre** en el navegador (IndexedDB). La app funciona sin conexión.
+1. **Siempre** en el almacenamiento del navegador (localStorage). Para abrir la app hace falta
+   conexión; tus datos no salen del dispositivo salvo que configures lo siguiente.
 2. **Opcionalmente** en tu Worker, que sincroniza entre dispositivos y guarda las 10 últimas
-   versiones por si hay que volver atrás.
+   versiones y una por día del último mes, recuperables desde Ajustes.
 
-La app nunca envía tus datos a un servidor del autor: no existe tal servidor.
+La app no envía tus movimientos a ningún servidor del autor. Eso sí: la web que abres
+(misfinanzas.cc) la publica el autor, y quien controla una web controla el código que ejecuta
+tu navegador. Si prefieres no depender de nadie, publica tu propia copia de la app. Detalle de
+qué se envía a quién (banco, IA): [privacidad](public/privacidad.html).

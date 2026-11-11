@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Privacidad · Mis finanzas</title>
+<meta name="description" content="Qué datos usa Mis finanzas, dónde se guardan y a quién se envían." />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<style>
+  :root { color-scheme: light dark; --fg: #1e293b; --muted: #64748b; --bg: #fff; --line: #e2e8f0; --accent: #1266c0; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #e2e8f0; --muted: #94a3b8; --bg: #0f172a; --line: #1e293b; --accent: #5197ee; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 44rem; margin: 0 auto; padding: 2rem 1rem 4rem; }
+  h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.1rem; margin: 2rem 0 .5rem; }
+  p, li { color: var(--fg); }
+  .muted { color: var(--muted); font-size: .9rem; }
+  a { color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+  th, td { text-align: left; vertical-align: top; padding: .5rem; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <p><a href="/">← Volver a la app</a></p>
+  <h1>Privacidad</h1>
+  <p class="muted">Última actualización: noviembre de 2026.</p>
+
+  <p><strong>En corto:</strong> tus datos se guardan en tu dispositivo y, si tú lo montas, en tu propio servidor dentro de tu cuenta de Cloudflare. Esta web no tiene cuentas de usuario, no usa cookies ni analítica, y no guarda tus movimientos en ningún servidor del autor.</p>
+
+  <h2>Qué datos y dónde están</h2>
+  <table>
+    <tr><th>Dato</th><th>Dónde</th><th>Quién puede verlo</th></tr>
+    <tr><td>Tus movimientos, categorías, activos, reglas y conversaciones del asistente</td><td>En el almacenamiento de tu navegador</td><td>Solo quien use tu dispositivo</td></tr>
+    <tr><td>Copia para sincronizar dispositivos (si la activas)</td><td>En tu servidor (un Worker y una base de datos D1 en <strong>tu</strong> cuenta de Cloudflare), con sus versiones anteriores de los últimos 30 días</td><td>Tú, con tu token. Cloudflare los aloja como proveedor de tu cuenta</td></tr>
+    <tr><td>Datos de tu banco (si lo conectas)</td><td>Tu servidor los pide a <a href="https://enablebanking.com" rel="noopener">Enable Banking</a>, proveedor autorizado de información de cuentas (PSD2), con el permiso que das en tu banco</td><td>Tú. Enable Banking los trata para entregarlos, según su política</td></tr>
+  </table>
+
+  <h2>A quién se envía algo</h2>
+  <ul>
+    <li><strong>Al cargar la web</strong>, tu navegador pide los archivos de la app a misfinanzas.cc, alojada en Cloudflare, que registra datos técnicos de la conexión (como la IP) para servirla y protegerla. La tipografía se sirve desde la propia web: no se avisa a Google ni a nadie más.</li>
+    <li><strong>A tu servidor</strong>, si lo configuras: la copia de tus datos, sin tu token ni tus claves de IA.</li>
+    <li><strong>A tu banco, a través de Enable Banking</strong>, si lo conectas: solo lectura de movimientos y saldo, durante el plazo que autorices (máximo el que permita tu banco).</li>
+    <li><strong>Al proveedor de IA que elijas</strong>, solo si activas la IA (viene apagada). Sin el permiso de «movimientos individuales» recibe totales y nombres de comercios, nunca movimientos uno a uno ni nombres de personas. Con ese permiso, también los movimientos que necesite para responder. Ese proveedor puede estar fuera de la UE: revisa su política antes de activarlo.</li>
+  </ul>
+
+  <h2>Tus derechos y cómo borrar todo</h2>
+  <ul>
+    <li><strong>Ver y llevarte tus datos:</strong> Ajustes → Avanzado → Exportar (archivo JSON).</li>
+    <li><strong>Borrar:</strong> Ajustes → Avanzado → Zona de borrado. Marca «Borrar también en mi servidor» para eliminar la copia, sus versiones y la bandeja, y quitar los permisos del banco.</li>
+    <li><strong>Retirar el permiso del banco:</strong> desde Ajustes → Banco, o desde la banca de tu entidad.</li>
+    <li>Si además quieres eliminar tu servidor, bórralo desde tu panel de Cloudflare.</li>
+  </ul>
+
+  <h2>Quién está detrás</h2>
+  <p>Mis finanzas es software que cada persona usa con sus propios datos. Quien publica esta web no recibe ni guarda tus movimientos. Ten en cuenta que quien controla la web controla el código que ejecuta tu navegador; si prefieres no depender de nadie, puedes publicar tu propia copia de la app (la guía del repositorio explica cómo).</p>
+
+  <p class="muted">Las cifras y el informe para la renta que muestra la app son orientativos y no sustituyen al asesoramiento fiscal.</p>
+</main>
+</body>
+</html>

@@ -4149,7 +4149,7 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onActivarSync
         {paso === 0 && (
           <Paso n={1} titulo="Lo que vas a conseguir">
             <p>Tus datos sincronizados entre el móvil y el ordenador, y —si quieres— los movimientos del banco entrando solos cada pocas horas, aunque no abras la app.</p>
-            <p>Todo vive en <strong>tu</strong> cuenta de Cloudflare. Ni yo ni nadie más tiene acceso.</p>
+            <p>Todo vive en <strong>tu</strong> cuenta de Cloudflare: nadie más tiene acceso a ella.</p>
             <div className="rounded-xl border p-3" style={{ borderColor: C.line, background: C.surfaceAlt }}>
               <p className="text-[12px] font-medium text-slate-700">Necesitas una cuenta de Cloudflare</p>
               <p className="mt-0.5 text-[12px]">Es gratis y no piden tarjeta. Si ya la tienes, pasa al siguiente paso.</p>
@@ -4245,7 +4245,7 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onActivarSync
                   <li><strong>Name</strong>: lo que quieras, por ejemplo «Mis Finanzas».</li>
                   <li><strong>Redirect URL</strong>: exactamente esta, sin cambiar nada:
                     <Campo valor={callback} /></li>
-                  <li>Si pide web de privacidad, de condiciones o un correo, pon <code className="rounded bg-slate-100 px-1">{window.location.origin}</code> y tu correo.</li>
+                  <li>Si pide web de privacidad o de condiciones, pon <code className="rounded bg-slate-100 px-1">{window.location.origin}/privacidad.html</code>; y tu correo donde lo pida.</li>
                   <li>Para la clave, elige generarla en el navegador. Se descarga un archivo <code className="rounded bg-slate-100 px-1">.pem</code>: <strong>guárdalo</strong>, solo se descarga una vez. Su nombre es el <strong>Application ID</strong>.</li>
                 </ul>
               </li>
@@ -4427,6 +4427,7 @@ function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente
               <Sparkles size={14} /> Ver una demo con datos de ejemplo
             </button>
             <p className="mt-1 text-xs text-slate-400">14 meses ficticios de un banco español, para ver cómo funciona antes de traer los tuyos.</p>
+            <p className="mt-3 text-xs"><a href="/privacidad.html" className="text-slate-500 underline hover:text-slate-700">Privacidad: qué datos usa la app y dónde se guardan</a></p>
           </div>
         </>
       )}
@@ -7881,6 +7882,7 @@ function VersionesServidor({ sync }) {
 
 function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcoming, movsCount, aiOn, setAiOn, ai, setAi, aiDetail, setAiDetail, aiProfiles, onSaveAiProfile, onActivateAiProfile, onDeleteAiProfile, materialidad, setMaterialidad, onExport, onImportFile, onWipe, snapCount, snapTooBig, onListSnaps, onRestoreSnap, imports, onDeleteImport, trashed, onRestoreTrash, onPurgeTrash, onRulesAudit, onToggleRule, onRemoveRule, onUpdateRuleCat, onFindDupes, onTrashDupes, assetMem, onForgetAssetMem, onForgetAllAssetMem, onDrillIds, onAsistente, sync, bank, tabsOcultas, onToggleTab }) {
   const [confirmWipe, setConfirmWipe] = useState(false);
+  const [wipeServidor, setWipeServidor] = useState(false);
   const [confirmDel, setConfirmDel] = useState(null); // archivo pendiente de confirmar borrado
   const [trashOpen, setTrashOpen] = useState(false);
   const upcomingItems = upcoming?.items || [];
@@ -8602,14 +8604,20 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
         </section>
         <section className="rounded-xl border border-rose-200 bg-rose-50/50 p-3">
           <h3 className="text-sm font-semibold text-rose-800">Zona de borrado</h3>
-          <p className="mt-1 text-xs text-rose-700">Elimina todos los movimientos, reglas aprendidas, activos, etiquetas y presupuestos de este espacio. No se puede deshacer.</p>
+          <p className="mt-1 text-xs text-rose-700">Elimina de este dispositivo todos los movimientos, reglas aprendidas, activos, etiquetas, presupuestos y conversaciones del asistente. No se puede deshacer.</p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {!confirmWipe ? (
               <Btn kind="danger" onClick={() => setConfirmWipe(true)}><Trash2 size={14} /> Borrar todos mis datos</Btn>
             ) : (
               <>
                 <span className="text-xs font-medium text-rose-800">¿Seguro? Esta acción es definitiva.</span>
-                <Btn kind="danger" onClick={async () => { await onWipe(); onClose(); }}><Trash2 size={14} /> Sí, borrar todo</Btn>
+                {sync && bank?.workerUrl && (
+                  <label className="flex w-full items-start gap-2 text-xs text-rose-800">
+                    <input type="checkbox" className="mt-0.5 accent-rose-600" checked={wipeServidor} onChange={(e) => setWipeServidor(e.target.checked)} />
+                    <span>Borrar también en mi servidor (copia, versiones anteriores y bandeja), quitar los permisos del banco y olvidar la conexión en este dispositivo.</span>
+                  </label>
+                )}
+                <Btn kind="danger" onClick={async () => { await onWipe({ servidor: wipeServidor }); onClose(); }}><Trash2 size={14} /> Sí, borrar todo</Btn>
                 <Btn size="sm" onClick={() => setConfirmWipe(false)}>Cancelar</Btn>
               </>
             )}
@@ -9116,7 +9124,23 @@ function AppMain() {
   const forgetAssetMem = useCallback((pattern) => setAssetMem((p) => { const n = { ...p }; delete n[pattern]; return n; }), []);
   const forgetAllAssetMem = useCallback(() => setAssetMem({}), []);
 
-  const wipeAll = useCallback(async () => {
+  // `servidor`: borrar también tu copia en el backend (y su historial y bandeja), revocar los
+  // permisos del banco y olvidar aquí la conexión. Sin esto, «borrar todo» dejaba tus datos
+  // en el servidor y volvían en la siguiente sincronización.
+  const wipeAll = useCallback(async ({ servidor = false } = {}) => {
+    if (servidor && bankBase()) {
+      for (const c of loadBank().connections || []) {
+        if (c.sessionId) { try { await bankFetch(`/bank/revoke?session=${encodeURIComponent(c.sessionId)}`, 15000); } catch { /* best-effort */ } }
+      }
+      try {
+        const r = await fetch(bankBase() + "/store", { method: "DELETE", headers: bankHeaders() });
+        if (!r.ok) throw new Error("el backend devolvió " + r.status);
+      } catch (e) { setError("No se ha podido borrar tu copia del servidor (" + e.message + "). Lo de este dispositivo sí se ha borrado; vuelve a intentarlo desde Ajustes."); }
+      try { window.localStorage.removeItem(BANK_KEY); window.localStorage.removeItem(SYNC_KEY); } catch { /* sin acceso */ }
+      setBankCfg(loadBank()); setSyncCfg(loadSync());
+    }
+    try { window.localStorage.removeItem(CHATS_KEY); } catch { /* sin acceso */ }
+    setChatStore(() => { const c = newConv(); return { convs: [c], activeId: c.id }; });
     bootProtectRef.current = false; // borrado explícito: deja de proteger la copia previa
     await STORE.del(STORE_KEYS.movs);
     await STORE.del(STORE_KEYS.cfg);
@@ -11022,7 +11046,7 @@ function AppMain() {
             {aiDetail
               ? "Has permitido que el asistente consulte movimientos individuales."
               : "El asistente recibe totales y nombres de comercios, nunca movimientos uno a uno ni nombres de personas."}
-            <span className="mt-1 block text-[10px] text-slate-300">versión {BUILD_STAMP}</span>
+            <span className="mt-1 block text-[10px] text-slate-400">versión {BUILD_STAMP} · <a href="/privacidad.html" className="underline hover:text-slate-600">Privacidad</a></span>
           </footer>
         </div>
       )}
