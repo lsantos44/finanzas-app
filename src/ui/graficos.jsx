@@ -1,7 +1,8 @@
+import { Card } from "./comunes.jsx";
 import { C, catColor, fmtDate, fmtDateShort, fmtE, fmtE0, fmtPct, nfNum, shadeRamp, tnum } from "../core.js";
 import { ChevronLeft, ChevronRight, Star } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 /* ============================================================
    GRÁFICOS
@@ -213,7 +214,40 @@ function SaldoChart({ serie }) {
   );
 }
 
+// Minigráfica de tendencia (antes en comunes.jsx: metía recharts en la carga inicial).
+function MiniSpark({ data, color }) {
+  if (!data || data.length < 2) return null;
+  return (
+    <div style={{ height: 32, width: 88 }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data.map((v, i) => ({ i, v }))} margin={{ top: 4, bottom: 4, left: 0, right: 0 }}>
+          <Line type="monotone" dataKey="v" stroke={color} strokeWidth={1.75} dot={false} isAnimationActive={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// Tarjeta de cifra con minigráfica (Resumen e Ideas).
+function KPI({ label, value, sub, color, icon, spark, sparkColor }) {
+  return (
+    <Card className="p-4">
+      <div className="flex items-start justify-between">
+        <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</div>
+        {icon && <div className="flex h-7 w-7 items-center justify-center rounded-lg" style={{ background: C.accentSoft, color: C.accent }}>{icon}</div>}
+      </div>
+      <div className="mt-1.5 flex items-end justify-between gap-2">
+        <div className="text-xl font-semibold sm:text-2xl" style={{ ...tnum, color: color || C.ink }}>{value}</div>
+        {spark && <MiniSpark data={spark} color={sparkColor || C.accent} />}
+      </div>
+      {sub && <div className="mt-0.5 text-xs text-slate-500">{sub}</div>}
+    </Card>
+  );
+}
+
 export {
+  KPI,
+  MiniSpark,
   DonutCategories,
   StackedTime,
   SaldoChart,

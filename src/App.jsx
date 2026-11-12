@@ -1,26 +1,47 @@
-import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import React, { useState, useMemo, useRef, useEffect, useCallback, lazy, Suspense } from "react";
 
 import { Plus, X, AlertTriangle, Search, Wallet, Settings, ClipboardList, Sun, Moon } from "lucide-react";
 import { ALL_TABS, ASSET_EMOJI, BANK_KEY, BUILD_STAMP, C, CATEGORIES, CHATS_KEY, DEFAULT_AI_CFG, DEFAULT_MATERIALIDAD, DEFAULT_REDUCIBLE, DEFAULT_RULES, ENTITY_STOP, GROUP_COLORS, INGRESO_SET, INTERNAL_SET, LLEGA_CON_ENLACE, PRIO, SAMPLE_GROUPS, SNAP_PREFIX, STORE, STORE_KEYS, SYNC_KEY, THEME, THEME_KEY, TOKENS, TRANSFER_SET, VIVIENDA, abrirAcceso, aiProviderLabel, ambKey, ambiguousPatterns, analyzeReceiptTrends, analyzeRows, applyCfg, auditRules, b64u, bankErrDetail, bankIsEmpty, buildAlerts, buildMonthClose, buildMovements, calcImputacion, calcRentaInmueble, classifyForImport, computeBankSaldo, computeOutliers, conciliar, daysBetween, decodeBuffer, dedupeAgainst, describePeriod, deserializeMovs, detectDelimiter, detectRecurring, expandParts, fmtAgo, fmtDate, fmtDateShort, genSampleCSV, identifiesMerchant, isConditional, isProcessorPattern, isRefundPart, isSpreadsheetFile, isoDay, learnedRule, leerAccesoGuardado, listSnapshots, loadBank, loadSync, makeAccessLink, matchRule, merchantEntity, mergeBank, missingIncome, monthKey, monthLabel, monthsCoveredOf, movInGroup, movKey, needsAmount, newConv, nfEUR, nfNum, normalizePattern, parseAccessLink, parseDateAny, parseEsNumber, r2c, rebuildRules, recordarAcceso, recoverBackupFromStore, refundFromHistory, refundIndex, ruleConditionsHold, ruleId, runQuery, saveBank, saveSync, serializeCfg, serializeMovs, setItemSeguro, setTema, shouldSnapshot, sortedRules, spreadsheetToRows, stripAccents, tipoActivo, tnum, tokenizeCSV, totalsOf, upcomingCharges, upcomingIncome, viviendaPorDefecto, writeSnapshot } from "./core.js";
-import { ActivosTab, GruposTab } from "./pestanas/activos.jsx";
-import { AsistenteTab, MDLite } from "./pestanas/asistente.jsx";
-import { ClasificacionTab } from "./pestanas/clasificacion.jsx";
-import { InteligenciaTab, PlanTab } from "./pestanas/ideas.jsx";
-import { ExtraordinariosCard, GastoCalendar, HierarchyExplorer, MonthRecap, ResumenTab } from "./pestanas/resumen.jsx";
-import { SettingsModal } from "./ui/ajustes.jsx";
 import { Card, Seg, Spinner, useBackClose } from "./ui/comunes.jsx";
 import { DrillPanel, FiltersBar, MovEditModal, PendientesPanel } from "./ui/movimientos.jsx";
 import { AsistenteConexion, EmptyState, EntrarModal, MappingModal, ValidationModal, VueltaOtroNavegador } from "./ui/portada.jsx";
 
 /* Exportaciones con nombre: no las usa la app, existen para que el banco de pruebas
    ejerza EL MOTOR REAL y no una copia suya que se desincronice con el tiempo. */
+// Pestañas y Ajustes se descargan la primera vez que se abren: la app arranca con lo justo
+// (portada, Resumen y lo común) y no con todo de golpe.
+// Si se publicó una versión nueva con la app abierta, los trozos de la anterior ya no existen
+// y abrir una pestaña fallaría: se recarga la página una vez (no en bucle) para traer la nueva.
+const perezoso = (cargar, nombre) => lazy(() => cargar().then((m) => {
+  try { sessionStorage.removeItem("finz:recarga-trozos"); } catch { /* sin almacenamiento */ }
+  return { default: m[nombre] };
+}, (e) => {
+  try {
+    if (!sessionStorage.getItem("finz:recarga-trozos")) { sessionStorage.setItem("finz:recarga-trozos", "1"); window.location.reload(); return new Promise(() => {}); }
+  } catch { /* sin almacenamiento: se muestra el error */ }
+  throw e;
+}));
+const ActivosTab = perezoso(() => import("./pestanas/activos.jsx"), "ActivosTab");
+const GruposTab = perezoso(() => import("./pestanas/activos.jsx"), "GruposTab");
+const AsistenteTab = perezoso(() => import("./pestanas/asistente.jsx"), "AsistenteTab");
+const ClasificacionTab = perezoso(() => import("./pestanas/clasificacion.jsx"), "ClasificacionTab");
+const InteligenciaTab = perezoso(() => import("./pestanas/ideas.jsx"), "InteligenciaTab");
+const PlanTab = perezoso(() => import("./pestanas/ideas.jsx"), "PlanTab");
+const SettingsModal = perezoso(() => import("./ui/ajustes.jsx"), "SettingsModal");
+// Resumen y Análisis llevan los gráficos (recharts, la librería más pesada): bajo demanda también.
+const ResumenTab = perezoso(() => import("./pestanas/resumen.jsx"), "ResumenTab");
+const GastoCalendar = perezoso(() => import("./pestanas/resumen.jsx"), "GastoCalendar");
+const ExtraordinariosCard = perezoso(() => import("./pestanas/resumen.jsx"), "ExtraordinariosCard");
+const HierarchyExplorer = perezoso(() => import("./pestanas/resumen.jsx"), "HierarchyExplorer");
+const MonthRecap = perezoso(() => import("./pestanas/resumen.jsx"), "MonthRecap");
+const Cargando = () => <div className="flex justify-center py-16" role="status" aria-label="Cargando"><Spinner /></div>;
+
 export {
   matchRule, ruleConditionsHold, sortedRules, ruleId, isConditional,
   DEFAULT_RULES, PRIO, DEFAULT_MATERIALIDAD,
   classifyForImport, dedupeAgainst, movKey, normalizePattern, auditRules, learnedRule, needsAmount, ambiguousPatterns,
   CATEGORIES, rebuildRules, deserializeMovs, tipoActivo, calcRentaInmueble, calcImputacion, conciliar, viviendaPorDefecto, VIVIENDA, computeBankSaldo, refundIndex, refundFromHistory,
   runQuery, totalsOf,
-  MDLite,
   makeAccessLink, abrirAcceso, parseAccessLink, parseEsNumber, parseDateAny, tokenizeCSV, detectDelimiter, analyzeRows, buildMovements,
   buildMonthClose, missingIncome, upcomingIncome, upcomingCharges, detectRecurring, analyzeReceiptTrends,
 };
@@ -2231,6 +2252,7 @@ function AppMain() {
             </div>
           )}
 
+          <Suspense fallback={<Cargando />}>
           {tab === "resumen" && agg && (
             <ResumenTab agg={agg} allAgg={allAgg} granularity={granularity} setGranularity={setGranularity} onDrill={setDrill} onPickMonth={onPickMonth}
               outlierMovs={outlierMovs} recurring={recurring} monthlySpark={monthlySpark} saldoSerie={saldoSerie} momDelta={momDelta} alerts={alerts} cierre={cierre} onOpenPending={() => setPendingOpen(true)} onDismissAlert={dismissAlert} />
@@ -2281,6 +2303,7 @@ function AppMain() {
           )}
           {tab === "asistente" && <AsistenteTab aiOn={aiOn} setAiOn={setAiOn} hasData={hasData} ctx={agentCtx} ai={ai} aiDetail={aiDetail} onCreateProposal={createGroupFromProposal} onApplyReclassify={applyReclassify} onOpenSettings={() => setSettingsOpen(true)} msgs={chatMsgs} setMsgs={setChatMsgs}
             conversations={chatStore.convs} activeId={chatStore.activeId} onNewChat={newChat} onSelectChat={selectChat} onDeleteChat={deleteChat} />}
+          </Suspense>
 
           <footer className="mt-10 text-center text-xs text-slate-400">
             Tus datos se guardan solo en {STORE.kind} y puedes exportarlos o borrarlos desde Ajustes.{" "}
@@ -2346,6 +2369,7 @@ function AppMain() {
           onClose={() => setAsistenteOpen(false)} />
       )}
       {settingsOpen && (
+        <Suspense fallback={null}>
         <SettingsModal onClose={() => setSettingsOpen(false)} storeKind={STORE.kind} saveState={saveState}
           theme={theme} setTheme={setTheme} upcoming={upcoming}
           movsCount={movs.length} aiOn={aiOn} setAiOn={setAiOn} ai={ai} setAi={setAi} aiDetail={aiDetail} setAiDetail={setAiDetail}
@@ -2374,6 +2398,7 @@ function AppMain() {
             addPsu: bankAddPsu, onSetAddPsu: setBankAddPsu, onSetPsu: bankSetPsu,
             otherAccountIds: otherAccountMovIds, onTrashOtherAccounts: trashOtherAccountMovs,
             onLoadAccounts: bankLoadAccounts, onPickAccount: bankPickAccount, onSyncOne: bankSyncOne, onSyncAll: bankSyncAll, onRemove: bankRemoveConnection }} />
+        </Suspense>
       )}
       {pendingOpen && (
         <PendientesPanel movsPend={movsPend} amb={ambPend} assets={assets} setAssets={setAssets} applyPending={applyPending}

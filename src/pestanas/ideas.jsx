@@ -1,5 +1,6 @@
+import { KPI, MiniSpark } from "../ui/graficos.jsx";
 import { C, CATEGORIES, CATEGORIES_GASTO, INGRESO_SET, STALE_GAP, TRANSFER_SET, catColor, fmtDate, fmtE, fmtE0, fmtPct, monthKey, monthLabelLong, nfNum, tnum } from "../core.js";
-import { Btn, Card, DeltaBadge, KPI, MiniSpark, Seg } from "../ui/comunes.jsx";
+import { Btn, Card, DeltaBadge, Seg } from "../ui/comunes.jsx";
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, ChevronDown, ChevronRight, Filter, PiggyBank, RefreshCw, Sparkles, TrendingUp, Wallet, X } from "lucide-react";
 import { useMemo, useState } from "react";
 
