@@ -1,4 +1,3 @@
-import React from "react";
 import { createRoot } from "react-dom/client";
 // Inter servida desde la propia web: cargarla de Google le enviaba la IP de cada visita.
 import "@fontsource/inter/400.css";

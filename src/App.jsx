@@ -7,7 +7,7 @@ import {
   Upload, Plus, X, ChevronDown, ChevronRight, ChevronLeft, Sparkles, Send, Pencil,
   AlertTriangle, Check, Scissors, Info, Trash2, Loader2, FileText, RefreshCw,
   LayoutGrid, Car, Tag, PiggyBank, Bot, Search, ArrowUpRight, ArrowDownRight,
-  TrendingUp, TrendingDown, Minus, Filter, Wallet, Calendar, Target, Settings, Download, CalendarDays, History, GitBranch, ClipboardList, Star,
+  TrendingUp, TrendingDown, Minus, Filter, Wallet, Settings, Download, CalendarDays, History, GitBranch, ClipboardList, Star,
   Sun, Moon, Menu, Landmark
 } from "lucide-react";
 
@@ -23,19 +23,20 @@ const THEME_KEY = "finz:theme:v1";
 const TOKENS = {
   light: {
     bg: "#F3F6FA", surface: "#FFFFFF", surfaceAlt: "#F8FAFC",
-    ink: "#0F1B2D", ink2: "#33415C", muted: "#5E6E85", faint: "#93A1B5",
+    // faint a 4,8:1 sobre blanco (antes 2,6:1, ilegible en los textos pequeños).
+    ink: "#0F1B2D", ink2: "#33415C", muted: "#5E6E85", faint: "#64748B",
     line: "#E4EAF2", lineStrong: "#C9D5E3",
     navy: "#0B2545", navy2: "#15406F",
     accent: "#1266C0", accentHover: "#0E54A0", accentSoft: "#E7F0FB",
     teal: "#0FA3A3", tealSoft: "#E2F5F5",
     income: "#0B8457", incomeSoft: "#E4F5EE",
-    expense: "#D24955", expenseSoft: "#FBEBEC",
-    warn: "#B26A05", warnSoft: "#FDF3E3",
+    expense: "#C23E4A", expenseSoft: "#FBEBEC", // 5,1:1 sobre blanco (antes 4,35:1)
+    warn: "#9A5B03", warnSoft: "#FDF3E3", // 4,9:1 sobre su fondo (antes 3,85:1)
     extra: "#C08A00", extraSoft: "#FCF4DC",
   },
   dark: {
     bg: "#0D0F13", surface: "#16181D", surfaceAlt: "#1C1F26",
-    ink: "#ECEEF2", ink2: "#C3C7D0", muted: "#98A0AE", faint: "#6B7280",
+    ink: "#ECEEF2", ink2: "#C3C7D0", muted: "#98A0AE", faint: "#8A93A3",
     line: "#262A33", lineStrong: "#363B46",
     navy: "#0B1524", navy2: "#14263F",
     accent: "#5197EE", accentHover: "#6EA9F2", accentSoft: "#16294A",
@@ -1645,6 +1646,15 @@ function genSampleCSV() {
   add(2026, 1, 21, "AIRBNB SEVILLA TRIANA", -142);
   add(2026, 1, 1, "DECATHLON ALCORCON CAMISETA TECNICA", -34.99);
 
+  // La demo se escribió de abril de 2025 a mayo de 2026. Se desplaza entera para que termine el
+  // mes pasado: con fechas fijas, con el tiempo parecía antigua y «el mes actual» salía vacío.
+  const hoy = new Date();
+  const desplazar = (hoy.getFullYear() * 12 + hoy.getMonth() - 1) - (2026 * 12 + 4);
+  for (const mv of movs) {
+    const y = mv.d.getFullYear(), m = mv.d.getMonth() + desplazar, dia = mv.d.getDate();
+    const ultimo = new Date(y, m + 1, 0).getDate();
+    mv.d = new Date(y, m, Math.min(dia, ultimo));
+  }
   movs.sort((a, b) => a.d - b.d);
   let saldo = 6200;
   for (const mv of movs) { saldo = Math.round((saldo + mv.a) * 100) / 100; mv.s = saldo; }
@@ -1653,7 +1663,7 @@ function genSampleCSV() {
     "BANCO EJEMPLO DE ESPAÑA;;;;",
     "Titular: LAURA GARCÍA PÉREZ;;;;",
     "IBAN: ES21 0049 0001 5021 3456 7890;;;;",
-    `Saldo a fecha 31/05/2026: ${toEsNum(saldo)} EUR;;;;`,
+    `Saldo a fecha ${fmtDate(movs[0].d)}: ${toEsNum(saldo)} EUR;;;;`,
     ";;;;",
     "Fecha operación;Fecha valor;Concepto;Importe;Saldo",
   ];
@@ -2271,7 +2281,7 @@ function buildMonthClose({ movs, receiptTrends, upcoming, saldoSerie, dataRange,
   const [ly, lm] = mesKey.split("-").map(Number);
   const prevKey = monthKey(new Date(ly, lm - 2, 1));
 
-  let gastoMes = 0, ingresoMes = 0, gastoPrev = 0, ingresoPrev = 0;
+  let gastoMes = 0, ingresoMes = 0, gastoPrev = 0;
   const catMes = new Map();
   for (const m of movs) {
     if (m.extra || m.omit) continue; // extraordinarios y papelera fuera del cierre
@@ -2287,7 +2297,7 @@ function buildMonthClose({ movs, receiptTrends, upcoming, saldoSerie, dataRange,
       if (asGasto) { gastoMes -= m.amount; catMes.set(c, (catMes.get(c) || 0) - m.amount); }
       else ingresoMes += m.amount;
     } else if (k === prevKey) {
-      if (asGasto) gastoPrev -= m.amount; else ingresoPrev += m.amount;
+      if (asGasto) gastoPrev -= m.amount;
     }
   }
   const topCats = [...catMes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([cat, v]) => ({ cat, v: r2c(v) }));
@@ -3297,7 +3307,7 @@ function Seg({ options, value, onChange, ariaLabel }) {
     </div>
   );
 }
-function MultiSelect({ label, options, groups, selected, onChange, icon }) {
+function MultiSelect({ label, options, groups, selected, onChange, icon, className = "" }) {
   const [open, setOpen] = useState(false);
   const n = selected.size;
   const toggle = (o, checked) => { const s = new Set(selected); checked ? s.add(o) : s.delete(o); onChange(s); };
@@ -3310,8 +3320,8 @@ function MultiSelect({ label, options, groups, selected, onChange, icon }) {
   // `groups` = [{label, items}] pinta cabeceras (gasto/ingreso/transferencia); si no, lista plana.
   const empty = groups ? !groups.some((g) => g.items.length) : options.length === 0;
   return (
-    <div className="relative">
-      <Btn onClick={() => setOpen(!open)} active={n > 0}>{icon}{label}{n > 0 ? ` · ${n}` : ""} <ChevronDown size={13} /></Btn>
+    <div className={`relative ${className}`}>
+      <Btn onClick={() => setOpen(!open)} active={n > 0} className="w-full justify-center sm:w-auto">{icon && <span className="hidden sm:inline-flex">{icon}</span>}<span className="truncate">{label}{n > 0 ? ` · ${n}` : ""}</span> <ChevronDown size={13} className="shrink-0" /></Btn>
       {open && (
         <>
           {/* En móvil, hoja inferior fija: la barra de filtros tiene overflow-x-auto y
@@ -3363,9 +3373,9 @@ const CAT_FILTER_GROUPS = [
   { label: "Ingresos", items: INGRESO_SORTED },
   { label: "Transferencias", items: TRANSFER_SORTED },
 ];
-function CatSelect({ value, onChange, className = "", allowEmpty }) {
+function CatSelect({ value, onChange, className = "", allowEmpty, ariaLabel = "Categoría" }) {
   return (
-    <select value={value || ""} onChange={(e) => onChange(e.target.value || null)}
+    <select aria-label={ariaLabel} value={value || ""} onChange={(e) => onChange(e.target.value || null)}
       className={`rounded-lg border bg-white px-2 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${className}`} style={{ borderColor: C.line }}>
       {allowEmpty && <option value="">— Elegir —</option>}
       <optgroup label="Ingresos">
@@ -3409,7 +3419,7 @@ function AssetSelect({ value, onChange, assets, onCreateAsset, className = "" })
     );
   }
   return (
-    <select value={value ?? ""} onChange={(e) => { if (e.target.value === "__new__") { setCreating(true); } else { onChange(e.target.value || null); } }}
+    <select aria-label="Activo" value={value ?? ""} onChange={(e) => { if (e.target.value === "__new__") { setCreating(true); } else { onChange(e.target.value || null); } }}
       className={`rounded-lg border bg-white px-2 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${className}`} style={{ borderColor: C.line }}>
       <option value="">Sin activo</option>
       {assets.map((a) => <option key={a.id} value={a.name}>{a.emoji} {a.name}</option>)}
@@ -3740,7 +3750,7 @@ function PrimerosPasos({ tieneDatos, tieneSync, tieneBanco, tieneIA, onIr }) {
             <span className="mt-0.5 block text-[11px] text-slate-400">{x.coste}</span>
             {x.accion && (
               <button type="button" onClick={() => onIr(x.accion.ir)}
-                className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-semibold hover:underline focus-visible:outline-none" style={{ color: C.accent }}>
+                className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-semibold hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500" style={{ color: C.accent }}>
                 {x.accion.texto} <ChevronRight size={11} />
               </button>
             )}
@@ -4219,13 +4229,13 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onActivarSync
             <p className="text-[12px]">Hace falta además una cuenta en <strong>Enable Banking</strong>, el proveedor autorizado que habla con los bancos. Es gratuita para tus propias cuentas y lleva unos 15 minutos más.</p>
             <div className="grid gap-2 sm:grid-cols-2">
               <button type="button" onClick={() => setQuiereBanco(true)}
-                className="rounded-xl border-2 p-3 text-left text-[13px] font-medium focus-visible:outline-none"
+                className="rounded-xl border-2 p-3 text-left text-[13px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
                 style={{ borderColor: quiereBanco === true ? C.accent : C.line, background: quiereBanco === true ? C.accentSoft : C.surface }}>
                 Sí, seguir con el banco
                 <span className="mt-0.5 block text-[11px] font-normal text-slate-500">15 minutos más</span>
               </button>
               <button type="button" onClick={() => setQuiereBanco(false)}
-                className="rounded-xl border-2 p-3 text-left text-[13px] font-medium focus-visible:outline-none"
+                className="rounded-xl border-2 p-3 text-left text-[13px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
                 style={{ borderColor: quiereBanco === false ? C.accent : C.line, background: quiereBanco === false ? C.accentSoft : C.surface }}>
                 Ahora no
                 <span className="mt-0.5 block text-[11px] font-normal text-slate-500">Puedes hacerlo cuando quieras</span>
@@ -4287,7 +4297,7 @@ function AsistenteConexion({ onClose, workerUrl, token, onGuardar, onActivarSync
                     const admitido = !ficha || !Array.isArray(ficha.psu_types) || ficha.psu_types.includes(t);
                     return (
                       <button key={t} type="button" onClick={() => admitido && setPsu(t)} disabled={!admitido}
-                        className="rounded-lg border-2 p-2 text-left text-[12px] font-medium disabled:opacity-40 focus-visible:outline-none"
+                        className="rounded-lg border-2 p-2 text-left text-[12px] font-medium disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
                         style={{ borderColor: psu === t ? C.accent : C.line, background: psu === t ? C.accentSoft : C.surface }}>
                         {t === "personal" ? "Personal" : "Empresa / autónomo"}
                         {!admitido && <span className="mt-0.5 block text-[10px] font-normal">este banco no lo admite</span>}
@@ -4417,7 +4427,7 @@ function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente
                 caso (ya uso la app), solo que por otro camino. */}
             {onSettings && (
               <p className="mt-3 border-t pt-2.5 text-xs text-slate-500" style={{ borderColor: C.line }}>
-                ¿Sin backend? <button type="button" onClick={onSettings} className="font-semibold hover:underline focus-visible:outline-none" style={{ color: C.accent }}>Restaura una copia (.json)</button>
+                ¿Sin backend? <button type="button" onClick={onSettings} className="font-semibold hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500" style={{ color: C.accent }}>Restaura una copia (.json)</button>
               </p>
             )}
           </div>
@@ -4549,7 +4559,7 @@ function ValidationModal({ val, onConfirm, onCancel, onRemap }) {
         <Card className="p-3"><div className="text-xs text-slate-500">Gastos</div><div className="font-semibold" style={{ ...tnum, color: C.expense }}>{fmtE(outSum)}</div></Card>
       </div>
       <ul className="mt-3 space-y-1.5 text-sm">
-        {skipped > 0 && <li className="flex items-center gap-2 text-slate-600"><Info size={14} /> {skipped} filas omitidas (cabeceras, totales o sin datos válidos).</li>}
+        {skipped > 0 && <li className="flex items-center gap-2 text-slate-600"><Info size={14} /> {skipped} {skipped === 1 ? "fila omitida" : "filas omitidas"} (cabeceras, totales o sin datos válidos).</li>}
         {dupes > 0 && <li className="flex items-center gap-2 text-slate-600"><Info size={14} /> {dupes} duplicados ya importados se han ignorado.</li>}
         {mismatches !== null && (mismatches === 0
           ? <li className="flex items-center gap-2" style={{ color: C.income }}><Check size={14} /> El saldo cuadra con los importes en todas las filas.</li>
@@ -4775,7 +4785,7 @@ function PendientesPanel({ movsPend, amb, assets, setAssets, applyPending, aiOn,
             const gMixed = noteVals.size > 1;
             return (
               <div key={g.key} className="border-b px-4 py-3" style={{ borderColor: C.line }}>
-                <button type="button" onClick={() => setOpen(isOpen ? null : g.key)} className="flex w-full items-start gap-1.5 text-left focus-visible:outline-none">
+                <button type="button" onClick={() => setOpen(isOpen ? null : g.key)} className="flex w-full items-start gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500">
                   <ChevronRight size={14} className="mt-0.5 shrink-0 text-slate-400 transition-transform" style={{ transform: isOpen ? "rotate(90deg)" : "none" }} />
                   <div className="min-w-0 flex-1">
                     <div className="break-words text-sm font-medium" title={g.sample}>{g.sample}</div>
@@ -4909,23 +4919,27 @@ function FiltersBar({ filters, setFilters, monthsAvail, yearsAvail, assets, grou
   const lastMonth = monthsAvail[monthsAvail.length - 1];
   const prevMonth = monthsAvail[monthsAvail.length - 2];
   return (
-    // En móvil una sola fila que se desplaza en horizontal: envolviendo, los filtros
-    // ocupaban tres líneas y empujaban el contenido fuera de la primera pantalla.
-    <div className="-mx-4 flex items-center gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0 sm:pb-0">
+    // En móvil, dos filas fijas: arriba el periodo y abajo los filtros. Antes era una sola fila
+    // que se desplazaba de lado sin ninguna pista, y la mitad de las opciones no se veían.
+    <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+     <div className="flex min-w-0 flex-wrap items-center gap-2">
       <Seg ariaLabel="Periodo" value={f.periodType} onChange={(v) => set({ periodType: v, ...(v === "month" && !f.month ? { month: lastMonth } : {}) })}
         options={[{ v: "all", l: "Todo" }, { v: "year", l: "Año" }, { v: "month", l: "Mes" }, { v: "custom", l: "Rango" }]} />
       {f.periodType === "year" && (
-        <select value={f.year} onChange={(e) => set({ year: +e.target.value })} className="shrink-0 rounded-lg border bg-white px-2 py-1.5 text-sm" style={{ borderColor: C.line, ...tnum }}>
+        <select value={f.year} onChange={(e) => set({ year: +e.target.value })} aria-label="Año" className="shrink-0 rounded-lg border bg-white px-2 py-1.5 text-sm" style={{ borderColor: C.line, ...tnum }}>
           {yearsAvail.map((y) => <option key={y} value={y}>{y}</option>)}
         </select>
       )}
       {f.periodType === "month" && (
         <>
-          <select value={f.month} onChange={(e) => set({ month: e.target.value })} className="shrink-0 rounded-lg border bg-white px-2 py-1.5 text-sm" style={{ borderColor: C.line }}>
+          <select value={f.month} onChange={(e) => set({ month: e.target.value })} aria-label="Mes" className="min-w-0 shrink rounded-lg border bg-white px-2 py-1.5 text-sm" style={{ borderColor: C.line }}>
             {monthsAvail.map((m) => <option key={m} value={m}>{monthLabelLong(m)}</option>)}
           </select>
-          <Btn size="sm" kind="subtle" className="shrink-0" onClick={() => set({ month: lastMonth })} disabled={!lastMonth}>Último mes</Btn>
-          <Btn size="sm" kind="subtle" className="shrink-0" onClick={() => set({ month: prevMonth })} disabled={!prevMonth}>Mes anterior</Btn>
+          {/* En el móvil sobran: el desplegable ya elige el mes. */}
+          <span className="hidden gap-2 sm:flex">
+            <Btn size="sm" kind="subtle" className="shrink-0" onClick={() => set({ month: lastMonth })} disabled={!lastMonth}>Último mes</Btn>
+            <Btn size="sm" kind="subtle" className="shrink-0" onClick={() => set({ month: prevMonth })} disabled={!prevMonth}>Mes anterior</Btn>
+          </span>
         </>
       )}
       {f.periodType === "custom" && (
@@ -4935,7 +4949,9 @@ function FiltersBar({ filters, setFilters, monthsAvail, yearsAvail, assets, grou
           <input type="date" value={f.to} onChange={(e) => set({ to: e.target.value })} aria-label="Hasta" className="rounded-lg border px-2 py-1.5 text-sm" style={{ borderColor: C.line }} />
         </div>
       )}
-      <div className="flex shrink-0 gap-2 sm:ml-auto">
+     </div>
+      {/* En el móvil, los filtros en una sola fila a partes iguales. */}
+      <div className="grid auto-cols-fr grid-flow-col gap-1.5 sm:ml-auto sm:flex sm:gap-2">
         <MultiSelect label="Categorías" icon={<Filter size={13} />} groups={CAT_FILTER_GROUPS} selected={f.cats} onChange={(s) => set({ cats: s })} />
         {assets.length > 0 && <MultiSelect label="Activos" options={assets.map((a) => a.name)} selected={f.assetsSel} onChange={(s) => set({ assetsSel: s })} />}
         {groups.length > 0 && <MultiSelect label="Grupos" icon={<Tag size={13} />} options={groups.map((g) => g.name)} selected={f.groupsSel} onChange={(s) => set({ groupsSel: s })} />}
@@ -5009,8 +5025,9 @@ function GroupTags({ mov, groups, onToggle, onCreateGroup }) {
   );
 }
 
-function DrillPanel({ drill, movs, assets, groups, outliers, onClose, onRecat, onReasset, onReassetAll, onToggleGroup, onCreateGroup, onCreateAsset, onToggleExtra, onNote, onDelete, onSetAmount, onEditMov }) {
+function DrillPanel({ drill, movs, assets, groups, outliers, onClose, onRecat, onReasset, onReassetAll, onToggleGroup, onCreateGroup, onCreateAsset, onToggleExtra, onNote, onDelete, onSetAmount, onEditMov, onSplit }) {
   const [shown, setShown] = useState(60);
+  const [dividiendo, setDividiendo] = useState(null); // id del movimiento que se está dividiendo
   const [noting, setNoting] = useState(null);
   const [noteText, setNoteText] = useState("");
   const [confirmDel, setConfirmDel] = useState(null);
@@ -5162,6 +5179,7 @@ function DrillPanel({ drill, movs, assets, groups, outliers, onClose, onRecat, o
                   <AssetSelect value={m.assetName === undefined ? (expandParts(m, assets)[0].asset ?? "") : m.assetName} assets={assets} onCreateAsset={onCreateAsset} onChange={(v) => onReasset(m, v)} className="min-w-0 flex-1 basis-[45%] sm:w-32 sm:flex-none sm:basis-auto" />
                   <GroupTags mov={m} groups={groups} onToggle={onToggleGroup} onCreateGroup={onCreateGroup} />
                   {onToggleExtra && <button type="button" onClick={() => onToggleExtra(m)} aria-label={m.extra ? "Quitar de extraordinarios" : "Marcar como extraordinario"} title={m.extra ? "Quitar de extraordinarios (vuelve al análisis)" : "Marcar como extraordinario (fuera de medias, proyecciones y comparativas)"} className={`shrink-0 rounded-lg p-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${m.extra ? "text-white" : "text-slate-500 hover:bg-slate-100"}`} style={m.extra ? { background: C.accent } : undefined}><Star size={15} /></button>}
+                  {onSplit && <button type="button" onClick={() => setDividiendo(dividiendo === m.id ? null : m.id)} title="Dividir entre dos categorías (p. ej. una compra mitad súper, mitad hogar)" aria-label="Dividir movimiento" aria-expanded={dividiendo === m.id} className="shrink-0 rounded-lg p-2.5 text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><Scissors size={16} /></button>}
                   {onEditMov && <button type="button" onClick={() => onEditMov(m)} title="Editar fecha, importe o concepto" aria-label="Editar movimiento" className="shrink-0 rounded-lg p-2.5 text-slate-500 hover:bg-slate-100 hover:text-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><Pencil size={15} /></button>}
                   {onDelete && (confirmDel === m.id
                     ? <span className="flex shrink-0 items-center gap-1">
@@ -5170,6 +5188,7 @@ function DrillPanel({ drill, movs, assets, groups, outliers, onClose, onRecat, o
                       </span>
                     : <button type="button" onClick={() => setConfirmDel(m.id)} title="Borrar movimiento (no lo quiero analizar)" aria-label="Borrar movimiento" className="shrink-0 rounded-lg p-2.5 text-slate-500 hover:bg-rose-50 hover:text-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><Trash2 size={15} /></button>)}
                 </div>
+                {onSplit && dividiendo === m.id && <SplitEditor mov={m} onSave={(sp) => { onSplit(m, sp); setDividiendo(null); }} onCancel={() => setDividiendo(null)} />}
                 {othersToAsset.length > 0 && onReassetAll && (
                   <div className="mt-1 text-[11px] text-slate-400">
                     Este activo está solo en este movimiento.{" "}
@@ -5405,7 +5424,7 @@ function MonthRecap({ movs, onDrill }) {
             {r.topCats.map((c) => {
               const d = c.prev > 0 ? (c.v - c.prev) / c.prev : null;
               return (
-                <button key={c.cat} type="button" onClick={() => onDrill({ type: "cat", key: c.cat, label: `${c.cat} · ${mesTxt}`, month: mKey })} className="block w-full text-left focus-visible:outline-none">
+                <button key={c.cat} type="button" onClick={() => onDrill({ type: "cat", key: c.cat, label: `${c.cat} · ${mesTxt}`, month: mKey })} className="block w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500">
                   <div className="mb-1 flex items-baseline justify-between gap-2 text-sm">
                     <span className="font-medium">{c.cat}</span>
                     <span style={tnum}><b>{fmtE0(c.v)}</b>{d != null && <span className="ml-1.5 text-xs font-semibold" style={{ color: d >= 0 ? C.expense : C.income }}>{d >= 0 ? "▲" : "▼"}{fmtPct(Math.abs(d))}</span>}</span>
@@ -5596,8 +5615,6 @@ function ResumenTab({ agg, allAgg, granularity, setGranularity, onDrill, onPickM
     for (const p of agg.parts || []) if (p.amount > 0 && !INTERNAL_SET.has(p.cat) && !isRefundPart(p)) m.set(p.cat, (m.get(p.cat) || 0) + p.amount);
     return m;
   }, [agg.parts]);
-  const activeRec = recurring.filter((r) => ["mensual", "anual", "bimestral", "trimestral", "semestral"].includes(r.cadence));
-  const recAnnual = activeRec.reduce((s, r) => s + r.annual, 0);
   const isDay = rangeDays <= 32;
   // Ahorro = lo que ingresas menos lo que consumes. El dinero movido a ahorro/inversión
   // NO es gasto: es parte de cómo colocas ese ahorro, así que no resta aquí.
@@ -6606,7 +6623,7 @@ function ClasificacionTab({ movs, assets, groups, onRecat, onReasset, onReassetA
             options={[{ v: "todos", l: "Todos" }, { v: "pend", l: "Por revisar" }, { v: "ok", l: "Confirmados" }]} />
           <div className="flex min-w-[180px] flex-1 items-center gap-2 rounded-xl border px-3 py-1.5" style={{ borderColor: C.lineStrong }}>
             <Search size={14} className="shrink-0 text-slate-400" />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar comercio o concepto…" className="w-full bg-transparent text-sm focus:outline-none" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} aria-label="Buscar comercio o concepto" placeholder="Buscar comercio o concepto…" className="w-full bg-transparent text-sm focus:outline-none" />
             {q && <button type="button" onClick={() => setQ("")} aria-label="Limpiar" className="rounded p-0.5 text-slate-400 hover:bg-slate-100"><X size={13} /></button>}
           </div>
           <Seg ariaLabel="Ingresos o gastos" value={signSel} onChange={setSignSel}
@@ -6635,7 +6652,7 @@ function ClasificacionTab({ movs, assets, groups, onRecat, onReasset, onReassetA
             const mine = isOpen ? movs.filter((m) => m.pattern === g.pattern).sort((a, b) => b.date - a.date) : null;
             return (
               <div key={g.pattern} className="px-3 py-2.5" style={{ borderColor: C.line }}>
-                <button type="button" onClick={() => setOpen(isOpen ? null : g.pattern)} className="flex w-full items-baseline justify-between gap-3 text-left focus-visible:outline-none">
+                <button type="button" onClick={() => setOpen(isOpen ? null : g.pattern)} className="flex w-full items-baseline justify-between gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <ChevronRight size={14} className="shrink-0 text-slate-400 transition-transform" style={{ transform: isOpen ? "rotate(90deg)" : "none" }} />
@@ -7307,7 +7324,7 @@ function AsistenteTab({ aiOn, setAiOn, hasData, ctx, ai, aiDetail, onCreatePropo
             {sortedConvs.length > 6 && (
               <div className="mx-2 mt-2 flex items-center gap-1.5 rounded-lg border px-2" style={{ borderColor: C.line }}>
                 <Search size={13} className="shrink-0 text-slate-400" />
-                <input value={convQuery} onChange={(e) => setConvQuery(e.target.value)} placeholder="Buscar conversación"
+                <input value={convQuery} onChange={(e) => setConvQuery(e.target.value)} aria-label="Buscar conversación" placeholder="Buscar conversación"
                   className="min-w-0 flex-1 bg-transparent py-1.5 text-sm focus:outline-none" />
                 {convQuery && <button type="button" onClick={() => setConvQuery("")} aria-label="Limpiar" className="shrink-0 text-slate-400 hover:text-slate-600"><X size={13} /></button>}
               </div>
@@ -7412,7 +7429,7 @@ function AsistenteTab({ aiOn, setAiOn, hasData, ctx, ai, aiDetail, onCreatePropo
           </div>
         )}
         <div className="flex items-end gap-2 rounded-2xl border bg-white p-2 shadow-sm" style={{ borderColor: C.lineStrong }}>
-          <textarea ref={taRef} value={input} rows={1} placeholder={aiOn ? "Pregunta a tus datos…" : "Activa el asistente para preguntar"} disabled={!aiOn || busy}
+          <textarea ref={taRef} value={input} rows={1} aria-label="Pregunta al asistente" placeholder={aiOn ? "Pregunta a tus datos…" : "Activa el asistente para preguntar"} disabled={!aiOn || busy}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
             className="min-h-[2.5rem] flex-1 resize-none overflow-y-auto bg-transparent px-2 py-2 text-sm focus:outline-none disabled:opacity-50"
@@ -7976,7 +7993,7 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
               setAbrir(destino); // despliega el grupo correspondiente
             }} />
           <button type="button" onClick={() => { try { localStorage.setItem("finz:primeros-ocultos", "1"); } catch { /* noop */ } setPrimerosOcultos(true); }}
-            className="text-[11px] font-medium text-slate-400 hover:text-slate-600 hover:underline focus-visible:outline-none">
+            className="text-[11px] font-medium text-slate-400 hover:text-slate-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500">
             No volver a mostrar
           </button>
         </Grupo>
@@ -8058,7 +8075,7 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
         <section>
           <h3 className="text-sm font-semibold">Conexión bancaria (Enable Banking)</h3>
           <p className="mt-1 text-xs text-slate-500">Conecta tus bancos y baja los movimientos automáticamente, sin CSV. Puedes conectar varios.</p>
-          {onAsistente && <button type="button" onClick={() => { onClose(); onAsistente(); }} className="mt-1 text-xs font-semibold hover:underline focus-visible:outline-none" style={{ color: C.accent }}>Abrir el asistente de conexión paso a paso</button>}
+          {onAsistente && <button type="button" onClick={() => { onClose(); onAsistente(); }} className="mt-1 text-xs font-semibold hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500" style={{ color: C.accent }}>Abrir el asistente de conexión paso a paso</button>}
           <div className="mt-2 space-y-2">
             <label className="block text-xs text-slate-600">URL del backend (tu Worker)
               <input value={bank.workerUrl} onChange={(e) => bank.onChange({ workerUrl: e.target.value })} placeholder="https://…workers.dev" autoCapitalize="off" autoCorrect="off" spellCheck={false}
@@ -8138,8 +8155,8 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
                           <div className="mt-1.5 rounded-lg px-2 py-1.5 text-[11px] leading-relaxed" style={{ background: C.warnSoft, color: C.warn }}>
                             Hay {nfNum.format(otros.length)} movimientos que pertenecen a <strong>otra cuenta de la sesión actual</strong>, no a {c.accountName || "la que sigues"}.
                             <span className="mt-1 flex flex-wrap gap-2">
-                              <button type="button" onClick={() => onDrillIds?.(otros, "Movimientos de otra cuenta")} className="font-semibold underline focus-visible:outline-none">Verlos primero</button>
-                              <button type="button" onClick={() => bank.onTrashOtherAccounts(c.aspsp, c.accountUid, accs.map((a) => a.uid))} className="font-semibold underline focus-visible:outline-none">Enviarlos a la papelera</button>
+                              <button type="button" onClick={() => onDrillIds?.(otros, "Movimientos de otra cuenta")} className="font-semibold underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500">Verlos primero</button>
+                              <button type="button" onClick={() => bank.onTrashOtherAccounts(c.aspsp, c.accountUid, accs.map((a) => a.uid))} className="font-semibold underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500">Enviarlos a la papelera</button>
                             </span>
                           </div>
                         );
@@ -8459,11 +8476,11 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
                   <div key={pat} className="flex items-center justify-between gap-2 rounded-lg bg-white px-2.5 py-1.5">
                     <span className="min-w-0 flex-1 truncate text-xs text-slate-700" title={pat}>{pat}</span>
                     <span className="shrink-0 text-[11px] font-medium text-slate-500">{asset}</span>
-                    <button type="button" onClick={() => onForgetAssetMem(pat)} aria-label={`Olvidar ${pat}`} className="shrink-0 rounded-md p-1 text-slate-300 hover:bg-rose-50 hover:text-rose-600 focus-visible:outline-none"><Trash2 size={12} /></button>
+                    <button type="button" onClick={() => onForgetAssetMem(pat)} aria-label={`Olvidar ${pat}`} className="shrink-0 rounded-md p-1 text-slate-300 hover:bg-rose-50 hover:text-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"><Trash2 size={12} /></button>
                   </div>
                 ))}
               </div>
-              <button type="button" onClick={onForgetAllAssetMem} className="mt-2 text-[11px] font-medium text-slate-400 underline hover:text-rose-600 focus-visible:outline-none">Olvidar todas</button>
+              <button type="button" onClick={onForgetAllAssetMem} className="mt-2 text-[11px] font-medium text-slate-400 underline hover:text-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500">Olvidar todas</button>
             </div>
           )}
 
@@ -8989,7 +9006,7 @@ function AppMain() {
   const [movEdit, setMovEdit] = useState(null); // null | { mode:"new" } | { mode:"edit", mov }
   const [granularity, setGranularity] = useState("month");
   const [imp, setImp] = useState(null);
-  const [pendingNotice, setPendingNotice] = useState(0);
+  const [, setPendingNotice] = useState(0); // el aviso se muestra por otra vía; se conserva el setter
   const [pendingOpen, setPendingOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [error, setError] = useState(null);
@@ -9438,7 +9455,7 @@ function AppMain() {
     persistSync({ auto: true });
     const r = await syncPull({ silent: true, confirmReplace: true });
     if (r?.empty) await syncPush({ silent: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [syncPull, syncPush, persistSync]);
   const [entrarOpen, setEntrarOpen] = useState(null); // null | { inicial?: {u,t}, auto?: bool }
   const entrar = useCallback(async (u, t) => {
@@ -9518,7 +9535,7 @@ function AppMain() {
     fetch(bankBase() + "/version").then((r) => (r.ok ? r.json() : null))
       .then((d) => setBackendInfo(d && Array.isArray(d.rasgos) ? d : { viejo: true }))
       .catch(() => setBackendInfo(null));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [settingsOpen, bankCfg.workerUrl]);
   // Diagnóstico para pedir ayuda: estado de la app SIN datos personales (ni importes, ni
   // conceptos, ni token, ni claves). Se copia al portapapeles.
@@ -10435,7 +10452,7 @@ function AppMain() {
     setMovs((ms) => ms.map((m) => (m.id === mov.id ? { ...m, extra: !m.extra } : m)));
   };
   const splitMov = (mov, splits) => {
-    setMovs((ms) => ms.map((m) => (m.id === mov.id ? { ...m, splits, category: splits ? splits[0].cat : m.category } : m)));
+    setMovs((ms) => ms.map((m) => (m.id === mov.id ? { ...m, splits, category: splits ? splits[0].cat : m.category, confirmed: true } : m)));
   };
   // Apodo/nota por movimiento: un nombre humano para conceptos crípticos ("Impuestos"
   // en vez de "TRANSFER 4471…"). Repetido en varios movimientos, agrupa para gráficos.
@@ -10500,7 +10517,7 @@ function AppMain() {
   };
   const restoreMovs = (ids) => {
     const set = new Set(Array.isArray(ids) ? ids : [ids]);
-    setMovs((ms) => ms.map((m) => { if (!set.has(m.id)) return m; const { omit, ...rest } = m; return rest; }));
+    setMovs((ms) => ms.map((m) => { if (!set.has(m.id)) return m; const { omit: _omit, ...rest } = m; return rest; }));
   };
   const purgeMovs = (ids) => {
     const set = new Set(Array.isArray(ids) ? ids : [ids]);
@@ -10925,6 +10942,8 @@ function AppMain() {
         :root[data-theme="dark"] .bg-slate-200, :root[data-theme="dark"] .bg-slate-200\\/70 { background-color: #2C313B }
         :root[data-theme="dark"] .text-slate-300 { color: ${TOKENS.dark.faint} }
         :root[data-theme="dark"] .text-slate-400 { color: ${TOKENS.dark.faint} }
+        /* Gris de textos secundarios: el slate-400 de Tailwind da 2,6:1 sobre blanco. */
+        :root:not([data-theme="dark"]) .text-slate-400 { color: ${TOKENS.light.faint} }
         :root[data-theme="dark"] .text-slate-500 { color: ${TOKENS.dark.muted} }
         :root[data-theme="dark"] .text-slate-600 { color: ${TOKENS.dark.muted} }
         :root[data-theme="dark"] .text-slate-700 { color: ${TOKENS.dark.ink2} }
@@ -10987,7 +11006,7 @@ function AppMain() {
                   {/* Estado del banco a la vista. Rojo = permiso caducado o error; ámbar = lleva más
                       de día y medio sin sincronizar; verde = al día. Pulsar abre Ajustes. */}
                   {bankStatus && (
-                    <button type="button" onClick={() => setSettingsOpen(true)} className="flex items-center gap-1.5 truncate text-left text-[11px] text-white/55 hover:text-white/85 focus-visible:outline-none" style={tnum}
+                    <button type="button" onClick={() => setSettingsOpen(true)} className="flex items-center gap-1.5 truncate text-left text-[11px] text-white/55 hover:text-white/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500" style={tnum}
                       title={bankStatus.expired ? "El permiso del banco ha caducado: reconecta en Ajustes" : bankStatus.failed ? "La última sincronización falló: mira Ajustes" : bankStatus.last ? new Date(bankStatus.last).toLocaleString("es-ES") : "Aún no se ha sincronizado"}>
                       <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: bankStatus.expired || bankStatus.failed ? "#f87171" : bankStatus.stale || !bankStatus.last ? "#fbbf24" : "#4ade80" }} />
                       <span className="truncate">
@@ -11050,7 +11069,9 @@ function AppMain() {
             })}
           </nav>
 
-          {tab !== "asistente" && agg && (
+          {/* Ideas (recap, plan, presupuesto) usa todo el histórico: los filtros no le afectan y
+              enseñarlos ahí confundía. */}
+          {tab !== "asistente" && tab !== "ideas" && agg && (
             <div className="mb-4">
               <FiltersBar filters={filters} setFilters={setFilters} monthsAvail={monthsAvail} yearsAvail={yearsAvail} assets={assets} groups={groups} />
             </div>
@@ -11124,7 +11145,7 @@ function AppMain() {
             const on = tab === t.id;
             return (
               <button key={t.id} type="button" onClick={() => { setTab(t.id); setDrill(null); }}
-                className="flex flex-1 flex-col items-center gap-0.5 py-2 text-[10px] font-medium focus-visible:outline-none"
+                className="flex flex-1 flex-col items-center gap-0.5 py-2 text-[10px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
                 style={{ color: on ? C.accent : C.muted }}>
                 <I size={20} strokeWidth={on ? 2.4 : 1.9} /> {t.short || t.label}
               </button>
@@ -11153,7 +11174,7 @@ function AppMain() {
           movs={drillMovs}
           onClose={() => setDrill(null)} onRecat={recat} onReasset={reasset} onReassetAll={reassetAll} onCreateAsset={createAsset} onToggleExtra={toggleExtra}
           onToggleGroup={toggleGroup} onCreateGroup={createGroupFromMov} onNote={setNote} onDelete={deleteMovs} onSetAmount={setAmount}
-          onEditMov={(m) => setMovEdit({ mode: "edit", mov: m })}
+          onEditMov={(m) => setMovEdit({ mode: "edit", mov: m })} onSplit={splitMov}
         />
       )}
       {vueltaAjena && <VueltaOtroNavegador url={vueltaAjena} onClose={() => {
