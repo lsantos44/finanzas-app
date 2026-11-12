@@ -11133,7 +11133,7 @@ function AppMain() {
             {aiDetail
               ? "Has permitido que el asistente consulte movimientos individuales."
               : "El asistente recibe totales y nombres de comercios, nunca movimientos uno a uno ni nombres de personas."}
-            <span className="mt-1 block text-[10px] text-slate-400">versión {BUILD_STAMP} · <a href="/privacidad.html" className="underline hover:text-slate-600">Privacidad</a></span>
+            <span className="mt-1 block text-[10px] text-slate-400">versión {BUILD_STAMP} · <a href="/privacidad.html" className="underline hover:text-slate-600">Privacidad</a> · <a href="https://github.com/lsantos44/finanzas-app" target="_blank" rel="noopener noreferrer" className="underline hover:text-slate-600">Código fuente (AGPL-3.0)</a></span>
           </footer>
         </div>
       )}
