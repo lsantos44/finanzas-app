@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { runQuery } from "../src/App.jsx";
+import { runQuery } from "../src/core.js";
 
 const D = (s) => new Date(s + "T12:00:00");
 const mov = (id, concept, amount, date, category, extra = {}) => ({ id, concept, pattern: concept, amount, date: D(date), category, confirmed: true, ...extra });

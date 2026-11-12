@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeBankSaldo } from "../src/App.jsx";
+import { computeBankSaldo } from "../src/core.js";
 
 const D = (s) => new Date(s + "T12:00:00");
 const T = (h) => new Date(`2026-11-11T${h}:00`).getTime();

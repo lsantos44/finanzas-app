@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { makeAccessLink, abrirAcceso, parseAccessLink } from "../src/App.jsx";
+import { makeAccessLink, abrirAcceso, parseAccessLink } from "../src/core.js";
 
 describe("enlace de acceso cifrado", () => {
   it("ida y vuelta con la clave correcta; falla con otra", async () => {

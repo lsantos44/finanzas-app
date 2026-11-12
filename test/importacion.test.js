@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseEsNumber, parseDateAny, detectDelimiter, tokenizeCSV, analyzeRows, buildMovements } from "../src/App.jsx";
+import { parseEsNumber, parseDateAny, detectDelimiter, tokenizeCSV, analyzeRows, buildMovements } from "../src/core.js";
 
 describe("importes y fechas", () => {
   it("números en formato español y signos", () => {

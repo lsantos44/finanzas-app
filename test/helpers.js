@@ -1,4 +1,4 @@
-import { normalizePattern } from "../src/App.jsx";
+import { normalizePattern } from "../src/core.js";
 
 let id = 1;
 // Movimiento de prueba. `category` lo marca como ya clasificado (historial).
