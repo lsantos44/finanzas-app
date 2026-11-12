@@ -37,3 +37,15 @@ test("Activos: el detalle de ingresos/gastos no desplaza la página de lado", as
   await expect(panel).toBeHidden();
   expect(await page.evaluate(() => document.body.style.overflow)).toBe("");
 });
+
+test("dividir un movimiento entre dos categorías", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: /demo con datos de ejemplo/i }).click();
+  await page.getByRole("button", { name: "Importar", exact: true }).click();
+  await page.getByRole("navigation", { name: "Secciones" }).filter({ visible: true }).getByRole("button", { name: /Activos/ }).click();
+  await page.locator("table tbody button", { hasText: "€" }).nth(0).click();
+  const panel = page.getByRole("dialog", { name: /Movimientos de/ });
+  await panel.getByRole("button", { name: "Dividir movimiento" }).first().click();
+  await panel.getByRole("button", { name: "Guardar división" }).click();
+  await expect(panel.getByText("dividido").first()).toBeVisible();
+});

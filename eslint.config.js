@@ -19,7 +19,7 @@ export default [
     settings: { react: { version: "18.3" } },
     rules: {
       "react/jsx-uses-vars": "error", "react/jsx-uses-react": "off",
-      "react/jsx-key": "error", "react/jsx-no-undef": "error", "react/no-danger": "error",
+      "react/jsx-key": "error", "react/jsx-no-undef": "error", "react/no-danger": "error", "react/jsx-no-duplicate-props": "error",
       "react/jsx-no-target-blank": "error",
       "react-hooks/rules-of-hooks": "error", "react-hooks/exhaustive-deps": "warn",
       "no-unused-vars": ["warn", { args: "none", caughtErrors: "none", varsIgnorePattern: "^_" }],
