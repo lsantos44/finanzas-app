@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MDLite } from "../src/App.jsx";
+import { MDLite } from "../src/pestanas/asistente.jsx";
 
 const html = (t) => renderToStaticMarkup(<MDLite text={t} />);
 
