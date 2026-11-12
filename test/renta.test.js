@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { calcRentaInmueble, calcImputacion } from "../src/App.jsx";
+import { calcRentaInmueble, calcImputacion } from "../src/core.js";
 
 const ficha = { titularidad: 50, diasArrendado: 365, valorCatastral: 100000, pctConstruccion: 60, coste: 150000, reduccion: 60, intereses: { 2025: 2000 }, catastralRevisado: true };
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { tipoActivo } from "../src/App.jsx";
+import { tipoActivo } from "../src/core.js";
 
 describe("tipo de activo", () => {
   it("se deduce del uso, el icono y el nombre", () => {

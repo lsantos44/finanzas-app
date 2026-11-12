@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifyForImport, learnedRule, DEFAULT_RULES, deserializeMovs } from "../src/App.jsx";
+import { classifyForImport, learnedRule, DEFAULT_RULES, deserializeMovs } from "../src/core.js";
 import { mk } from "./helpers.js";
 
 const cat = (dec, m) => dec.get(m.id).cat;

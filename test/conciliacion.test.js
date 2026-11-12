@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { conciliar } from "../src/App.jsx";
+import { conciliar } from "../src/core.js";
 
 const conn = { aspsp: "CaixaBank" };
 let id = 1;
