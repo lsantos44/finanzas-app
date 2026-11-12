@@ -1,7 +1,6 @@
 import { C, EMOJI_CHOICES, GASTO_SORTED, INGRESO_SORTED, TRANSFER_SORTED, fmtE, fmtPct, lockBodyScroll, overlayStack, tnum, tryHistory, unlockBodyScroll } from "../core.js";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Loader2, Minus, TrendingDown, TrendingUp, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Line, LineChart, ResponsiveContainer } from "recharts";
 
 /* ============================================================
    ÁTOMOS DE INTERFAZ
@@ -176,34 +175,7 @@ function Pill({ children, color, soft }) {
   return <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium" style={{ background: soft, color }}>{children}</span>;
 }
 
-function MiniSpark({ data, color }) {
-  if (!data || data.length < 2) return null;
-  return (
-    <div style={{ height: 32, width: 88 }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data.map((v, i) => ({ i, v }))} margin={{ top: 4, bottom: 4, left: 0, right: 0 }}>
-          <Line type="monotone" dataKey="v" stroke={color} strokeWidth={1.75} dot={false} isAnimationActive={false} />
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
 
-function KPI({ label, value, sub, color, icon, spark, sparkColor }) {
-  return (
-    <Card className="p-4">
-      <div className="flex items-start justify-between">
-        <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</div>
-        {icon && <div className="flex h-7 w-7 items-center justify-center rounded-lg" style={{ background: C.accentSoft, color: C.accent }}>{icon}</div>}
-      </div>
-      <div className="mt-1.5 flex items-end justify-between gap-2">
-        <div className="text-xl font-semibold sm:text-2xl" style={{ ...tnum, color: color || C.ink }}>{value}</div>
-        {spark && <MiniSpark data={spark} color={sparkColor || C.accent} />}
-      </div>
-      {sub && <div className="mt-0.5 text-xs text-slate-500">{sub}</div>}
-    </Card>
-  );
-}
 
 function HBar({ pct, color }) {
   return (
@@ -308,8 +280,6 @@ export {
   Money,
   Spinner,
   Pill,
-  MiniSpark,
-  KPI,
   HBar,
   DeltaBadge,
   Grupo,

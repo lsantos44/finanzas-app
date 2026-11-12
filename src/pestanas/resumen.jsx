@@ -1,6 +1,6 @@
 import { C, INTERNAL_SET, MACRO_EMOJI, buildHierarchy, buildRecap, catColor, fmtDateShort, fmtE, fmtE0, fmtMonths, fmtPct, isRefundPart, macroColor, monthKey, monthLabelLong, nfNum, tnum } from "../core.js";
-import { Btn, Card, HBar, KPI, Seg } from "../ui/comunes.jsx";
-import { DonutCategories, SaldoChart, StackedTime } from "../ui/graficos.jsx";
+import { Btn, Card, HBar, Seg } from "../ui/comunes.jsx";
+import { DonutCategories, KPI, SaldoChart, StackedTime } from "../ui/graficos.jsx";
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, CalendarDays, ChevronLeft, ChevronRight, PiggyBank, Search, Star, TrendingUp, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
