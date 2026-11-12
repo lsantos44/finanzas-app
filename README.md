@@ -46,3 +46,18 @@ La app no envía tus movimientos a ningún servidor del autor. Eso sí: la web q
 (misfinanzas.cc) la publica el autor, y quien controla una web controla el código que ejecuta
 tu navegador. Si prefieres no depender de nadie, publica tu propia copia de la app. Detalle de
 qué se envía a quién (banco, IA): [privacidad](public/privacidad.html).
+
+---
+
+## Licencia
+
+Copyright (C) 2026 lsantos44.
+
+Este programa es software libre: puedes redistribuirlo y modificarlo bajo los términos de la
+**GNU Affero General Public License, versión 3** (AGPL-3.0), publicada por la Free Software
+Foundation. Se distribuye **sin ninguna garantía**, ni siquiera la implícita de
+comerciabilidad o idoneidad para un fin concreto. El texto completo está en [LICENSE](LICENSE).
+
+En la práctica: puedes usarlo, instalar tu propia copia y modificarla. Si ofreces a otras
+personas una versión modificada (también como servicio web), tienes que publicar su código
+fuente con la misma licencia.
