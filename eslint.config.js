@@ -27,4 +27,6 @@ export default [
     },
   },
   { files: ["test/**", "e2e/**", "*.config.js"], languageOptions: { globals: { ...globals.node } } },
+  // Plantilla del service worker: la compilación sustituye __ARCHIVOS__ por la lista de archivos.
+  { files: ["build/sw.js"], languageOptions: { globals: { ...globals.serviceworker, __ARCHIVOS__: "readonly" } } },
 ];

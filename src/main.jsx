@@ -11,3 +11,8 @@ import App from "./App.jsx";
 // y useBackClose empuja/consume entradas del historial dentro de un efecto. El doble
 // montaje produce saltos de "atrás" que no ocurren en producción y despistan al mirar.
 createRoot(document.getElementById("root")).render(<App />);
+
+// Copia del programa en el dispositivo: la app abre aunque Cloudflare no responda (ver build/sw.js).
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => { navigator.serviceWorker.register("/sw.js").catch(() => { /* sin copia: la app funciona igual online */ }); });
+}

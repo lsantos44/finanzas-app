@@ -47,6 +47,8 @@ export {
 };
 
 let MOV_ID = 1;
+// Error de conexión (no una respuesta de error del servidor): fetch falla o no contesta a tiempo.
+const esDeRed = (e) => e?.name === "TypeError" || /no hubo respuesta|failed to fetch|load failed|network/i.test(e?.message || "");
 
 class ErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { error: null }; }
@@ -444,6 +446,9 @@ function AppMain() {
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncMsg, setSyncMsg] = useState(null);
   const [syncConflict, setSyncConflict] = useState(null); // { version, updatedAt }
+  // Tu servidor no contesta (sin cobertura, o las operadoras bloqueando Cloudflare en jornada de
+  // fútbol). La app sigue con lo que hay en el dispositivo y lo reintenta sola.
+  const [sinServidor, setSinServidor] = useState(false);
   const persistSync = useCallback((patch) => setSyncCfg((c) => { const n = { ...c, ...patch }; saveSync(n); return n; }), []);
 
   // El cuerpo que se sube: mismo formato que la copia exportable, para poder restaurar entre ambas
@@ -529,10 +534,13 @@ function AppMain() {
       // Lo pendiente queda subido, salvo que hayas cambiado algo mientras tanto.
       const pend = Number(loadSync().pendiente) || 0;
       persistSync({ version: data.version, lastPush: Date.now(), ...(pend && pend <= t0 ? { pendiente: null } : {}) });
-      setSyncConflict(null);
+      setSyncConflict(null); setSinServidor(false);
       if (!silent) setSyncMsg({ kind: "ok", text: `Guardado en tu Worker (versión ${data.version}).` });
       return { ok: true };
-    } catch (e) { if (!silent) setSyncMsg({ kind: "err", text: "No se pudo guardar: " + e.message }); return { ok: false }; }
+    } catch (e) {
+      if (esDeRed(e)) setSinServidor(true);
+      if (!silent) setSyncMsg({ kind: "err", text: "No se pudo guardar: " + e.message }); return { ok: false };
+    }
     finally { setSyncBusy(false); }
   }, [persistSync, syncPayload, anotarEnvio]);
   const syncPush = useCallback((opts) => {
@@ -558,10 +566,13 @@ function AppMain() {
       }
       const n = applyBackupPayload(data.payload);
       persistSync({ version: data.version, lastPull: Date.now(), pendiente: null });
-      setSyncConflict(null);
+      setSyncConflict(null); setSinServidor(false);
       if (!silent) setSyncMsg({ kind: "ok", text: `Traídos ${nfNum.format(n)} movimientos (versión ${data.version}).` });
       return { ok: true, n, version: data.version };
-    } catch (e) { if (!silent) setSyncMsg({ kind: "err", text: "No se pudo traer: " + e.message }); return { ok: false, text: "No se pudo traer: " + e.message }; }
+    } catch (e) {
+      if (esDeRed(e)) setSinServidor(true);
+      if (!silent) setSyncMsg({ kind: "err", text: "No se pudo traer: " + e.message }); return { ok: false, text: "No se pudo traer: " + e.message };
+    }
     finally { setSyncBusy(false); }
   }, [applyBackupPayload, persistSync]);
 
@@ -648,6 +659,20 @@ function AppMain() {
     return () => window.removeEventListener("visibilitychange", flush);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [booted, syncCfg.auto, syncConflict]);
+
+  // Sin servidor: se reintenta cada minuto y medio y al recuperar la red. Si hay cambios de aquí
+  // sin subir, se suben; si no, se trae lo del servidor (que es igual o más nuevo que lo de aquí).
+  useEffect(() => {
+    if (!sinServidor || !booted || !syncCfg.auto || !bankBase()) return;
+    const intentar = () => {
+      if (loadSync().pendiente) syncPush({ silent: true });
+      else { syncSuppressRef.current = Date.now() + 6000; syncPull({ silent: true }); }
+    };
+    const t = setInterval(intentar, 90000);
+    window.addEventListener("online", intentar);
+    return () => { clearInterval(t); window.removeEventListener("online", intentar); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sinServidor, booted, syncCfg.auto]);
 
   /* ---------- Conexión bancaria (Enable Banking, vía el Worker) — MULTI-BANCO ---------- */
   const [bankCfg, setBankCfg] = useState(loadBank);
@@ -2284,6 +2309,12 @@ function AppMain() {
             </div>
           </header>
 
+          {sinServidor && (
+            <div role="status" className="mb-4 flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+              <div><strong>Sin conexión con tu servidor.</strong> Estás viendo los datos de este dispositivo; lo que cambies se guarda aquí y se subirá solo cuando vuelva la conexión. Puede ser tu cobertura o un bloqueo temporal de las operadoras a Cloudflare (pasa en jornada de fútbol).</div>
+            </div>
+          )}
           {error && (
             <div className="mb-4 flex items-start justify-between gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
               <div className="flex items-start gap-2"><AlertTriangle size={16} className="mt-0.5 shrink-0" /><div>{error}</div></div>
