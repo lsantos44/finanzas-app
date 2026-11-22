@@ -75,7 +75,7 @@ function MovEditModal({ initial, assets, onCreateAsset, onSave, onClose }) {
    marca como resuelto al vuelo: eliges categoría y activo, y al pulsar
    "Guardar cambios" se aplican juntos (así no desaparece antes de asignarle
    también el activo). */
-function PendientesPanel({ movsPend, amb, assets, setAssets, applyPending, aiOn, ai, autoRanRef, onClose, tagGroups, onToggleGroup, onCreateGroup, onRecat, onReasset, onNote, onNoteAll, onSetAmount, onDelete }) {
+function PendientesPanel({ movsPend, amb, assets, setAssets, applyPending, aiOn, ai, autoRanRef, aiEjemplos, onClose, tagGroups, onToggleGroup, onCreateGroup, onRecat, onReasset, onNote, onNoteAll, onSetAmount, onDelete }) {
   const [edits, setEdits] = useState({}); // pattern -> { cat, asset }
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState(null);
@@ -142,18 +142,17 @@ function PendientesPanel({ movsPend, amb, assets, setAssets, applyPending, aiOn,
     try {
       // Sin las operaciones genéricas: la IA no puede saber para qué es una "TRANSFER INMEDIATA".
       const payload = [...new Map(groups.filter((g) => identifiesMerchant(g.pattern)).slice(0, 200).map((g) => [g.pattern, { pattern: g.pattern, sign: g.total > 0 ? 1 : -1 }])).values()];
-      const { map, unresolved: left } = await aiCategorizePatterns(payload, false, ai);
-      if (Object.keys(map).length === 0) { if (!silent) setAiError("La IA no reconoció ninguno de estos comercios. Clasifícalos a mano."); return; }
-      applySuggestions(map);
+      const { map, unresolved: left } = await aiCategorizePatterns(payload, false, ai, aiEjemplos?.() || []);
       setUnresolved(left);
       setWebDone(false);
-      const n = Object.keys(map).length - left.length;
-      setAiNote(`${n} de ${payload.length} comercios reconocidos sin salir a internet.`);
+      if (Object.keys(map).length === 0) { setAiNote("La IA no ha reconocido ninguno de estos comercios. Clasifícalos a mano o búscalos en la web."); return; }
+      applySuggestions(map);
+      setAiNote(`${Object.keys(map).length} de ${payload.length} comercios reconocidos sin salir a internet.`);
     } catch (err) {
       // En el disparo automático no gritamos en rojo, pero callarse del todo deja al
       // usuario sin saber por qué no hay sugerencias. Un aviso discreto y accionable.
       if (silent) {
-        setAiNote("Sin sugerencias automáticas: no hay ningún proveedor de IA disponible. Configúralo en Ajustes → Inteligencia artificial.");
+        setAiNote("Sin sugerencias automáticas. " + describeError(err) + " Puedes reintentarlo con el botón de la IA.");
         return;
       }
       setAiError(describeError(err));
@@ -168,7 +167,7 @@ function PendientesPanel({ movsPend, amb, assets, setAssets, applyPending, aiOn,
     try {
       const byPattern = new Map(groups.map((g) => [g.pattern, g]));
       const payload = unresolved.map((p) => ({ pattern: p, sign: (byPattern.get(p)?.total ?? -1) > 0 ? 1 : -1 }));
-      const { map, unresolved: left, searches } = await aiCategorizePatterns(payload, true, ai);
+      const { map, unresolved: left, searches } = await aiCategorizePatterns(payload, true, ai, aiEjemplos?.() || []);
       applySuggestions(map);
       setUnresolved(left);
       setWebDone(true);
