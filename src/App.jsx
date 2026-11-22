@@ -457,7 +457,21 @@ function AppMain() {
     bank: { ...loadBank(), token: "" },
   }), [rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem, movs]);
 
-  const syncPush = useCallback(async ({ silent, force, payload } = {}) => {
+  // Cada subida lleva una marca al azar, y este navegador recuerda las últimas que envió. Si el
+  // servidor rechaza una subida porque «otro dispositivo guardó después» pero la copia del
+  // servidor lleva una de esas marcas, ese otro dispositivo es este mismo: una subida anterior
+  // llegó al servidor y la respuesta se perdió (en el iPhone pasa al cerrar la app justo mientras
+  // sube). Entonces no hay nada que decidir y se vuelve a subir sobre esa versión.
+  const anotarEnvio = useCallback((id) => {
+    const enviados = [id, ...((loadSync().enviados || []).filter((x) => x !== id))].slice(0, 8);
+    saveSync({ ...loadSync(), enviados });
+    setSyncCfg((c) => ({ ...c, enviados }));
+  }, []);
+  // Las subidas van de una en una: si el temporizador y el cierre de la app suben a la vez, la
+  // segunda salía con la versión vieja y el servidor la tomaba por otro dispositivo.
+  const pushColaRef = useRef(Promise.resolve());
+
+  const syncPushUnaVez = useCallback(async ({ silent, force, payload } = {}) => {
     const url = bankBase();
     if (!url) { if (!silent) setSyncMsg({ kind: "err", text: "Pon la URL del backend (tu Worker) en la sección de arriba." }); return; }
     setSyncBusy(true); if (!silent) setSyncMsg(null);
@@ -487,11 +501,25 @@ function AppMain() {
           if (!seguir) { setSyncMsg({ kind: "info", text: "Cancelado. No se ha subido nada." }); return; }
         }
       }
-      const res = await fetch(url + "/store", {
+      const envio = Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+      const cuerpo = { ...(payload || syncPayload()), envio };
+      anotarEnvio(envio);
+      const subir = (v) => fetch(url + "/store", {
         method: "PUT", headers: { ...bankHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ baseVersion, payload: payload || syncPayload() }),
+        body: JSON.stringify({ baseVersion: v, payload: cuerpo }),
       });
-      const data = await res.json().catch(() => ({}));
+      let res = await subir(baseVersion);
+      let data = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        // ¿La versión «más nueva» del servidor la subió este mismo navegador?
+        const cur = await bankFetch("/store", 25000).catch(() => null);
+        const curData = cur?.ok ? await cur.json().catch(() => null) : null;
+        const marca = curData?.payload?.envio;
+        if (marca && (loadSync().enviados || []).includes(marca)) {
+          res = await subir(Number(curData.version) || 0);
+          data = await res.json().catch(() => ({}));
+        }
+      }
       if (res.status === 409) {
         setSyncConflict({ version: data.version, updatedAt: data.updatedAt });
         setSyncMsg({ kind: "err", text: `Otro dispositivo guardó después que tú${data.updatedAt ? ` (${new Date(data.updatedAt).toLocaleString("es-ES")})` : ""}. No he subido nada: elige abajo qué conservar.` });
@@ -506,7 +534,12 @@ function AppMain() {
       return { ok: true };
     } catch (e) { if (!silent) setSyncMsg({ kind: "err", text: "No se pudo guardar: " + e.message }); return { ok: false }; }
     finally { setSyncBusy(false); }
-  }, [persistSync, syncPayload]);
+  }, [persistSync, syncPayload, anotarEnvio]);
+  const syncPush = useCallback((opts) => {
+    const turno = pushColaRef.current.then(() => syncPushUnaVez(opts));
+    pushColaRef.current = turno.catch(() => {});
+    return turno;
+  }, [syncPushUnaVez]);
 
   const syncPull = useCallback(async ({ silent, confirmReplace } = {}) => {
     const url = bankBase();

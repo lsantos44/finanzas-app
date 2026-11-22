@@ -78,3 +78,48 @@ test("avisa de un servidor desactualizado y copia un diagnóstico sin datos priv
   expect(d.backend.host).toBe("backend-de-prueba.example");
   expect(texto).not.toMatch(/"token"|Bearer|ACTUAL SERVIDOR/);
 });
+
+// El servidor tiene la versión 7; este dispositivo cree estar en la 6 (la respuesta de su última
+// subida se perdió, como al cerrar la app del iPhone mientras sube).
+async function prepararConflicto(page, marcaServidor) {
+  const subidas = [];
+  await page.route(WORKER + "/**", async (route) => {
+    const req = route.request();
+    const ruta = new URL(req.url()).pathname;
+    if (req.method() === "OPTIONS") return route.fulfill({ status: 204, headers: { "access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "*" } });
+    const cors = { "access-control-allow-origin": "*", "content-type": "application/json" };
+    if (ruta === "/store" && req.method() === "PUT") {
+      const b = JSON.parse(req.postData() || "{}");
+      subidas.push(b);
+      if (b.baseVersion !== 7) return route.fulfill({ status: 409, headers: cors, body: JSON.stringify({ error: "conflicto", conflict: true, version: 7, updatedAt: Date.now() }) });
+      return route.fulfill({ status: 200, headers: cors, body: JSON.stringify({ ok: true, version: 8, updatedAt: Date.now() }) });
+    }
+    if (ruta === "/store") return route.fulfill({ status: 200, headers: cors, body: JSON.stringify({ version: 7, updatedAt: Date.now(), payload: { envio: marcaServidor, movs: { v: 1, movs: [] }, cfg: {} } }) });
+    return route.fulfill({ status: 200, headers: cors, body: "{}" });
+  });
+  await page.addInitScript((w) => {
+    if (sessionStorage.getItem("preparado")) return;
+    sessionStorage.setItem("preparado", "1");
+    localStorage.setItem("finz:bank:v1", JSON.stringify({ workerUrl: w, token: "t", connections: [], pending: null, auto: false }));
+    localStorage.setItem("finz:sync:v1", JSON.stringify({ auto: true, version: 6, pendiente: Date.now() - 5000, enviados: ["marca-de-este-movil"] }));
+    localStorage.setItem("finz:movs:v1", JSON.stringify({ v: 1, movs: [{ id: 1, date: "2026-11-03T12:00:00.000Z", concept: "MERCADONA", pattern: "MERCADONA", amount: -40, category: "Supermercado", confirmed: true }] }));
+  }, WORKER);
+  return subidas;
+}
+
+test("si la versión «más nueva» del servidor la subió este mismo dispositivo, no hay conflicto", async ({ page }) => {
+  const subidas = await prepararConflicto(page, "marca-de-este-movil");
+  await page.goto("/");
+  await expect.poll(() => subidas.map((b) => b.baseVersion)).toEqual([6, 7]);
+  await expect(page.getByText(/otro dispositivo ha guardado después/)).toHaveCount(0);
+  const sync = await page.evaluate(() => JSON.parse(localStorage.getItem("finz:sync:v1")));
+  expect(sync.version).toBe(8);
+  expect(sync.pendiente).toBeFalsy();
+});
+
+test("si la subió otro dispositivo, sigue avisando y no pisa nada", async ({ page }) => {
+  const subidas = await prepararConflicto(page, "marca-de-otro-dispositivo");
+  await page.goto("/");
+  await expect(page.getByText(/otro dispositivo ha guardado después/)).toBeVisible();
+  expect(subidas.map((b) => b.baseVersion)).toEqual([6]);
+});
