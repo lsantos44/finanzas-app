@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback, lazy, Suspense } from "react";
 
 import { Plus, X, AlertTriangle, Search, Wallet, Settings, ClipboardList, Sun, Moon } from "lucide-react";
-import { ALL_TABS, ASSET_EMOJI, BANK_KEY, BUILD_STAMP, C, CATEGORIES, CHATS_KEY, DEFAULT_AI_CFG, DEFAULT_MATERIALIDAD, DEFAULT_REDUCIBLE, DEFAULT_RULES, ENTITY_STOP, GROUP_COLORS, INGRESO_SET, INTERNAL_SET, LLEGA_CON_ENLACE, PRIO, SAMPLE_GROUPS, SNAP_PREFIX, STORE, STORE_KEYS, SYNC_KEY, THEME, THEME_KEY, TOKENS, TRANSFER_SET, VIVIENDA, abrirAcceso, aiProviderLabel, ambKey, ambiguousPatterns, analyzeReceiptTrends, analyzeRows, applyCfg, auditRules, b64u, bankErrDetail, bankIsEmpty, buildAlerts, buildMonthClose, buildMovements, calcImputacion, calcRentaInmueble, classifyForImport, computeBankSaldo, computeOutliers, conciliar, daysBetween, decodeBuffer, dedupeAgainst, describePeriod, deserializeMovs, detectDelimiter, detectRecurring, expandParts, fmtAgo, fmtDate, fmtDateShort, genSampleCSV, identifiesMerchant, isConditional, isProcessorPattern, isRefundPart, isSpreadsheetFile, isoDay, learnedRule, leerAccesoGuardado, listSnapshots, loadBank, loadSync, makeAccessLink, matchRule, merchantEntity, mergeBank, missingIncome, monthKey, monthLabel, monthsCoveredOf, movInGroup, movKey, needsAmount, newConv, nfEUR, nfNum, normalizePattern, parseAccessLink, parseDateAny, parseEsNumber, r2c, rebuildRules, recordarAcceso, recoverBackupFromStore, refundFromHistory, refundIndex, ruleConditionsHold, ruleId, runQuery, saveBank, saveSync, serializeCfg, serializeMovs, setItemSeguro, setTema, shouldSnapshot, sortedRules, spreadsheetToRows, stripAccents, tipoActivo, tnum, tokenizeCSV, totalsOf, upcomingCharges, upcomingIncome, viviendaPorDefecto, writeSnapshot } from "./core.js";
+import { aiEjemplos, ALL_TABS, ASSET_EMOJI, BANK_KEY, BUILD_STAMP, C, CATEGORIES, CHATS_KEY, DEFAULT_AI_CFG, DEFAULT_MATERIALIDAD, DEFAULT_REDUCIBLE, DEFAULT_RULES, ENTITY_STOP, GROUP_COLORS, INGRESO_SET, INTERNAL_SET, LLEGA_CON_ENLACE, PRIO, SAMPLE_GROUPS, SNAP_PREFIX, STORE, STORE_KEYS, SYNC_KEY, THEME, THEME_KEY, TOKENS, TRANSFER_SET, VIVIENDA, abrirAcceso, aiProviderLabel, ambKey, ambiguousPatterns, analyzeReceiptTrends, analyzeRows, applyCfg, auditRules, b64u, bankErrDetail, bankIsEmpty, buildAlerts, buildMonthClose, buildMovements, calcImputacion, calcRentaInmueble, classifyForImport, computeBankSaldo, computeOutliers, conciliar, daysBetween, decodeBuffer, dedupeAgainst, describePeriod, deserializeMovs, detectDelimiter, detectRecurring, expandParts, fmtAgo, fmtDate, fmtDateShort, genSampleCSV, identifiesMerchant, isConditional, isProcessorPattern, isRefundPart, isSpreadsheetFile, isoDay, learnedRule, leerAccesoGuardado, listSnapshots, loadBank, loadSync, makeAccessLink, matchRule, merchantEntity, mergeBank, missingIncome, monthKey, monthLabel, monthsCoveredOf, movInGroup, movKey, needsAmount, newConv, nfEUR, nfNum, normalizePattern, parseAccessLink, parseDateAny, parseEsNumber, r2c, rebuildRules, recordarAcceso, recoverBackupFromStore, refundFromHistory, refundIndex, ruleConditionsHold, ruleId, runQuery, saveBank, saveSync, serializeCfg, serializeMovs, setItemSeguro, setTema, shouldSnapshot, sortedRules, spreadsheetToRows, stripAccents, tipoActivo, tnum, tokenizeCSV, totalsOf, upcomingCharges, upcomingIncome, viviendaPorDefecto, writeSnapshot } from "./core.js";
 import { Card, Seg, Spinner, useBackClose } from "./ui/comunes.jsx";
 import { DrillPanel, FiltersBar, MovEditModal, PendientesPanel } from "./ui/movimientos.jsx";
 import { AsistenteConexion, EmptyState, EntrarModal, MappingModal, ValidationModal, VueltaOtroNavegador } from "./ui/portada.jsx";
@@ -749,6 +749,31 @@ function AppMain() {
   }, [settingsOpen, bankCfg.workerUrl]);
   // Diagnóstico para pedir ayuda: estado de la app SIN datos personales (ni importes, ni
   // conceptos, ni token, ni claves). Se copia al portapapeles.
+  // Una sola vez: lo que acabó en «Otros» en los últimos cuatro meses vuelve a «por clasificar»,
+  // para que la IA lo mire. Antes, si la IA no sabía un comercio, se aprendía «→ Otros» y lo
+  // pequeño se daba por bueno sin preguntar; esos movimientos nunca llegaban a revisarse.
+  useEffect(() => {
+    if (!booted || !aiOn) return;
+    const MARCA = "finz:otros-revisados:v5";
+    try { if (localStorage.getItem(MARCA)) return; } catch { return; }
+    // Con margen: al abrir se trae la copia del servidor, y si llegara después pisaría el cambio.
+    const t = setTimeout(() => {
+      try { localStorage.setItem(MARCA, String(Date.now())); } catch { return; }
+      const desde = Date.now() - 120 * 86400000;
+      setMovs((ms) => {
+        let n = 0;
+        const out = ms.map((m) => {
+          if (m.category !== "Otros" || m.confirmed === false || m.omit || m.splits?.length || !(m.amount < 0)) return m;
+          if (!(new Date(m.date).getTime() >= desde) || !identifiesMerchant(m.pattern)) return m;
+          n++;
+          return { ...m, confirmed: false };
+        });
+        return n ? out : ms;
+      });
+    }, 10000);
+    return () => clearTimeout(t);
+  }, [booted, aiOn]);
+
   const diagnostico = () => {
     const b = loadBank(), sy = loadSync();
     const host = (() => { try { return new URL(b.workerUrl).host; } catch { return b.workerUrl ? "(dirección no válida)" : "(sin backend)"; } })();
@@ -761,7 +786,7 @@ function AppMain() {
       sincronizacion: { automatica: !!sy.auto, version: sy.version || 0, pendiente: !!sy.pendiente, ultimaSubida: fecha(sy.lastPush), ultimaBajada: fecha(sy.lastPull), conflicto: !!syncConflict },
       bancos: (b.connections || []).map((c) => ({ banco: c.aspsp || "(sin nombre)", cuentaElegida: !!c.accountUid, ultimaConsulta: fecha(c.lastSync), ultimoMovimiento: c.lastNewest || null, caducado: !!c.expired, limiteDiario: c.limitedAt || null, error: c.lastError || null })),
       revisionAutomatica: cronInfo ? (cronInfo.viejo ? "backend antiguo" : { cuando: fecha(cronInfo.at), nuevos: cronInfo.nuevos, errores: cronInfo.errores, omitidas: cronInfo.omitidas }) : null,
-      ia: { activa: !!aiOn, proveedor: ai?.provider, servidor: (() => { try { return ai?.baseUrl ? new URL(ai.baseUrl).host : null; } catch { return null; } })(), detalle: !!aiDetail },
+      ia: { activa: !!aiOn, proveedor: ai?.provider, modelo: ai?.model || null, servidor: (() => { try { return ai?.baseUrl ? new URL(ai.baseUrl).host : null; } catch { return null; } })(), detalle: !!aiDetail },
     }, null, 2);
   };
   useEffect(() => {
@@ -1071,7 +1096,7 @@ function AppMain() {
     });
     if (!fresh.length) return 0;
     for (const m of fresh) if (m.bankId) existing.add(m.bankId); // visible ya para la siguiente ingesta
-    const dec = classifyForImport(fresh, movs, rules, { materialidad, assetMem, vivienda: viviendaPorDefecto(assets, movs) });
+    const dec = classifyForImport(fresh, movs, rules, { materialidad, assetMem, vivienda: viviendaPorDefecto(assets, movs), preguntarSinPista: !!aiOn });
     // En otra moneda o sin fecha no se da por bueno: el importe se sumaría como si fueran euros
     // (o en un día que no es). Queda «por revisar», donde se puede convertir el importe.
     const applied = fresh.map((m) => { const x = dec.get(m.id); return { ...m, category: x.cat, assetName: x.asset || undefined, confirmed: m.currency || m.sinFecha ? false : x.confirmed }; });
@@ -1081,7 +1106,7 @@ function AppMain() {
     if (pend > 0) { aiAutoRanRef.current = false; setPendingNotice(pend); }
     return fresh.length;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [movs, rules, materialidad, assetMem, assets]);
+  }, [movs, rules, materialidad, assetMem, assets, aiOn]);
 
   // Candado: todas las sincronizaciones pasan por la misma cola. Es la segunda mitad de la
   // corrección de duplicados: aunque el ref de ids ya cierra la carrera, dos descargas
@@ -1458,7 +1483,7 @@ function AppMain() {
         }
         return base;
       });
-      const decByMov = classifyForImport(fresh, movs, rules, { materialidad, assetMem, vivienda: viviendaPorDefecto(assets, movs) });
+      const decByMov = classifyForImport(fresh, movs, rules, { materialidad, assetMem, vivienda: viviendaPorDefecto(assets, movs), preguntarSinPista: !!aiOn });
       // Aplicar a los movimientos
       const assetNames = new Set();
       const applied = fresh.map((m) => {
@@ -1552,6 +1577,9 @@ function AppMain() {
           continue;
         }
         // Clasificación manual → patrón exacto. Sugerencia de IA aceptada → entidad (generaliza).
+        // «Otros» no es una categoría que aprender: una regla así mandaría ahí ese comercio
+        // para siempre sin volver a preguntar.
+        if (c.fromAI && /^Otros/.test(c.cat || "")) continue;
         if (c.fromAI) {
           const ent = merchantEntity(c.pattern);
           if (ent && ent.length >= 5 && !ENTITY_STOP.has(ent)) addRule(ent, c.cat, c.asset);
@@ -2435,7 +2463,7 @@ function AppMain() {
       )}
       {pendingOpen && (
         <PendientesPanel movsPend={movsPend} amb={ambPend} assets={assets} setAssets={setAssets} applyPending={applyPending}
-          aiOn={aiOn} ai={ai} autoRanRef={aiAutoRanRef} onClose={() => setPendingOpen(false)}
+          aiOn={aiOn} ai={ai} autoRanRef={aiAutoRanRef} aiEjemplos={() => aiEjemplos(movs)} onClose={() => setPendingOpen(false)}
           tagGroups={groups} onToggleGroup={toggleGroup} onCreateGroup={createGroupFromMov}
           onRecat={recat} onReasset={reasset} onNote={setNote} onNoteAll={setNoteAll} onSetAmount={setAmount} onDelete={deleteMovs} />
       )}

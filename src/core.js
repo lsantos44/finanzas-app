@@ -747,13 +747,17 @@ const customRulesOf = (rules) => rules.filter((r) => r.scope === "personal");
 const disabledBaseIdsOf = (rules) => rules.filter((r) => r.scope !== "personal" && r.active === false).map(ruleId);
 
 const ES_HIPOTECA = /HIPOTEC|PRESTAMO HIPOT/i;
-const rebuildRules = (customRules, disabledIds, version = 4) => {
+const rebuildRules = (customRules, disabledIds, version = 5) => {
   const off = new Set(disabledIds || []);
+  // Hasta la v5, cuando la IA no sabía un comercio contestaba «Otros» y aceptar la sugerencia
+  // creaba una regla «comercio → Otros», que luego mandaba ahí todo lo de ese comercio sin
+  // preguntar. Se apagan (no se borran: se pueden reactivar en Revisar reglas).
+  const apagar = (r) => (version < 5 && r.cat === "Otros" && r.active !== false && !isConditional(r) ? { active: false } : {});
   // Tus reglas de hipoteca a «Vivienda» pasan a la categoría propia de la cuota del préstamo.
   // Solo al venir de una configuración anterior (v<4): luego puedes volver a cambiarla.
   const cat = (r) => (version < 4 && r.cat === "Vivienda" && ES_HIPOTECA.test(r.k || "") ? "Hipoteca y préstamos" : migrateCat(r.cat));
   return [
-    ...(customRules || []).map((r) => ({ ...r, cat: cat(r), scope: "personal", prio: r.prio ?? PRIO.personal })),
+    ...(customRules || []).map((r) => ({ ...r, cat: cat(r), scope: "personal", prio: r.prio ?? PRIO.personal, ...apagar(r) })),
     ...DEFAULT_RULES.map((r) => (off.has(ruleId(r)) ? { ...r, active: false } : r)),
   ];
 };
@@ -813,7 +817,7 @@ function auditRules(rules, movs, stats = {}) {
 
 const serializeCfg = ({ rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem }) =>
   JSON.stringify({
-    v: 4, customRules: customRulesOf(rules), disabledRules: disabledBaseIdsOf(rules),
+    v: 5, customRules: customRulesOf(rules), disabledRules: disabledBaseIdsOf(rules),
     assets, groups, budgets, reducible: [...reducible], aiOn, ai, aiProfiles: aiProfiles || [], aiDetail,
     ruleStats: ruleStats || {}, materialidad,
     // Comercio -> activo. Vive en la CONFIG, no en los movimientos: así borrar una carga
@@ -2407,7 +2411,7 @@ function viviendaPorDefecto(assets, movs) {
   return mejor || "Casa";
 }
 
-function classifyForImport(freshMovs, existingMovs, rules, { materialidad = DEFAULT_MATERIALIDAD, assetMem = {}, vivienda = "Casa" } = {}) {
+function classifyForImport(freshMovs, existingMovs, rules, { materialidad = DEFAULT_MATERIALIDAD, assetMem = {}, vivienda = "Casa", preguntarSinPista = false } = {}) {
   const behavior = buildBehaviorModel(existingMovs || []);
   const refunds = refundIndex(existingMovs);
   const amb = ambiguousPatterns(existingMovs);
@@ -2444,7 +2448,9 @@ function classifyForImport(freshMovs, existingMovs, rules, { materialidad = DEFA
     if (generic && guess && guess.source !== "importe") guess = null;
     let trustworthy = !!guess && (guess.source === "comercio" || guess.source === "importe" || guess.conf >= 0.9);
     // Calderilla: se acepta lo que haya y no se pregunta.
-    if (!trustworthy && Math.abs(m.amount) <= materialidad) trustworthy = true;
+    // Sin ninguna pista y con la IA encendida, sí se pregunta: si no, se quedaba en «Otros» sin
+    // que la IA llegara a verlo nunca.
+    if (!trustworthy && Math.abs(m.amount) <= materialidad && !(preguntarSinPista && !guess && identifiesMerchant(m.pattern))) trustworthy = true;
     dec.set(m.id, {
       cat: guess?.cat || (m.amount > 0 ? "Otros ingresos" : "Otros"),
       asset: assetMem[m.pattern] || null, confirmed: trustworthy, source: guess ? guess.source : null, conf: guess?.conf, rule: null,
@@ -3187,9 +3193,38 @@ function estimateWebCostUSD(nPatterns) {
    para poder mandar SOLO esos a una segunda pasada con búsqueda web: buscar en la
    web los cien comercios cuando solo diez son desconocidos multiplica el coste por
    diez sin ganar nada. */
-async function aiCategorizePatterns(patterns, useWeb = false, aiCfg = null) {
+// Pistas para las categorías que un modelo confunde con más facilidad.
+const AI_CAT_HINTS = [
+  "Supermercado: alimentación y droguería (Mercadona, Lidl, Carrefour, Consum, Dia, Alcampo, Eroski)",
+  "Restauración: bares, cafeterías, restaurantes y comida a domicilio (Glovo, Just Eat, Uber Eats)",
+  "Compras: tiendas y comercio online en general (Amazon, El Corte Inglés, AliExpress, Ikea si no es para la casa)",
+  "Ropa: moda y calzado (Zara, Primark, Decathlon si es ropa)",
+  "Hogar: muebles, bricolaje, menaje y limpieza de la casa (Leroy Merlin, Ikea, Bricomart)",
+  "Combustible: gasolineras (Repsol, Cepsa, BP, Galp, Shell) y recarga de coche eléctrico",
+  "Transporte: transporte público, tren, taxis, VTC y peajes",
+  "Parking: aparcamientos y garajes",
+  "Suministros: luz, gas y agua (Iberdrola, Endesa, Naturgy, Canal de Isabel II)",
+  "Telecomunicaciones: móvil, fibra e internet (Movistar, Vodafone, Orange, Digi, MasOrange)",
+  "Suscripciones: servicios digitales periódicos (Netflix, Spotify, Apple, Google, Disney+, HBO)",
+  "Salud: farmacias, clínicas, dentistas, ópticas",
+  "Hipoteca y préstamos: cuotas de préstamos e hipotecas",
+  "Comisiones: comisiones e intereses bancarios",
+].join("; ");
+
+/* Sugerencias de categoría para comercios que la app no sabe clasificar.
+   `ejemplos`: cómo ha clasificado esta persona otros comercios (solo nombre de comercio y
+   categoría). Es lo que más ayuda: cada casa usa las categorías a su manera.
+   «Otros» es la abstención del modelo: nunca se devuelve como sugerencia, va a `unresolved`. */
+async function aiCategorizePatterns(patterns, useWeb = false, aiCfg = null, ejemplos = []) {
   const web = useWeb && aiSupportsWeb(aiCfg);
-  const base = `Clasificas conceptos de movimientos bancarios españoles. Devuelve un objeto JSON donde cada clave es EXACTAMENTE uno de los patrones recibidos y su valor es una categoría EXACTA de esta lista: ${CATEGORIES.join(", ")}. Incluye TODOS los patrones. Si dudas, usa "Otros".`;
+  const base = [
+    "Clasificas conceptos de movimientos bancarios españoles (compras con tarjeta, recibos, adeudos).",
+    "Cada concepto suele ser el nombre de un comercio o empresa, a veces con la ciudad o restos como COMPRA TARJ, RECIBO o números: fíjate en el comercio.",
+    `Devuelve un objeto JSON donde cada clave es EXACTAMENTE uno de los patrones recibidos, copiado sin cambiar nada, y su valor es una categoría EXACTA de esta lista: ${CATEGORIES.join(", ")}.`,
+    `Pistas: ${AI_CAT_HINTS}.`,
+    "Si reconoces el tipo de comercio aunque no lo conozcas en concreto (por ejemplo «FARMACIA LOPEZ» o «BAR EL PUERTO»), elige la categoría más probable.",
+    "Usa \"Otros\" solo si de verdad no puedes ni suponer qué tipo de comercio es. Incluye TODOS los patrones.",
+  ].join(" ");
   const system = web
     ? `${base} Puedes usar la búsqueda web para identificar comercios o emisores que no reconozcas. Tras buscar, tu ÚLTIMO mensaje debe ser SOLO el objeto JSON, sin texto ni marcas de código.`
     : `${base} Responde SOLO con el objeto JSON, sin texto ni marcas de código.`;
@@ -3197,26 +3232,58 @@ async function aiCategorizePatterns(patterns, useWeb = false, aiCfg = null) {
   // Sin web, Haiku basta y cuesta un tercio. Con web el gasto lo dominan los tokens de
   // los resultados, y ahí prefiero el modelo cuyo soporte de la herramienta conozco.
   const model = web ? AI_MODEL.chat : AI_MODEL.classify;
+  const ej = (ejemplos || []).slice(0, 60);
+  const contexto = ej.length ? `Así ha clasificado esta persona otros comercios (úsalo como referencia de sus criterios):\n${ej.map((e) => `${e.pattern} → ${e.cat}`).join("\n")}\n\n` : "";
+  const otros = (c) => /^Otros/.test(c);
 
   // Trocea en lotes pequeños para que la respuesta nunca se trunque, y tolera el fallo de un lote.
   const out = {};
   let anyOk = false, searches = 0, lastErr = null;
   for (let i = 0; i < patterns.length; i += CHUNK_SIZE) {
     const chunk = patterns.slice(i, i + CHUNK_SIZE);
-    const user = `Patrones (cada línea: PATRON | tipo):\n${chunk.map((p) => `${p.pattern} | ${p.sign > 0 ? "ingreso" : "gasto"}`).join("\n")}`;
-    // Presupuesto de tokens generoso y proporcional al lote (evita truncar).
-    const maxTokens = Math.min(4000, 400 + chunk.length * 60);
+    const user = `${contexto}Patrones a clasificar (cada línea: PATRON | tipo):\n${chunk.map((p) => `${p.pattern} | ${p.sign > 0 ? "ingreso" : "gasto"}`).join("\n")}`;
+    // Presupuesto proporcional al lote. Con proveedores propios, holgado: los modelos que
+    // «razonan» gastan parte del presupuesto antes de escribir, y si se agota no queda JSON.
+    const justo = 400 + chunk.length * 60;
+    const maxTokens = Math.min(4000, aiCfg && aiCfg.provider !== "claude" ? Math.max(justo, 4000) : justo);
     try {
       const { text, usage } = await aiText(aiCfg, { system, user, maxTokens, webTools, model });
       searches += usage?.server_tool_use?.web_search_requests || 0;
       const obj = extractJSONObject(text);
-      for (const [k, v] of Object.entries(obj)) if (CATEGORIES.includes(v)) { out[k] = v; anyOk = true; }
+      // Claves tolerantes: algunos modelos cambian mayúsculas, acentos o espacios.
+      const norm = (x) => stripAccents(String(x).toUpperCase()).replace(/\s+/g, " ").trim();
+      const porNorm = new Map(chunk.map((p) => [norm(p.pattern), p.pattern]));
+      for (const [k, v] of Object.entries(obj)) {
+        const pat = chunk.some((p) => p.pattern === k) ? k : porNorm.get(norm(k));
+        if (!pat || !CATEGORIES.includes(v)) continue;
+        anyOk = true;
+        if (!otros(v)) out[pat] = v;
+      }
     } catch (e) { lastErr = e; /* un lote falla pero seguimos con los demás */ }
   }
   if (!anyOk) throw lastErr || new Error("La IA no devolvió ninguna categoría utilizable");
-  // "Otros" no es una respuesta: es la abstención del modelo. Va al residuo.
-  const unresolved = patterns.map((p) => p.pattern).filter((p) => !out[p] || out[p] === "Otros");
+  const unresolved = patterns.map((p) => p.pattern).filter((p) => !out[p]);
   return { map: out, unresolved, searches };
+}
+
+/* Ejemplos para la IA: comercios que ya has clasificado tú (o tus reglas), uno por comercio,
+   los más frecuentes. Fuera transferencias, Bizum y lo que se decide por importe: ahí el
+   concepto suele ser el nombre de una persona y no dice nada del gasto. */
+function aiEjemplos(movs, max = 60) {
+  const amb = ambiguousPatterns(movs);
+  const cuenta = new Map();
+  for (const m of movs || []) {
+    if (m.omit || m.confirmed === false || m.splits?.length || !(m.amount < 0)) continue;
+    const c = m.category;
+    if (!c || /^Otros/.test(c) || !GASTO_SET.has(c) || TRANSFER_SET.has(c) || INTERNAL_SET.has(c)) continue;
+    if (!identifiesMerchant(m.pattern) || needsAmount(m, amb) || TRANSF_CONCEPT_RE.test(stripAccents(String(m.concept || "").toUpperCase()))) continue;
+    const k = m.pattern;
+    const e = cuenta.get(k) || { pattern: k, cats: new Map(), n: 0 };
+    e.n++; e.cats.set(c, (e.cats.get(c) || 0) + 1);
+    cuenta.set(k, e);
+  }
+  return [...cuenta.values()].sort((a, b) => b.n - a.n).slice(0, max)
+    .map((e) => ({ pattern: e.pattern, cat: [...e.cats].sort((a, b) => b[1] - a[1])[0][0] }));
 }
 
 /* Bloqueo de scroll del fondo con contador: dos overlays superpuestos ya no se
@@ -3547,6 +3614,7 @@ const convTitle = (c) => (c.title || (c.msgs.find((m) => m.role === "user")?.con
 function setTema(t) { THEME = t; }
 
 export {
+  aiEjemplos,
   ACCESO_GUARDADO_KEY,
   ACCESS_ITER,
   ACCESS_KEY,
