@@ -1,7 +1,7 @@
 /* Núcleo de Mis finanzas: toda la lógica que no es interfaz (categorías, reglas, importación,
    cálculos, IA, almacenamiento…). Salió de App.jsx tal cual, en el mismo orden; App.jsx
    importa de aquí. Sin React: se puede probar y reutilizar por separado. */
-import { Bot, Car, ClipboardList, LayoutGrid, Sparkles, TrendingUp } from "lucide-react";
+import { Bot, Car, ClipboardList, LayoutGrid, LineChart, Sparkles, TrendingUp } from "lucide-react";
 
 /* ============================================================
    TOKENS DE DISEÑO
@@ -85,6 +85,7 @@ const ALL_TABS = [
   { id: "analisis", label: "Análisis", icon: TrendingUp },
   { id: "clasificar", label: "Clasificación", short: "Clasif.", icon: ClipboardList },
   { id: "activos", label: "Activos", icon: Car },
+  { id: "inversiones", label: "Inversiones", short: "Invers.", icon: LineChart },
   { id: "ideas", label: "Ideas", icon: Sparkles },
   { id: "asistente", label: "Asistente", icon: Bot },
 ];
@@ -815,7 +816,7 @@ function auditRules(rules, movs, stats = {}) {
   return out.sort((a, b) => (b.conflict - a.conflict) || (b.broad - a.broad) || (b.dinero - a.dinero) || (b.hits - a.hits));
 }
 
-const serializeCfg = ({ rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem }) =>
+const serializeCfg = ({ rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem, inversiones }) =>
   JSON.stringify({
     v: 5, customRules: customRulesOf(rules), disabledRules: disabledBaseIdsOf(rules),
     assets, groups, budgets, reducible: [...reducible], aiOn, ai, aiProfiles: aiProfiles || [], aiDetail,
@@ -823,6 +824,8 @@ const serializeCfg = ({ rules, assets, groups, budgets, reducible, aiOn, ai, aiP
     // Comercio -> activo. Vive en la CONFIG, no en los movimientos: así borrar una carga
     // equivocada no se lleva por delante el trabajo de asignar gastos a cada activo.
     assetMem: assetMem || {},
+    // Qué acciones y fondos tienes (los precios no: llegan cada noche del servidor).
+    ...(inversiones && (inversiones.posiciones?.length || inversiones.aportacion) ? { inversiones } : {}),
   });
 function applyCfg(raw, setters) {
   const c = JSON.parse(raw);
@@ -842,6 +845,7 @@ function applyCfg(raw, setters) {
   if (c.ruleStats && typeof c.ruleStats === "object") setters.setRuleStats?.(c.ruleStats);
   if (typeof c.materialidad === "number") setters.setMaterialidad?.(c.materialidad);
   if (c.assetMem && typeof c.assetMem === "object") setters.setAssetMem?.(c.assetMem);
+  if (c.inversiones && typeof c.inversiones === "object" && Array.isArray(c.inversiones.posiciones)) setters.setInversiones?.({ posiciones: c.inversiones.posiciones, aportacion: c.inversiones.aportacion || null });
 }
 
 // Config de la conexión bancaria (URL del Worker, banco, país, cuenta, sesión, token). Se
@@ -3522,6 +3526,7 @@ const RASGOS_BACKEND = {
   "historial-30-dias": "guardar una versión por día del último mes",
   "saldo-por-movimiento": "saldo al día con las revisiones automáticas",
   "permiso-180-dias": "permiso del banco de hasta 180 días (la mitad de reconexiones)",
+  "inversiones": "precios diarios de tus acciones y fondos",
 };
 
 /* Conciliación: ¿cuadran los movimientos con el saldo que da el banco tras cada uno? Día a día,

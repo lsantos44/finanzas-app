@@ -3,6 +3,7 @@ import React, { useState, useMemo, useRef, useEffect, useCallback, lazy, Suspens
 import { Plus, X, AlertTriangle, Search, Wallet, Settings, ClipboardList, Sun, Moon } from "lucide-react";
 import { aiEjemplos, firmaSync, ALL_TABS, ASSET_EMOJI, BANK_KEY, BUILD_STAMP, C, CATEGORIES, CHATS_KEY, DEFAULT_AI_CFG, DEFAULT_MATERIALIDAD, DEFAULT_REDUCIBLE, DEFAULT_RULES, ENTITY_STOP, GROUP_COLORS, INGRESO_SET, INTERNAL_SET, LLEGA_CON_ENLACE, PRIO, SAMPLE_GROUPS, SNAP_PREFIX, STORE, STORE_KEYS, SYNC_KEY, THEME, THEME_KEY, TOKENS, TRANSFER_SET, VIVIENDA, abrirAcceso, aiProviderLabel, ambKey, ambiguousPatterns, analyzeReceiptTrends, analyzeRows, applyCfg, auditRules, b64u, bankErrDetail, bankIsEmpty, buildAlerts, buildMonthClose, buildMovements, calcImputacion, calcRentaInmueble, classifyForImport, computeBankSaldo, computeOutliers, conciliar, daysBetween, decodeBuffer, dedupeAgainst, describePeriod, deserializeMovs, detectDelimiter, detectRecurring, expandParts, fmtAgo, fmtDate, fmtDateShort, genSampleCSV, identifiesMerchant, isConditional, isProcessorPattern, isRefundPart, isSpreadsheetFile, isoDay, learnedRule, leerAccesoGuardado, listSnapshots, loadBank, loadSync, makeAccessLink, matchRule, merchantEntity, mergeBank, missingIncome, monthKey, monthLabel, monthsCoveredOf, movInGroup, movKey, needsAmount, newConv, nfEUR, nfNum, normalizePattern, parseAccessLink, parseDateAny, parseEsNumber, r2c, rebuildRules, recordarAcceso, recoverBackupFromStore, refundFromHistory, refundIndex, ruleConditionsHold, ruleId, runQuery, saveBank, saveSync, serializeCfg, serializeMovs, setItemSeguro, setTema, shouldSnapshot, sortedRules, spreadsheetToRows, stripAccents, tipoActivo, tnum, tokenizeCSV, totalsOf, upcomingCharges, upcomingIncome, viviendaPorDefecto, writeSnapshot } from "./core.js";
 import { Card, Seg, Spinner, useBackClose } from "./ui/comunes.jsx";
+import { INV_VACIO } from "./inversiones.js";
 import { DrillPanel, FiltersBar, MovEditModal, PendientesPanel } from "./ui/movimientos.jsx";
 import { AsistenteConexion, EmptyState, EntrarModal, MappingModal, ValidationModal, VueltaOtroNavegador } from "./ui/portada.jsx";
 
@@ -22,6 +23,7 @@ const perezoso = (cargar, nombre) => lazy(() => cargar().then((m) => {
   throw e;
 }));
 const ActivosTab = perezoso(() => import("./pestanas/activos.jsx"), "ActivosTab");
+const InversionesTab = perezoso(() => import("./pestanas/inversiones.jsx"), "InversionesTab");
 const GruposTab = perezoso(() => import("./pestanas/activos.jsx"), "GruposTab");
 const AsistenteTab = perezoso(() => import("./pestanas/asistente.jsx"), "AsistenteTab");
 const ClasificacionTab = perezoso(() => import("./pestanas/clasificacion.jsx"), "ClasificacionTab");
@@ -228,6 +230,7 @@ function AppMain() {
   // Memoria comercio -> activo. Se aprende sola de lo que ya has asignado a mano y NO se borra
   // al eliminar movimientos: es lo que evita rehacer el trabajo tras una carga equivocada.
   const [assetMem, setAssetMem] = useState({});
+  const [inversiones, setInversiones] = useState(INV_VACIO);
 
   useEffect(() => {
     let cancel = false;
@@ -236,7 +239,7 @@ function AppMain() {
         const [cRaw, mRaw] = await Promise.all([STORE.get(STORE_KEYS.cfg), STORE.get(STORE_KEYS.movs)]);
         if (cancel) return;
         if (cRaw) {
-          try { applyCfg(cRaw, { setAssets, setGroups, setBudgets, setReducible, setRules, setAiOn, setAi, setAiProfiles, setAiDetail, setRuleStats, setMaterialidad, setAssetMem }); } catch {
+          try { applyCfg(cRaw, { setAssets, setGroups, setBudgets, setReducible, setRules, setAiOn, setAi, setAiProfiles, setAiDetail, setRuleStats, setMaterialidad, setAssetMem, setInversiones }); } catch {
             // Antes se ignoraba y, un segundo después, el autoguardado escribía la configuración
             // de fábrica encima: reglas, activos, grupos y presupuestos perdidos sin aviso. Ahora
             // se guarda aparte tal cual (recuperable) y se avisa.
@@ -286,7 +289,7 @@ function AppMain() {
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
-        const cfgStr = serializeCfg({ rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem });
+        const cfgStr = serializeCfg({ rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem, inversiones });
         const movStr = serializeMovs(movs);
         const okC = await STORE.set(STORE_KEYS.cfg, cfgStr);
         const okM = await STORE.set(STORE_KEYS.movs, movStr);
@@ -307,13 +310,13 @@ function AppMain() {
       } catch { setSaveState("error"); }
     }, 900);
     return () => clearTimeout(saveTimer.current);
-  }, [movs, rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem, booted]);
+  }, [movs, rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem, inversiones, booted]);
 
   // Salvavidas: el guardado va con 900 ms de rebote y su cleanup cancela el timer.
   // Cerrar la app dentro de esa ventana perdía el último cambio. Al ocultarse la
   // página volcamos de inmediato lo que haya en curso.
   const stateRef = useRef(null);
-  stateRef.current = { rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, movs, ruleStats, materialidad, assetMem };
+  stateRef.current = { rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, movs, ruleStats, materialidad, assetMem, inversiones };
   useEffect(() => {
     if (!booted) return;
     const flush = (force) => {
@@ -384,7 +387,7 @@ function AppMain() {
     MOV_ID = 1;
     setMovs([]); setAssets([]); setGroups([]); setBudgets({});
     setRules(DEFAULT_RULES); setReducible(new Set(DEFAULT_REDUCIBLE));
-    setRuleStats({}); setMaterialidad(DEFAULT_MATERIALIDAD); setAssetMem({});
+    setRuleStats({}); setMaterialidad(DEFAULT_MATERIALIDAD); setAssetMem({}); setInversiones(INV_VACIO);
     setAi(DEFAULT_AI_CFG); setAiProfiles([]); setAiDetail(false);
     setDrill(null); setImp(null); setPendingNotice(0); setError(null); setTab("resumen");
     setFilters((f) => ({ ...f, periodType: "all", month: "", from: "", to: "", cats: new Set(), assetsSel: new Set(), groupsSel: new Set() }));
@@ -392,7 +395,7 @@ function AppMain() {
 
   const exportJSON = useCallback(() => {
     try {
-      const cfg = JSON.parse(serializeCfg({ rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem }));
+      const cfg = JSON.parse(serializeCfg({ rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem, inversiones }));
       // Privacidad: la clave de API NO viaja en la copia exportada (podrías compartir el
       // archivo). Se queda solo en este navegador; al reimportar la vuelves a poner.
       if (cfg.ai) cfg.ai = { ...cfg.ai, apiKey: "" };
@@ -409,14 +412,14 @@ function AppMain() {
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 3000);
     } catch (e) { setError("No se pudo exportar la copia: " + e.message); }
-  }, [rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, movs, ruleStats, materialidad, assetMem]);
+  }, [rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, movs, ruleStats, materialidad, assetMem, inversiones]);
 
   const applyBackupPayload = useCallback((p, { deArchivo = false } = {}) => {
     const ms = deserializeMovs(JSON.stringify(p.movs));
     // Un archivo puede venir de cualquiera (una «plantilla de reglas» compartida). No debe poder
     // cambiar a dónde van tus datos: ni el servidor ni el proveedor de IA ni si la IA está activa.
     const cfg = deArchivo ? { ...p.cfg, ai: undefined, aiProfiles: undefined, aiOn: undefined, aiDetail: undefined } : p.cfg;
-    applyCfg(JSON.stringify(cfg), { setAssets, setGroups, setBudgets, setReducible, setRules, setAiOn, setAi, setAiProfiles, setAiDetail, setRuleStats, setMaterialidad, setAssetMem });
+    applyCfg(JSON.stringify(cfg), { setAssets, setGroups, setBudgets, setReducible, setRules, setAiOn, setAi, setAiProfiles, setAiDetail, setRuleStats, setMaterialidad, setAssetMem, setInversiones });
     // La config del banco viaja en las copias del servidor (no en las exportadas, que se comparten):
     // así conectas una vez y el resto de dispositivos hereda sesión, cuenta y token.
     // La copia del servidor puede ser ANTERIOR a la sesión bancaria que acabas de crear en este
@@ -457,10 +460,10 @@ function AppMain() {
     app: "finanzas-personales", version: 3, updatedAt: Date.now(),
     // Ni las claves de IA ni el token del backend van a la copia del servidor: quien consiga esa
     // copia (o el token) no debe llevarse además las llaves para usarlas en otro sitio.
-    cfg: JSON.parse(serializeCfg({ rules, assets, groups, budgets, reducible, aiOn, ai: { ...ai, apiKey: "" }, aiProfiles: (aiProfiles || []).map((p) => ({ ...p, apiKey: "" })), aiDetail, ruleStats, materialidad, assetMem })),
+    cfg: JSON.parse(serializeCfg({ rules, assets, groups, budgets, reducible, aiOn, ai: { ...ai, apiKey: "" }, aiProfiles: (aiProfiles || []).map((p) => ({ ...p, apiKey: "" })), aiDetail, ruleStats, materialidad, assetMem, inversiones })),
     movs: JSON.parse(serializeMovs(movs)),
     bank: { ...loadBank(), token: "" },
-  }), [rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem, movs]);
+  }), [rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem, inversiones, movs]);
   const syncPayloadRef = useRef(syncPayload);
   syncPayloadRef.current = syncPayload;
   // Lo de aquí difiere de lo último sincronizado (o no hay huella con la que comparar).
@@ -665,7 +668,7 @@ function AppMain() {
     syncTimer.current = setTimeout(() => { if (hayCambiosSinSubir()) syncPush({ silent: true }); }, 25000);
     return () => clearTimeout(syncTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [movs, rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem, syncCfg.auto, syncConflict, booted]);
+  }, [movs, rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem, inversiones, syncCfg.auto, syncConflict, booted]);
 
   // Al cerrar o esconder la pestaña, volcar lo pendiente: el temporizador de 25 s se cancela
   // al desmontar y perderiamos el ultimo cambio.
@@ -783,13 +786,24 @@ function AppMain() {
   // Versión del backend: cada persona tiene el suyo y no se actualiza solo. Si le faltan
   // capacidades que esta app usa, se avisa en Ajustes con qué gana al actualizarlo.
   const [backendInfo, setBackendInfo] = useState(null); // null | { version, rasgos } | { viejo: true }
+  // Acceso al servidor para la pestaña Inversiones (precios): mismo token que la sincronización.
+  const servidorInv = useMemo(() => {
+    const leerJson = async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || "el servidor devolvió " + r.status); return d; };
+    return {
+      listo: !!bankCfg.workerUrl,
+      rasgo: !!backendInfo?.rasgos?.includes("inversiones"),
+      get: async (path) => leerJson(await bankFetch(path, 40000)),
+      post: async (path, body) => leerJson(await fetch(bankBase() + path, { method: "POST", headers: { ...bankHeaders(), "Content-Type": "application/json" }, body: JSON.stringify(body) })),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bankCfg.workerUrl, backendInfo]);
   useEffect(() => {
-    if (!settingsOpen || !bankBase()) return;
+    if (!(settingsOpen || tab === "inversiones") || !bankBase()) return;
     fetch(bankBase() + "/version").then((r) => (r.ok ? r.json() : null))
       .then((d) => setBackendInfo(d && Array.isArray(d.rasgos) ? d : { viejo: true }))
       .catch(() => setBackendInfo(null));
-     
-  }, [settingsOpen, bankCfg.workerUrl]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsOpen, tab === "inversiones", bankCfg.workerUrl]);
   // Diagnóstico para pedir ayuda: estado de la app SIN datos personales (ni importes, ni
   // conceptos, ni token, ni claves). Se copia al portapapeles.
 
@@ -2332,7 +2346,7 @@ function AppMain() {
 
           {/* Ideas (recap, plan, presupuesto) usa todo el histórico: los filtros no le afectan y
               enseñarlos ahí confundía. */}
-          {tab !== "asistente" && tab !== "ideas" && agg && (
+          {tab !== "asistente" && tab !== "ideas" && tab !== "inversiones" && agg && (
             <div className="mb-4">
               <FiltersBar filters={filters} setFilters={setFilters} monthsAvail={monthsAvail} yearsAvail={yearsAvail} assets={assets} groups={groups} />
             </div>
@@ -2373,6 +2387,7 @@ function AppMain() {
                     movsAll={movs} annualFactor={allAgg.annualFactor} mesesData={allAgg.mesesData} onDrill={setDrill} />}
             </div>
           )}
+          {tab === "inversiones" && <InversionesTab inversiones={inversiones} setInversiones={setInversiones} movs={movs} servidor={servidorInv} />}
           {tab === "ideas" && agg && (
             <div className="space-y-4">
               <div className="flex"><Seg ariaLabel="Recap, ideas o plan" value={subIdea} onChange={setSubIdea}
