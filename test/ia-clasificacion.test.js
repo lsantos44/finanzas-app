@@ -72,3 +72,23 @@ describe("huella de sincronización", () => {
     expect(firmaSync({ ...base, movs: { v: 1, movs: [{ id: 1, confirmed: true }] } })).not.toBe(firmaSync(base));
   });
 });
+
+import { aiSupportsWeb } from "../src/core.js";
+describe("pistas y búsqueda web", () => {
+  const openrouter = { provider: "openai_compat", baseUrl: "https://openrouter.ai/api/v1", model: "anthropic/claude-haiku-5.5", apiKey: "k" };
+  it("la IA recibe el importe típico de cada comercio", async () => {
+    const llamadas = responde({ "CASA MAESTRANZA": "Restauración" });
+    await aiCategorizePatterns([{ pattern: "CASA MAESTRANZA", sign: -1, importe: 5.4 }], false, proveedor);
+    expect(llamadas[0].messages[1].content).toContain("CASA MAESTRANZA | gasto | ~5,40 € por movimiento");
+    expect(llamadas[0].plugins).toBeUndefined();
+  });
+  it("con OpenRouter, «Buscar en la web» activa su búsqueda", async () => {
+    expect(aiSupportsWeb(openrouter)).toBe(true);
+    expect(aiSupportsWeb(proveedor)).toBe(false);
+    const llamadas = responde({ "TOR GEST SAS": "Parking" });
+    const { map, searches } = await aiCategorizePatterns([{ pattern: "TOR GEST SAS", sign: -1, importe: 6.9 }], true, openrouter);
+    expect(llamadas[0].plugins).toEqual([{ id: "web", max_results: 3 }]);
+    expect(map["TOR GEST SAS"]).toBe("Parking");
+    expect(searches).toBe(1);
+  });
+});
