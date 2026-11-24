@@ -851,6 +851,16 @@ function applyCfg(raw, setters) {
 // dispositivo cree que hay en el servidor: es lo que permite detectar que otro ha escrito
 // despues y NO pisarlo.
 const SYNC_KEY = "finz:sync:v1";
+// Huella de lo que se sincroniza (configuración y movimientos; no la marca de envío, la hora ni
+// el banco). Sirve para saber, sin ventanas de tiempo, si lo de este dispositivo es exactamente lo
+// último que se subió o se trajo del servidor: si no lo es, hay cambios sin subir.
+function firmaSync(p) {
+  if (!p) return null;
+  const s = JSON.stringify([p.cfg ?? null, p.movs ?? null]);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(16) + ":" + s.length;
+}
 const loadSync = () => { try { return JSON.parse(window.localStorage?.getItem(SYNC_KEY) || "{}") || {}; } catch { return {}; } };
 // Guardar en localStorage sin perder en silencio la conexión bancaria o el estado de la sync.
 // Si no cabe, se sacrifican las copias automáticas más antiguas (son de respaldo) y se
@@ -3614,6 +3624,7 @@ const convTitle = (c) => (c.title || (c.msgs.find((m) => m.role === "user")?.con
 function setTema(t) { THEME = t; }
 
 export {
+  firmaSync,
   aiEjemplos,
   ACCESO_GUARDADO_KEY,
   ACCESS_ITER,

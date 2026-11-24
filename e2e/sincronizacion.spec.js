@@ -123,3 +123,28 @@ test("si la subió otro dispositivo, sigue avisando y no pisa nada", async ({ pa
   await expect(page.getByText(/otro dispositivo ha guardado después/)).toBeVisible();
   expect(subidas.map((b) => b.baseVersion)).toEqual([6]);
 });
+
+test("un cambio hecho justo después de traer la copia queda anotado para subir", async ({ page }) => {
+  const peticiones = await preparar(page, { pendiente: false });
+  await page.goto("/");
+  await expect.poll(() => peticiones.includes("GET /store")).toBe(true);
+  await expect(page.getByText(/2 movimientos/i).first()).toBeVisible();
+  // Antes, durante 6 s tras traer, los cambios no se anotaban y la siguiente apertura los pisaba.
+  await page.getByRole("button", { name: "Ajustes y datos" }).click();
+  await page.getByRole("button", { name: /Inteligencia artificial/ }).click();
+  await page.getByLabel("Activar asistente y sugerencias con IA").check();
+  await expect.poll(() => page.evaluate(() => !!JSON.parse(localStorage.getItem("finz:sync:v1")).pendiente)).toBe(true);
+});
+
+test("al abrir, si lo de aquí no es lo último sincronizado, se sube en vez de traer y pisarlo", async ({ page }) => {
+  const peticiones = await preparar(page, { pendiente: false });
+  // Huella de una sincronización anterior que ya no coincide con lo que hay en el dispositivo.
+  await page.addInitScript(() => {
+    const s = JSON.parse(localStorage.getItem("finz:sync:v1") || "{}");
+    if (!s.firma) localStorage.setItem("finz:sync:v1", JSON.stringify({ ...s, firma: "huella-de-otra-cosa" }));
+  });
+  await page.goto("/");
+  await expect.poll(() => peticiones.includes("PUT /store")).toBe(true);
+  await expect(page.getByText(/1 movimiento/i).first()).toBeVisible();
+  await expect(page.getByText("ACTUAL SERVIDOR")).toHaveCount(0);
+});
