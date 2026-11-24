@@ -142,12 +142,17 @@ function PendientesPanel({ movsPend, amb, assets, setAssets, applyPending, aiOn,
     try {
       // Sin las operaciones genéricas: la IA no puede saber para qué es una "TRANSFER INMEDIATA".
       const payload = [...new Map(groups.filter((g) => identifiesMerchant(g.pattern)).slice(0, 200).map((g) => [g.pattern, { pattern: g.pattern, sign: g.total > 0 ? 1 : -1 }])).values()];
+      // Transferencias, Bizum, recibos genéricos: el texto no dice para qué es el dinero, así que
+      // no se mandan a la IA. Se dice claramente en vez de dar un error.
+      const sinComercio = groups.filter((g) => !identifiesMerchant(g.pattern)).length;
+      const paraTi = sinComercio ? ` ${sinComercio === 1 ? "Queda 1 transferencia u operación" : `Quedan ${sinComercio} transferencias u operaciones`} sin comercio: la IA no puede saber para qué ${sinComercio === 1 ? "es" : "son"}; clasifícalas tú y se aprenderán por importe.` : "";
+      if (!payload.length) { setUnresolved([]); setAiNote(paraTi.trim()); return; }
       const { map, unresolved: left } = await aiCategorizePatterns(payload, false, ai, aiEjemplos?.() || []);
       setUnresolved(left);
       setWebDone(false);
-      if (Object.keys(map).length === 0) { setAiNote("La IA no ha reconocido ninguno de estos comercios. Clasifícalos a mano o búscalos en la web."); return; }
+      if (Object.keys(map).length === 0) { setAiNote("La IA no ha reconocido ninguno de estos comercios. Clasifícalos a mano o búscalos en la web." + paraTi); return; }
       applySuggestions(map);
-      setAiNote(`${Object.keys(map).length} de ${payload.length} comercios reconocidos sin salir a internet.`);
+      setAiNote(`${Object.keys(map).length} de ${payload.length} comercios reconocidos sin salir a internet.` + paraTi);
     } catch (err) {
       // En el disparo automático no gritamos en rojo, pero callarse del todo deja al
       // usuario sin saber por qué no hay sugerencias. Un aviso discreto y accionable.
