@@ -63,3 +63,12 @@ describe("«Otros» no se aprende", () => {
     expect(classifyForImport(f, [], DEFAULT_RULES, { preguntarSinPista: true }).get(f[0].id).confirmed).toBe(false);
   });
 });
+
+import { firmaSync } from "../src/core.js";
+describe("huella de sincronización", () => {
+  it("solo cuentan la configuración y los movimientos", () => {
+    const base = { cfg: { a: 1 }, movs: { v: 1, movs: [{ id: 1 }] } };
+    expect(firmaSync({ ...base, envio: "x", updatedAt: 1, bank: { t: 1 } })).toBe(firmaSync({ ...base, envio: "y", updatedAt: 2 }));
+    expect(firmaSync({ ...base, movs: { v: 1, movs: [{ id: 1, confirmed: true }] } })).not.toBe(firmaSync(base));
+  });
+});

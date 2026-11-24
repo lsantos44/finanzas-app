@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback, lazy, Suspense } from "react";
 
 import { Plus, X, AlertTriangle, Search, Wallet, Settings, ClipboardList, Sun, Moon } from "lucide-react";
-import { aiEjemplos, ALL_TABS, ASSET_EMOJI, BANK_KEY, BUILD_STAMP, C, CATEGORIES, CHATS_KEY, DEFAULT_AI_CFG, DEFAULT_MATERIALIDAD, DEFAULT_REDUCIBLE, DEFAULT_RULES, ENTITY_STOP, GROUP_COLORS, INGRESO_SET, INTERNAL_SET, LLEGA_CON_ENLACE, PRIO, SAMPLE_GROUPS, SNAP_PREFIX, STORE, STORE_KEYS, SYNC_KEY, THEME, THEME_KEY, TOKENS, TRANSFER_SET, VIVIENDA, abrirAcceso, aiProviderLabel, ambKey, ambiguousPatterns, analyzeReceiptTrends, analyzeRows, applyCfg, auditRules, b64u, bankErrDetail, bankIsEmpty, buildAlerts, buildMonthClose, buildMovements, calcImputacion, calcRentaInmueble, classifyForImport, computeBankSaldo, computeOutliers, conciliar, daysBetween, decodeBuffer, dedupeAgainst, describePeriod, deserializeMovs, detectDelimiter, detectRecurring, expandParts, fmtAgo, fmtDate, fmtDateShort, genSampleCSV, identifiesMerchant, isConditional, isProcessorPattern, isRefundPart, isSpreadsheetFile, isoDay, learnedRule, leerAccesoGuardado, listSnapshots, loadBank, loadSync, makeAccessLink, matchRule, merchantEntity, mergeBank, missingIncome, monthKey, monthLabel, monthsCoveredOf, movInGroup, movKey, needsAmount, newConv, nfEUR, nfNum, normalizePattern, parseAccessLink, parseDateAny, parseEsNumber, r2c, rebuildRules, recordarAcceso, recoverBackupFromStore, refundFromHistory, refundIndex, ruleConditionsHold, ruleId, runQuery, saveBank, saveSync, serializeCfg, serializeMovs, setItemSeguro, setTema, shouldSnapshot, sortedRules, spreadsheetToRows, stripAccents, tipoActivo, tnum, tokenizeCSV, totalsOf, upcomingCharges, upcomingIncome, viviendaPorDefecto, writeSnapshot } from "./core.js";
+import { aiEjemplos, firmaSync, ALL_TABS, ASSET_EMOJI, BANK_KEY, BUILD_STAMP, C, CATEGORIES, CHATS_KEY, DEFAULT_AI_CFG, DEFAULT_MATERIALIDAD, DEFAULT_REDUCIBLE, DEFAULT_RULES, ENTITY_STOP, GROUP_COLORS, INGRESO_SET, INTERNAL_SET, LLEGA_CON_ENLACE, PRIO, SAMPLE_GROUPS, SNAP_PREFIX, STORE, STORE_KEYS, SYNC_KEY, THEME, THEME_KEY, TOKENS, TRANSFER_SET, VIVIENDA, abrirAcceso, aiProviderLabel, ambKey, ambiguousPatterns, analyzeReceiptTrends, analyzeRows, applyCfg, auditRules, b64u, bankErrDetail, bankIsEmpty, buildAlerts, buildMonthClose, buildMovements, calcImputacion, calcRentaInmueble, classifyForImport, computeBankSaldo, computeOutliers, conciliar, daysBetween, decodeBuffer, dedupeAgainst, describePeriod, deserializeMovs, detectDelimiter, detectRecurring, expandParts, fmtAgo, fmtDate, fmtDateShort, genSampleCSV, identifiesMerchant, isConditional, isProcessorPattern, isRefundPart, isSpreadsheetFile, isoDay, learnedRule, leerAccesoGuardado, listSnapshots, loadBank, loadSync, makeAccessLink, matchRule, merchantEntity, mergeBank, missingIncome, monthKey, monthLabel, monthsCoveredOf, movInGroup, movKey, needsAmount, newConv, nfEUR, nfNum, normalizePattern, parseAccessLink, parseDateAny, parseEsNumber, r2c, rebuildRules, recordarAcceso, recoverBackupFromStore, refundFromHistory, refundIndex, ruleConditionsHold, ruleId, runQuery, saveBank, saveSync, serializeCfg, serializeMovs, setItemSeguro, setTema, shouldSnapshot, sortedRules, spreadsheetToRows, stripAccents, tipoActivo, tnum, tokenizeCSV, totalsOf, upcomingCharges, upcomingIncome, viviendaPorDefecto, writeSnapshot } from "./core.js";
 import { Card, Seg, Spinner, useBackClose } from "./ui/comunes.jsx";
 import { DrillPanel, FiltersBar, MovEditModal, PendientesPanel } from "./ui/movimientos.jsx";
 import { AsistenteConexion, EmptyState, EntrarModal, MappingModal, ValidationModal, VueltaOtroNavegador } from "./ui/portada.jsx";
@@ -461,6 +461,14 @@ function AppMain() {
     movs: JSON.parse(serializeMovs(movs)),
     bank: { ...loadBank(), token: "" },
   }), [rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem, movs]);
+  const syncPayloadRef = useRef(syncPayload);
+  syncPayloadRef.current = syncPayload;
+  // Lo de aquí difiere de lo último sincronizado (o no hay huella con la que comparar).
+  const hayCambiosSinSubir = () => {
+    const sy = loadSync();
+    if (!sy.firma) return true;
+    return !!sy.pendiente || firmaSync(syncPayloadRef.current()) !== sy.firma;
+  };
 
   // Cada subida lleva una marca al azar, y este navegador recuerda las últimas que envió. Si el
   // servidor rechaza una subida porque «otro dispositivo guardó después» pero la copia del
@@ -533,7 +541,7 @@ function AppMain() {
       if (!res.ok) throw new Error(data.error || "el backend devolvió " + res.status);
       // Lo pendiente queda subido, salvo que hayas cambiado algo mientras tanto.
       const pend = Number(loadSync().pendiente) || 0;
-      persistSync({ version: data.version, lastPush: Date.now(), ...(pend && pend <= t0 ? { pendiente: null } : {}) });
+      persistSync({ version: data.version, lastPush: Date.now(), firma: firmaSync(cuerpo), ...(pend && pend <= t0 ? { pendiente: null } : {}) });
       setSyncConflict(null); setSinServidor(false);
       if (!silent) setSyncMsg({ kind: "ok", text: `Guardado en tu Worker (versión ${data.version}).` });
       return { ok: true };
@@ -564,8 +572,18 @@ function AppMain() {
         setSyncMsg({ kind: "info", text: "Cancelado. No se ha tocado nada." });
         return { ok: false, text: "Cancelado. No se ha tocado nada." };
       }
+      // Un «traer» automático nunca pisa cambios de aquí sin subir: si los hay, se suben (y si otro
+      // dispositivo guardó después, decides tú). Solo «Traer la del servidor» reemplaza a propósito.
+      if (!confirmReplace) {
+        const sy = loadSync();
+        const local = syncPayloadRef.current?.();
+        if (sy.pendiente || (sy.firma && local && firmaSync(local) !== sy.firma)) {
+          const r = await syncPush({ silent: true });
+          return r?.ok ? { ok: true, n: locales, version: Number(loadSync().version) || 0 } : { ok: false, text: "Hay cambios de este dispositivo sin subir; no se ha traído nada." };
+        }
+      }
       const n = applyBackupPayload(data.payload);
-      persistSync({ version: data.version, lastPull: Date.now(), pendiente: null });
+      persistSync({ version: data.version, lastPull: Date.now(), pendiente: null, firma: firmaSync(data.payload) });
       setSyncConflict(null); setSinServidor(false);
       if (!silent) setSyncMsg({ kind: "ok", text: `Traídos ${nfNum.format(n)} movimientos (versión ${data.version}).` });
       return { ok: true, n, version: data.version };
@@ -574,7 +592,7 @@ function AppMain() {
       if (!silent) setSyncMsg({ kind: "err", text: "No se pudo traer: " + e.message }); return { ok: false, text: "No se pudo traer: " + e.message };
     }
     finally { setSyncBusy(false); }
-  }, [applyBackupPayload, persistSync]);
+  }, [applyBackupPayload, persistSync, syncPush]);
 
   // Historial del servidor: las 10 últimas versiones y una por día del último mes.
   const syncHistory = useCallback(async () => {
@@ -595,7 +613,6 @@ function AppMain() {
       const r = await bankFetch("/store/history?version=" + encodeURIComponent(v.version), 30000);
       const data = await r.json().catch(() => ({}));
       if (!r.ok || !data.payload) throw new Error(data.error || "el backend devolvió " + r.status);
-      syncSuppressRef.current = Date.now() + 6000;
       const n = applyBackupPayload(data.payload);
       setSyncBusy(false);
       // Se sube la versión recuperada tal cual (con la conexión bancaria de ahora, sin token):
@@ -609,7 +626,7 @@ function AppMain() {
 
   const syncBootRef = useRef(false);
   const syncTimer = useRef(null);
-  const syncSuppressRef = useRef(0); // ventana tras un "traer" en la que NO se re-sube
+  const syncVistoRef = useRef(false); // sin huella guardada: el primer pase (al abrir) no cuenta como cambio
 
   // Traer al abrir, una sola vez. Si hay conflicto no se aplica nada: decide la persona.
   useEffect(() => {
@@ -619,7 +636,6 @@ function AppMain() {
     // el fallo que ya nos costó una sesión bancaria.
     try { if (new URLSearchParams(window.location.search).has("bank_session")) return; } catch { /* noop */ }
     syncBootRef.current = true;
-    syncSuppressRef.current = Date.now() + 6000;
     // Si la última vez cerraste antes de que se subieran tus cambios, traer la copia del servidor
     // los borraría sin avisar (pasaba al cerrar en menos de 25 s, lo normal en el móvil). Se
     // suben primero; si otro dispositivo guardó entre medias, decides tú.
@@ -637,11 +653,16 @@ function AppMain() {
   // en bucle: se espera a que la persona decida.
   useEffect(() => {
     if (!booted || !syncCfg.auto || !bankBase() || syncConflict) return;
-    if (Date.now() < syncSuppressRef.current) return;
+    // ¿Es exactamente lo último que se subió o se trajo? Entonces no hay nada que subir. (Antes
+    // se ignoraban los cambios durante unos segundos tras cada «traer», y lo que clasificabas en
+    // ese rato no llegaba nunca al servidor: al volver a abrir, la copia vieja lo pisaba.)
+    const firma = loadSync().firma;
+    if (firma) { if (firmaSync(syncPayload()) === firma) return; }
+    else if (!syncVistoRef.current) { syncVistoRef.current = true; return; } // primera vez, sin huella aún
     // Anotado en disco al momento: si cierras antes de los 25 s, al volver se sabe que hay que subir.
     persistSync({ pendiente: Date.now() });
     clearTimeout(syncTimer.current);
-    syncTimer.current = setTimeout(() => syncPush({ silent: true }), 25000);
+    syncTimer.current = setTimeout(() => { if (hayCambiosSinSubir()) syncPush({ silent: true }); }, 25000);
     return () => clearTimeout(syncTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [movs, rules, assets, groups, budgets, reducible, aiOn, ai, aiProfiles, aiDetail, ruleStats, materialidad, assetMem, syncCfg.auto, syncConflict, booted]);
@@ -653,7 +674,7 @@ function AppMain() {
     const flush = () => {
       if (document.visibilityState !== "hidden" || !bankBase() || syncConflict) return;
       clearTimeout(syncTimer.current);
-      syncPush({ silent: true });
+      if (hayCambiosSinSubir()) syncPush({ silent: true });
     };
     window.addEventListener("visibilitychange", flush);
     return () => window.removeEventListener("visibilitychange", flush);
@@ -666,7 +687,7 @@ function AppMain() {
     if (!sinServidor || !booted || !syncCfg.auto || !bankBase()) return;
     const intentar = () => {
       if (loadSync().pendiente) syncPush({ silent: true });
-      else { syncSuppressRef.current = Date.now() + 6000; syncPull({ silent: true }); }
+      else syncPull({ silent: true });
     };
     const t = setInterval(intentar, 90000);
     window.addEventListener("online", intentar);
@@ -686,7 +707,6 @@ function AppMain() {
   // fuera, y el disparador del servidor no tenía ningún banco que revisar.
   const activarSync = useCallback(async () => {
     syncBootRef.current = true;
-    syncSuppressRef.current = Date.now() + 6000;
     persistSync({ auto: true });
     const r = await syncPull({ silent: true, confirmReplace: true });
     if (r?.empty) await syncPush({ silent: true });
@@ -707,7 +727,6 @@ function AppMain() {
     // hay que volver a la vacía de un dispositivo nuevo, así que se escribe directamente.
     const deshacer = (res) => { if (bankIsEmpty(prev)) setItemSeguro(BANK_KEY, JSON.stringify(prev)); else saveBank(prev); setBankCfg(loadBank()); persistSync(prevSync); return res; };
     syncBootRef.current = true;
-    syncSuppressRef.current = Date.now() + 60000;
     clearTimeout(syncTimer.current);
     persistSync({ auto: false });
     // A disco ANTES de traer: syncPull lee la URL y el token de ahí, no del estado de React.
@@ -720,7 +739,6 @@ function AppMain() {
     } catch (e) { return deshacer({ ok: false, text: "No se pudo contactar con el backend: " + e.message }); }
     const r = await syncPull({ confirmReplace: true });
     if (!r?.ok) return deshacer(r || { ok: false, text: "No se pudo traer la copia." });
-    syncSuppressRef.current = Date.now() + 6000;
     persistSync({ auto: true });
     recordarAcceso(u, t);
     const nb = (loadBank().connections || []).length;
@@ -774,30 +792,6 @@ function AppMain() {
   }, [settingsOpen, bankCfg.workerUrl]);
   // Diagnóstico para pedir ayuda: estado de la app SIN datos personales (ni importes, ni
   // conceptos, ni token, ni claves). Se copia al portapapeles.
-  // Una sola vez: lo que acabó en «Otros» en los últimos cuatro meses vuelve a «por clasificar»,
-  // para que la IA lo mire. Antes, si la IA no sabía un comercio, se aprendía «→ Otros» y lo
-  // pequeño se daba por bueno sin preguntar; esos movimientos nunca llegaban a revisarse.
-  useEffect(() => {
-    if (!booted || !aiOn) return;
-    const MARCA = "finz:otros-revisados:v5";
-    try { if (localStorage.getItem(MARCA)) return; } catch { return; }
-    // Con margen: al abrir se trae la copia del servidor, y si llegara después pisaría el cambio.
-    const t = setTimeout(() => {
-      try { localStorage.setItem(MARCA, String(Date.now())); } catch { return; }
-      const desde = Date.now() - 120 * 86400000;
-      setMovs((ms) => {
-        let n = 0;
-        const out = ms.map((m) => {
-          if (m.category !== "Otros" || m.confirmed === false || m.omit || m.splits?.length || !(m.amount < 0)) return m;
-          if (!(new Date(m.date).getTime() >= desde) || !identifiesMerchant(m.pattern)) return m;
-          n++;
-          return { ...m, confirmed: false };
-        });
-        return n ? out : ms;
-      });
-    }, 10000);
-    return () => clearTimeout(t);
-  }, [booted, aiOn]);
 
   const diagnostico = () => {
     const b = loadBank(), sy = loadSync();
