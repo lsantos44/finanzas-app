@@ -3067,7 +3067,11 @@ const aiProviderLabel = (cfg) =>
   !cfg || cfg.provider === "claude"
     ? "Claude (integrado)"
     : `${cfg.model || "modelo"} · ${(cfg.baseUrl || "").replace(/^https?:\/\//, "").split("/")[0] || "endpoint propio"}`;
-const aiSupportsWeb = (cfg) => !cfg || cfg.provider === "claude";
+// Búsqueda web: Claude integrado (herramienta propia) u OpenRouter (su complemento «web»).
+const esOpenRouter = (cfg) => !!cfg && cfg.provider !== "claude" && /(^|\.)openrouter\.ai$/i.test((() => { try { return new URL(cfg.baseUrl).host; } catch { return ""; } })());
+const aiSupportsWeb = (cfg) => !cfg || cfg.provider === "claude" || esOpenRouter(cfg);
+const OR_WEB_RESULTADOS = 3;    // resultados por consulta en OpenRouter (cada uno se cobra)
+const OR_WEB_USD = 0.004;       // OpenRouter: unos $4 por cada 1.000 resultados
 
 /* Un modelo por tarea, porque no cuestan lo mismo ni hacen lo mismo:
    - CLASSIFY: etiquetar "MERCADONA MADRID" → "Supermercado". Es reconocimiento de
@@ -3106,7 +3110,7 @@ async function openaiRequest(cfg, body) {
 }
 
 // Texto simple (categorización, sugerencias). webTools solo con Claude.
-async function aiText(aiCfg, { system, user, maxTokens = 1500, webTools = null, model = AI_MODEL.classify }) {
+async function aiText(aiCfg, { system, user, maxTokens = 1500, webTools = null, model = AI_MODEL.classify, extra = null }) {
   if (!aiCfg || aiCfg.provider === "claude") {
     const body = { max_tokens: maxTokens, system, messages: [{ role: "user", content: user }] };
     if (webTools) body.tools = webTools;
@@ -3122,7 +3126,7 @@ async function aiText(aiCfg, { system, user, maxTokens = 1500, webTools = null, 
     const chosen = textBlocks.length ? textBlocks : blocks.filter((b) => b.type === "text");
     return { text: chosen.map((b) => b.text).join("\n").trim(), stop: data.stop_reason, usage: data.usage };
   }
-  const data = await openaiRequest(aiCfg, { max_tokens: maxTokens, messages: [{ role: "system", content: system }, { role: "user", content: user }] });
+  const data = await openaiRequest(aiCfg, { max_tokens: maxTokens, messages: [{ role: "system", content: system }, { role: "user", content: user }], ...(extra || {}) });
   return { text: (data.choices?.[0]?.message?.content || "").trim(), stop: data.choices?.[0]?.finish_reason, usage: null };
 }
 
@@ -3192,8 +3196,9 @@ const WEB_SEARCH_USD = 0.01; // $10 por cada 1.000 búsquedas
 /* Estimación honesta del coste de una pasada CON búsqueda web, para enseñarla antes
    de gastar. La tasa por búsqueda es exacta; los tokens de los resultados son una
    media observada (~25k de entrada por lote que busca), así que es orientativa. */
-function estimateWebCostUSD(nPatterns) {
+function estimateWebCostUSD(nPatterns, aiCfg = null) {
   const chunks = Math.ceil(nPatterns / CHUNK_SIZE);
+  if (esOpenRouter(aiCfg)) return { searches: chunks, usd: chunks * (OR_WEB_RESULTADOS * OR_WEB_USD + 0.002) };
   const searches = chunks * WEB_MAX_USES;
   const tokensUSD = chunks * 25000 * (3 / 1e6); // resultados como tokens de entrada, Sonnet
   return { searches, usd: searches * WEB_SEARCH_USD + tokensUSD };
@@ -3233,6 +3238,7 @@ async function aiCategorizePatterns(patterns, useWeb = false, aiCfg = null, ejem
     `Devuelve un objeto JSON donde cada clave es EXACTAMENTE uno de los patrones recibidos, copiado sin cambiar nada, y su valor es una categoría EXACTA de esta lista: ${CATEGORIES.join(", ")}.`,
     `Pistas: ${AI_CAT_HINTS}.`,
     "Si reconoces el tipo de comercio aunque no lo conozcas en concreto (por ejemplo «FARMACIA LOPEZ» o «BAR EL PUERTO»), elige la categoría más probable.",
+    "Cada línea trae el importe típico por movimiento de ese comercio: úsalo como pista junto al nombre (por ejemplo, unos pocos euros en un nombre de casa, mesón o rural suele ser Restauración; un nombre de sociedad con importes pequeños y redondos puede ser Parking).",
     "Usa \"Otros\" solo si de verdad no puedes ni suponer qué tipo de comercio es. Incluye TODOS los patrones.",
   ].join(" ");
   const system = web
@@ -3251,13 +3257,16 @@ async function aiCategorizePatterns(patterns, useWeb = false, aiCfg = null, ejem
   let anyOk = false, searches = 0, lastErr = null;
   for (let i = 0; i < patterns.length; i += CHUNK_SIZE) {
     const chunk = patterns.slice(i, i + CHUNK_SIZE);
-    const user = `${contexto}Patrones a clasificar (cada línea: PATRON | tipo):\n${chunk.map((p) => `${p.pattern} | ${p.sign > 0 ? "ingreso" : "gasto"}`).join("\n")}`;
+    const fmtImp = (x) => (typeof x === "number" && isFinite(x) && x > 0 ? ` | ~${x.toFixed(2).replace(".", ",")} € por movimiento` : "");
+    const user = `${contexto}Patrones a clasificar (cada línea: PATRON | tipo | importe típico):\n${chunk.map((p) => `${p.pattern} | ${p.sign > 0 ? "ingreso" : "gasto"}${fmtImp(p.importe)}`).join("\n")}`;
     // Presupuesto proporcional al lote. Con proveedores propios, holgado: los modelos que
     // «razonan» gastan parte del presupuesto antes de escribir, y si se agota no queda JSON.
     const justo = 400 + chunk.length * 60;
     const maxTokens = Math.min(4000, aiCfg && aiCfg.provider !== "claude" ? Math.max(justo, 4000) : justo);
     try {
-      const { text, usage } = await aiText(aiCfg, { system, user, maxTokens, webTools, model });
+      const extra = web && esOpenRouter(aiCfg) ? { plugins: [{ id: "web", max_results: OR_WEB_RESULTADOS }] } : null;
+      const { text, usage } = await aiText(aiCfg, { system, user, maxTokens, webTools, model, extra });
+      if (extra) searches += 1;
       searches += usage?.server_tool_use?.web_search_requests || 0;
       const obj = extractJSONObject(text);
       // Claves tolerantes: algunos modelos cambian mayúsculas, acentos o espacios.

@@ -141,7 +141,7 @@ function PendientesPanel({ movsPend, amb, assets, setAssets, applyPending, aiOn,
     setAiBusy(true); setAiError(null); setAiNote(null);
     try {
       // Sin las operaciones genéricas: la IA no puede saber para qué es una "TRANSFER INMEDIATA".
-      const payload = [...new Map(groups.filter((g) => identifiesMerchant(g.pattern)).slice(0, 200).map((g) => [g.pattern, { pattern: g.pattern, sign: g.total > 0 ? 1 : -1 }])).values()];
+      const payload = [...new Map(groups.filter((g) => identifiesMerchant(g.pattern)).slice(0, 200).map((g) => [g.pattern, { pattern: g.pattern, sign: g.total > 0 ? 1 : -1, importe: Math.abs(g.total) / (g.count || 1) }])).values()];
       // Transferencias, Bizum, recibos genéricos: el texto no dice para qué es el dinero, así que
       // no se mandan a la IA. Se dice claramente en vez de dar un error.
       const sinComercio = groups.filter((g) => !identifiesMerchant(g.pattern)).length;
@@ -171,7 +171,7 @@ function PendientesPanel({ movsPend, amb, assets, setAssets, applyPending, aiOn,
     setAiBusy(true); setAiError(null); setAiNote(null);
     try {
       const byPattern = new Map(groups.map((g) => [g.pattern, g]));
-      const payload = unresolved.map((p) => ({ pattern: p, sign: (byPattern.get(p)?.total ?? -1) > 0 ? 1 : -1 }));
+      const payload = unresolved.map((p) => { const g = byPattern.get(p); return { pattern: p, sign: (g?.total ?? -1) > 0 ? 1 : -1, importe: g ? Math.abs(g.total) / (g.count || 1) : undefined }; });
       const { map, unresolved: left, searches } = await aiCategorizePatterns(payload, true, ai, aiEjemplos?.() || []);
       applySuggestions(map);
       setUnresolved(left);
@@ -239,7 +239,7 @@ function PendientesPanel({ movsPend, amb, assets, setAssets, applyPending, aiOn,
             {/* Segunda pasada, solo sobre lo que la primera no supo. La tasa por búsqueda
                 es real ($10/1.000), así que la enseñamos antes de que el usuario decida. */}
             {!aiBusy && unresolved.length > 0 && !webDone && aiSupportsWeb(ai) && (() => {
-              const { searches, usd } = estimateWebCostUSD(unresolved.length);
+              const { searches, usd } = estimateWebCostUSD(unresolved.length, ai);
               return (
                 <Btn onClick={runWebAI} title={`Hasta ${searches} búsquedas a $${WEB_SEARCH_USD} cada una, más los tokens de los resultados`}>
                   <Search size={14} /> Buscar en la web los {unresolved.length} desconocidos
