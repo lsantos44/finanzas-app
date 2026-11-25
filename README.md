@@ -20,6 +20,12 @@ email (o guárdalo en tus notas). Abrirlo en cualquier móvil u ordenador es ent
 datos y tus bancos y la sincronización queda activada. También puedes pegarlo en *Entrar*, y si
 el gestor de contraseñas guarda el acceso, en un navegador nuevo te ofrece entrar con un toque.
 
+## Inversiones
+
+La pestaña **Inversiones** valora tus acciones y fondos con precios que tu servidor actualiza solo
+(cada media hora en bolsa, una vez al día los fondos). Qué datos poner para que las cifras
+coincidan con las de tu banco o bróker, y cómo se calcula cada una: [docs/INVERSIONES.md](docs/INVERSIONES.md).
+
 ## Desarrollo
 
 ```bash

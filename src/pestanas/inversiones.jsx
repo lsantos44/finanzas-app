@@ -1,6 +1,6 @@
 import { C, fmtE, fmtE0, nfNum, tnum } from "../core.js";
 import { Btn, Card, Modal, Seg } from "../ui/comunes.jsx";
-import { analizarInversiones, candidatosAportacion, fusionarPosiciones, normalizarPosiciones, serieEUR, simbolosDe, dia, sumarDias, divisaDe } from "../inversiones.js";
+import { analizarInversiones, candidatosAportacion, fusionarPosiciones, normalizarPosiciones, rentabilidadTWR, serieEUR, simbolosDe, dia, sumarDias, divisaDe } from "../inversiones.js";
 import { AlertTriangle, ChevronDown, ChevronRight, Pencil, Plus, RefreshCw, Repeat, Search, Trash2, Upload, Wallet } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, Line, LineChart, ComposedChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -53,8 +53,10 @@ function GraficoEvolucion({ serie, conInvertido, referencia, alto = 200 }) {
     return s.filter((_, i) => i % paso === 0 || i === s.length - 1).map((p) => ({ ...p, et: fechaCorta(p.d) }));
   }, [serie, rango]);
   if (datos.length < 2) return <p className="py-8 text-center text-sm text-slate-400">El gráfico aparecerá cuando lleguen los precios.</p>;
-  const ini = datos[0].valor, fin = datos[datos.length - 1].valor;
-  const sube = fin >= ini;
+  // Rentabilidad del periodo descontando las aportaciones (ver rentabilidadTWR), sobre la serie
+  // completa: la del gráfico está muestreada y podría saltarse el día de una aportación.
+  const rPeriodo = rentabilidadTWR(serie, { desde: datos[0].d }).r;
+  const sube = (rPeriodo ?? 0) >= 0;
   const color = sube ? C.income : C.expense;
   const TT = ({ active, payload }) => {
     if (!active || !payload?.length) return null;
@@ -70,7 +72,7 @@ function GraficoEvolucion({ serie, conInvertido, referencia, alto = 200 }) {
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="text-xs font-medium" style={{ ...tnum, color }}>{pct(ini ? fin / ini - 1 : null)} en el periodo</span>
+        <span className="text-xs font-medium" style={{ ...tnum, color }}>{pct(rPeriodo)} en el periodo</span>
         <Seg ariaLabel="Periodo del gráfico" value={rango} onChange={setRango} options={RANGOS} />
       </div>
       <div style={{ height: alto }}>
@@ -112,7 +114,12 @@ function EvolucionCartera({ a, inv, datos }) {
     const claves = elegidos.slice(0, 8);
     const series = {};
     for (const k of claves) {
-      if (k.startsWith("e:")) series[k] = datosR.map((p) => p.porEntidadBase?.[k.slice(2)] ?? null);
+      if (k.startsWith("e:")) {
+        // Índice de rentabilidad de la plataforma (sin contar las aportaciones como ganancia).
+        const { indice } = rentabilidadTWR(a.serie, { desde: datosR[0].d, entidad: k.slice(2) });
+        const mapa = new Map(indice);
+        series[k] = datosR.map((p) => mapa.get(p.d) ?? null);
+      }
       else {
         const pos = inv.posiciones.find((p) => p.id === k.slice(2));
         const s = pos ? serieEUR(pos, datos) : [];
@@ -127,7 +134,7 @@ function EvolucionCartera({ a, inv, datos }) {
       return o;
     });
     return { filas, claves };
-  }, [modo, datosR, elegidos, inv.posiciones, datos]);
+  }, [modo, datosR, elegidos, inv.posiciones, datos, a.serie]);
 
   const nombreDe = (k) => (k.startsWith("e:") ? k.slice(2) : inv.posiciones.find((p) => p.id === k.slice(2))?.nombre || "?");
   // Un color fijo por plataforma (el mismo que en «Por plataforma» y en la barra de reparto) y
@@ -293,7 +300,7 @@ function Detalle({ f, datos, onClose, onEditar, onBorrar }) {
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <Cifra label="Valor">{fmtE(f.valor)}</Cifra>
         <Cifra label="Último cambio" color={colorDe(f.hoy)} sub={pct(f.hoyPct)}>{eur(f.hoy, true)}</Cifra>
-        <Cifra label="Resultado" color={colorDe(f.resultado)} sub={f.resultado == null ? "falta el coste" : pct(f.resultadoPct)}>{f.resultado == null ? "–" : eur(f.resultado, true)}</Cifra>
+        <Cifra label="Plusvalía" color={colorDe(f.resultado)} sub={f.resultado == null ? "falta el coste" : pct(f.resultadoPct)}>{f.resultado == null ? "–" : eur(f.resultado, true)}</Cifra>
         <Cifra label="Peso en tu cartera">{pct(f.peso, false)}</Cifra>
       </div>
       <div className="mt-4"><GraficoEvolucion serie={serie} referencia={f.precioMedio} alto={210} /></div>
@@ -308,7 +315,7 @@ function Detalle({ f, datos, onClose, onEditar, onBorrar }) {
       <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
         <dt className="text-slate-500">Participaciones</dt><dd className="text-right" style={tnum}>{nfNum.format(Math.round(f.unidades * 10000) / 10000)}</dd>
         <dt className="text-slate-500">Precio ({fechaLarga(f.fechaPrecio) || "sin datos"})</dt><dd className="text-right" style={tnum}>{f.precio == null ? "–" : fmtE(f.precio)}{div !== "EUR" ? ` (en ${div})` : ""}</dd>
-        <dt className="text-slate-500">Precio medio de compra</dt><dd className="text-right" style={tnum}>{f.precioMedio == null ? "–" : fmtE(f.precioMedio)}</dd>
+        <dt className="text-slate-500">Coste medio por participación</dt><dd className="text-right" style={tnum}>{f.precioMedio == null ? "–" : fmtE(f.precioMedio)}</dd>
         <dt className="text-slate-500">Invertido</dt><dd className="text-right" style={tnum}>{f.coste == null ? "–" : fmtE(f.coste)}{f.aportado ? ` (${fmtE0(f.aportado)} en aportaciones)` : ""}</dd>
       </dl>
       {f.error && <p className="mt-3 text-xs" style={{ color: C.expense }}>No se pudo actualizar el precio: {f.error}. Edita la posición para elegir otra cotización.</p>}
@@ -402,7 +409,7 @@ function Importar({ onImportar, onClose }) {
       <p className="mb-2 text-xs text-slate-500">«Actualizar y añadir» cambia los productos que ya tienes (mismo ISIN o mismo nombre) y añade los nuevos. «Reemplazar todo» borra la lista actual.</p>
       <textarea value={txt} onChange={(e) => { setTxt(e.target.value); setErr(null); }} rows={10} aria-label="Posiciones en JSON"
         className="w-full rounded-lg border p-2 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ borderColor: C.line }}
-        placeholder='[{"nombre":"Apple","entidad":"Mi bróker","tipo":"accion","simbolo":"AAPL","participaciones":10,"coste":1500}]' />
+        placeholder='[{"nombre":"Apple","entidad":"Mi bróker","tipo":"accion","isin":"US0378331005","participaciones":10,"costeMedio":150}]' />
       {err && <p className="mt-2 text-xs" style={{ color: C.expense }}>{err}</p>}
     </Modal>
   );
@@ -590,7 +597,7 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
             </div>
             <div className="mt-3 grid grid-cols-2 gap-4">
               <Cifra label="Último cambio" color={colorDe(a.hoy)} sub={pct(a.hoyPct)}>{eur(a.hoy, true)}</Cifra>
-              <Cifra label="Resultado" color={colorDe(a.resultado)} sub={a.resultado == null ? "añade el coste" : `${pct(a.resultadoPct)} sobre ${fmtE0(a.costeTotal)}${a.sinCoste ? ` · ${a.sinCoste} sin coste` : ""}`}>{a.resultado == null ? "–" : eur(a.resultado, true)}</Cifra>
+              <Cifra label="Plusvalía" color={colorDe(a.resultado)} sub={a.resultado == null ? "añade el coste" : `${pct(a.resultadoPct)} sobre ${fmtE0(a.costeTotal)} invertidos${a.sinCoste ? ` · ${a.sinCoste} sin coste` : ""}`}>{a.resultado == null ? "–" : eur(a.resultado, true)}</Cifra>
             </div>
             <div className="mt-3"><Reparto grupos={a.porEntidad} total={a.total} /></div>
             <p className="mt-3 text-[11px] text-slate-400">{a.fechaPrecios
@@ -633,6 +640,17 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
               </ul>
             </Card>
           )}
+
+          <details className="rounded-2xl border bg-white px-4 py-3 text-sm" style={{ borderColor: C.line }}>
+            <summary className="cursor-pointer font-semibold">¿Cómo se calcula y cómo cuadrarlo con tu entidad?</summary>
+            <div className="mt-2 space-y-2 text-slate-600">
+              <p><strong>Plusvalía</strong> = valor actual − lo invertido, y en % = valor ÷ invertido − 1. Es lo que muestran los bancos y brókeres («Plusvalía/Minusvalía», «G/P»). Coincide con tu entidad si pones las mismas <em>participaciones</em> y el mismo <em>coste medio</em> de su ficha.</p>
+              <p><strong>Valor actual</strong> = participaciones × último precio (cierre o valor liquidativo; en dólares, al cambio del día). Puede diferir unos céntimos de tu entidad si su precio o su cambio son de otra hora.</p>
+              <p><strong>Rentabilidad de un periodo</strong> (el gráfico, «en lo que va de año», «Comparar») es ponderada por tiempo: encadena lo que sube o baja cada día y descuenta las aportaciones, para que el dinero nuevo no parezca ganancia. Es el método estándar de gestoras y robo-advisors. Por eso puede no coincidir con la plusvalía: una mide el periodo, la otra desde que compraste.</p>
+              <p><strong>Último cambio</strong> = variación desde el precio anterior. Las acciones se actualizan cada media hora en horario de bolsa; los fondos, una vez al día, con 1–2 días de retraso.</p>
+              <p><strong>Para que cuadre:</strong> en la ficha de cada producto de tu entidad busca el nº de participaciones (o acciones) y el coste medio, e impórtalos con «Importar → Actualizar y añadir»: <code className="text-xs">{'{"nombre":"…","isin":"…","participaciones":"1.250,5","costeMedio":"12.3456"}'}</code></p>
+            </div>
+          </details>
 
           <div className="flex flex-wrap gap-2">
             <Btn size="sm" onClick={() => setAportando(true)}>Aportación periódica{inv.aportacion ? ` · ${fmtE0(inv.aportacion.importe)}` : ""}</Btn>

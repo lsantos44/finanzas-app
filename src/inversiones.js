@@ -170,6 +170,20 @@ export function analizarInversiones(inv, datos, movs) {
   const primero = {};
   for (const p of conAlgo) { const s0 = datos.series[p.simbolo][0]; primero[p.id] = precioEUR(p, s0[0], datos); }
   const entidadDe = (p) => p.entidad || "Sin entidad";
+  // Aportaciones (flujos) por fecha del gráfico: cada una cae en el primer día con precios en o
+  // después de su fecha. Hacen falta para que la rentabilidad no cuente el dinero nuevo como ganancia.
+  const flujos = new Map();
+  for (const p of posiciones) {
+    if (lotes[p.id][0].coste == null && !p.robo) continue;
+    for (const l of lotes[p.id].slice(1)) {
+      const f = fechas.find((x) => x >= l.fecha);
+      if (!f) continue;
+      const o = flujos.get(f) || { total: 0, porEntidad: {} };
+      o.total += l.unidades * (precioEUR(p, f, datos) ?? 0);
+      o.porEntidad[entidadDe(p)] = (o.porEntidad[entidadDe(p)] || 0) + l.unidades * (precioEUR(p, f, datos) ?? 0);
+      flujos.set(f, o);
+    }
+  }
   const serie = fechas.map((f) => {
     const porPos = {}, porEntidad = {}, porEntidadBase = {};
     let v = 0, inv2 = 0;
@@ -183,7 +197,7 @@ export function analizarInversiones(inv, datos, movs) {
       porEntidadBase[e] = (porEntidadBase[e] || 0) + xb;
       if (lotes[p.id][0].coste != null) for (const l of lotes[p.id]) if (l.fecha <= f) inv2 += l.coste;
     }
-    return { d: f, valor: v, invertido: inv2, porPos, porEntidad, porEntidadBase };
+    return { d: f, valor: v, invertido: inv2, porPos, porEntidad, porEntidadBase, flujo: flujos.get(f)?.total || 0, flujoEntidad: flujos.get(f)?.porEntidad || {} };
   });
 
   // Lo que más se ha movido en su último cambio.
@@ -197,7 +211,7 @@ export function analizarInversiones(inv, datos, movs) {
     porEntidad: agrupar((f) => f.p.entidad || "Sin entidad"),
     porTipo: agrupar((f) => (f.p.tipo === "accion" ? "Acciones" : f.p.robo ? "Fondos indexados" : "Fondos")),
     aportes, serie, movidos,
-    ytd: (() => { const s0 = serie.length ? cierreEn(serie.map((x) => [x.d, x.valor]), `${serie[serie.length - 1].d.slice(0, 4) - 1}-12-31`) : null; return s0 ? total / s0 - 1 : null; })(),
+    ytd: serie.length > 1 ? rentabilidadTWR(serie, { desde: `${serie[serie.length - 1].d.slice(0, 4) - 1}-12-31` }).r : null,
     horaAcciones: filas.reduce((mx, f) => (f.p.tipo === "accion" && f.mercado > mx ? f.mercado : mx), 0),
     fechaPrecios: filas.reduce((mx, f) => (f.fechaPrecio && f.fechaPrecio > mx ? f.fechaPrecio : mx), ""),
   };
@@ -209,7 +223,18 @@ export const simbolosDe = (inv) => [...new Set((inv?.posiciones || []).map((p) =
 // Importación de posiciones (texto JSON): valida y normaliza, sin aceptar campos raros.
 export function normalizarPosiciones(lista, hoy) {
   if (!Array.isArray(lista)) throw new Error("Se esperaba una lista de posiciones.");
-  const num = (x) => (typeof x === "number" && isFinite(x) ? x : typeof x === "string" && x.trim() ? Number(x.replace(/\./g, "").replace(",", ".")) : null);
+  // Números como los escriben las entidades: «1.234,567» (español), «12.3456» o «1234.5600» (punto
+  // decimal, como en la ficha de algunas entidades) y «2.500» (millar). Un único punto seguido de exactamente
+  // tres cifras se toma como separador de millares; si no, como decimal.
+  const num = (x) => {
+    if (typeof x === "number") return isFinite(x) ? x : null;
+    if (typeof x !== "string" || !x.trim()) return null;
+    let t = x.trim().replace(/[\s€]/g, "");
+    if (t.includes(",")) t = t.replace(/\./g, "").replace(",", ".");
+    else if ((t.match(/\./g) || []).length > 1 || /^-?\d{1,3}\.\d{3}$/.test(t)) t = t.replace(/\./g, "");
+    const n = Number(t);
+    return isFinite(n) ? n : null;
+  };
   return lista.map((x, i) => {
     if (!x || typeof x !== "object" || !x.nombre) throw new Error(`La posición ${i + 1} no tiene nombre.`);
     const p = {
@@ -222,7 +247,10 @@ export function normalizarPosiciones(lista, hoy) {
     if (x.isin) p.isin = String(x.isin).toUpperCase().slice(0, 12);
     if (x.simbolo) p.simbolo = String(x.simbolo).slice(0, 40);
     if (x.divisa) p.divisa = String(x.divisa).slice(0, 3);
-    const part = num(x.participaciones), val = num(x.valorAlta), coste = num(x.coste), peso = num(x.pesoObjetivo);
+    const part = num(x.participaciones), val = num(x.valorAlta), peso = num(x.pesoObjetivo);
+    // Coste: el total invertido o, como lo dan las entidades, el coste (precio) medio por participación.
+    const costeMedio = num(x.costeMedio);
+    const coste = num(x.coste) ?? (costeMedio > 0 && part > 0 ? Math.round(costeMedio * part * 100) / 100 : null);
     if (part > 0) p.participaciones = part;
     if (val > 0) p.valorAlta = val;
     if (!(p.participaciones > 0) && !(p.valorAlta > 0)) throw new Error(`«${p.nombre}»: indica participaciones o valor actual.`);
@@ -269,4 +297,25 @@ export function fusionarPosiciones(existentes, nuevas) {
     } else { out.push(n); añadidas++; }
   }
   return { posiciones: out, actualizadas, añadidas };
+}
+
+/* Rentabilidad de un periodo, ponderada por tiempo (TWR, el estándar de gestoras y
+   robo-advisors): se encadenan las variaciones de cada día descontando el dinero que entra ese día,
+   así una aportación no cuenta como ganancia.  r = Π (V_t − F_t) / V_{t−1} − 1.
+   Sin aportaciones equivale a valor final / valor inicial − 1. Devuelve también el índice (1 = inicio)
+   para dibujarlo. Con `entidad`, solo esa plataforma. */
+export function rentabilidadTWR(serie, { desde = "0000-00-00", entidad = null } = {}) {
+  if (!serie || serie.length < 2) return { r: null, indice: [] };
+  const val = (p) => (entidad ? p.porEntidad?.[entidad] ?? 0 : p.valor);
+  const flu = (p) => (entidad ? p.flujoEntidad?.[entidad] ?? 0 : p.flujo ?? 0);
+  let base = 0;
+  for (let i = 0; i < serie.length; i++) { if (serie[i].d <= desde) base = i; else break; }
+  let idx = 1;
+  const indice = [[serie[base].d, 1]];
+  for (let i = base + 1; i < serie.length; i++) {
+    const prev = val(serie[i - 1]);
+    if (prev > 0) idx *= (val(serie[i]) - flu(serie[i])) / prev;
+    indice.push([serie[i].d, idx]);
+  }
+  return { r: idx - 1, indice };
 }
