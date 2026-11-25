@@ -250,3 +250,23 @@ export function candidatosAportacion(movs) {
   }
   return [...m.values()].filter((c) => c.n >= 2).sort((a, b) => b.n - a.n || b.importe - a.importe);
 }
+
+// Actualizar con una lista: lo que ya existe (mismo ISIN, mismo nombre o misma cotización) se
+// sustituye conservando su identidad; lo nuevo se añade. Así recalibrar no duplica posiciones.
+export function fusionarPosiciones(existentes, nuevas) {
+  const norm = (t) => String(t || "").trim().toLowerCase();
+  const out = [...(existentes || [])];
+  let actualizadas = 0, añadidas = 0;
+  for (const n of nuevas) {
+    const i = out.findIndex((p) => (n.isin && p.isin && n.isin === p.isin) || norm(p.nombre) === norm(n.nombre) || (n.simbolo && p.simbolo === n.simbolo && norm(p.entidad) === norm(n.entidad)));
+    if (i >= 0) {
+      const v = out[i];
+      out[i] = { ...v, ...n, id: v.id, alta: n.alta || v.alta, robo: n.robo ?? v.robo, pesoObjetivo: n.pesoObjetivo ?? v.pesoObjetivo };
+      // Si ahora se sabe el número de participaciones, el valor de alta ya no hace falta (y al revés).
+      if (n.participaciones > 0) delete out[i].valorAlta;
+      else if (n.valorAlta > 0) delete out[i].participaciones;
+      actualizadas++;
+    } else { out.push(n); añadidas++; }
+  }
+  return { posiciones: out, actualizadas, añadidas };
+}
