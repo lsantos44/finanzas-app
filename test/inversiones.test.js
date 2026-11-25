@@ -85,3 +85,17 @@ describe("importar posiciones", () => {
     expect(() => normalizarPosiciones([{ nombre: "X" }], "2026-11-24")).toThrow(/participaciones o valor/);
   });
 });
+
+describe("evolución", () => {
+  it("un producto con un solo precio no deja el gráfico vacío, y se desglosa por entidad", () => {
+    const d = { series: { ...datos.series, SOLO: [["2026-11-24", 50]] }, meta: { ...datos.meta, SOLO: { divisa: "EUR" } } };
+    const inv = { posiciones: [
+      { id: "x", nombre: "Con historia", entidad: "Uno", tipo: "accion", simbolo: "TEF.MC", participaciones: 10, coste: 30, alta: "2026-11-24" },
+      { id: "y", nombre: "Un solo dato", entidad: "Dos", tipo: "fondo", simbolo: "SOLO", participaciones: 2, coste: 100, alta: "2026-11-24" },
+    ] };
+    const r = analizarInversiones(inv, d, []);
+    expect(r.serie.map((p) => p.d)).toEqual(["2026-11-20", "2026-11-23", "2026-11-24"]);
+    expect(r.serie[0].porEntidad).toEqual({ Uno: 35, Dos: 100 });
+    expect(r.serie.at(-1).valor).toBeCloseTo(34.04 + 100, 6);
+  });
+});

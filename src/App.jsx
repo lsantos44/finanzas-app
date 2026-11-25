@@ -792,6 +792,7 @@ function AppMain() {
     return {
       listo: !!bankCfg.workerUrl,
       rasgo: !!backendInfo?.rasgos?.includes("inversiones"),
+      rasgos: backendInfo?.rasgos || [],
       get: async (path) => leerJson(await bankFetch(path, 40000)),
       post: async (path, body) => leerJson(await fetch(bankBase() + path, { method: "POST", headers: { ...bankHeaders(), "Content-Type": "application/json" }, body: JSON.stringify(body) })),
     };

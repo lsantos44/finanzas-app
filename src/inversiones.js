@@ -95,6 +95,12 @@ export function serieEUR(p, datos, desde = "0000-00-00") {
   return out;
 }
 
+function variacionDesde(serie, fecha) {
+  if (!serie.length) return null;
+  const ref = cierreEn(serie, fecha);
+  return ref ? serie[serie.length - 1][1] / ref - 1 : null;
+}
+
 function variacion(serie, dias) {
   if (!serie.length) return null;
   const [fu, vu] = serie[serie.length - 1];
@@ -127,7 +133,9 @@ export function analizarInversiones(inv, datos, movs) {
       resultado: coste != null ? valor - coste : null,
       resultadoPct: coste ? valor / coste - 1 : null,
       precioMedio: coste != null && unidades ? coste / unidades : null,
-      var: { s: variacion(s, 7), m: variacion(s, 30), a: variacion(s, 365) },
+      var: { s: variacion(s, 7), m: variacion(s, 30), a: variacion(s, 365), ytd: variacionDesde(s, `${(s.length ? s[s.length - 1][0] : "0000").slice(0, 4) - 1}-12-31`) },
+      puntos: s.length,
+      mercado: p.simbolo ? datos?.meta?.[p.simbolo]?.mercado || null : null,
       error: p.simbolo ? datos?.meta?.[p.simbolo]?.error || null : null,
     };
   });
@@ -152,18 +160,34 @@ export function analizarInversiones(inv, datos, movs) {
       .sort((a, b) => b.valor - a.valor);
   };
 
-  // Evolución del total: desde que todas las posiciones con precio tienen datos.
-  const conPrecio = posiciones.filter((p) => (datos?.series?.[p.simbolo] || []).length);
-  const inicio = conPrecio.reduce((mx, p) => { const f = datos.series[p.simbolo][0][0]; return f > mx ? f : mx; }, "0000-00-00");
-  const fechas = [...new Set(conPrecio.flatMap((p) => datos.series[p.simbolo].map((x) => x[0])))].filter((f) => f >= inicio).sort();
-  const fijo = posiciones.filter((p) => !(datos?.series?.[p.simbolo] || []).length).reduce((x, p) => x + (p.valorAlta || 0), 0);
-  const costeFijo = filas.filter((f) => f.coste != null).reduce((x, f) => x + (lotes[f.p.id][0].coste || 0), 0);
+  // Evolución: desde el primer día con precios de las posiciones con historial. Antes de su primer
+  // precio, una posición cuenta con ese primer precio (así un fondo recién listado no deja el
+  // gráfico vacío); sin precio automático, con el valor que se puso al darla de alta.
+  const conHist = posiciones.filter((p) => (datos?.series?.[p.simbolo] || []).length >= 2);
+  const conAlgo = posiciones.filter((p) => (datos?.series?.[p.simbolo] || []).length > 0);
+  const inicio = conHist.length ? conHist.reduce((mn, p) => { const f = datos.series[p.simbolo][0][0]; return f < mn ? f : mn; }, "9999-12-31") : null;
+  const fechas = inicio ? [...new Set(conHist.flatMap((p) => datos.series[p.simbolo].map((x) => x[0])))].filter((f) => f >= inicio).sort() : [];
+  const primero = {};
+  for (const p of conAlgo) { const s0 = datos.series[p.simbolo][0]; primero[p.id] = precioEUR(p, s0[0], datos); }
+  const entidadDe = (p) => p.entidad || "Sin entidad";
   const serie = fechas.map((f) => {
-    let v = fijo, inv2 = costeFijo;
-    for (const p of conPrecio) { const pr = precioEUR(p, f, datos); if (pr) v += unidadesEn(lotes[p.id], f) * pr; }
-    for (const p of posiciones) for (const l of lotes[p.id].slice(1)) if (l.fecha <= f && lotes[p.id][0].coste != null) inv2 += l.coste;
-    return { d: f, valor: v, invertido: inv2 };
+    const porPos = {}, porEntidad = {}, porEntidadBase = {};
+    let v = 0, inv2 = 0;
+    for (const p of posiciones) {
+      let x, xb;
+      if (conAlgo.includes(p)) { const pr = precioEUR(p, f, datos) ?? primero[p.id] ?? 0; x = unidadesEn(lotes[p.id], f) * pr; xb = lotes[p.id][0].unidades * pr; }
+      else x = xb = p.valorAlta || 0;
+      const e = entidadDe(p);
+      porPos[p.id] = x; porEntidad[e] = (porEntidad[e] || 0) + x; v += x;
+      // Sin aportaciones: para comparar rentabilidades, que el dinero nuevo no parezca ganancia.
+      porEntidadBase[e] = (porEntidadBase[e] || 0) + xb;
+      if (lotes[p.id][0].coste != null) for (const l of lotes[p.id]) if (l.fecha <= f) inv2 += l.coste;
+    }
+    return { d: f, valor: v, invertido: inv2, porPos, porEntidad, porEntidadBase };
   });
+
+  // Lo que más se ha movido en su último cambio.
+  const movidos = filas.filter((f) => f.hoyPct != null).sort((x, y) => Math.abs(y.hoyPct) - Math.abs(x.hoyPct)).slice(0, 4);
 
   return {
     filas, total, hoy, hoyPct: total - hoy ? hoy / (total - hoy) : null,
@@ -172,7 +196,9 @@ export function analizarInversiones(inv, datos, movs) {
     sinCoste: filas.filter((f) => f.coste == null).length,
     porEntidad: agrupar((f) => f.p.entidad || "Sin entidad"),
     porTipo: agrupar((f) => (f.p.tipo === "accion" ? "Acciones" : f.p.robo ? "Fondos indexados" : "Fondos")),
-    aportes, serie,
+    aportes, serie, movidos,
+    ytd: (() => { const s0 = serie.length ? cierreEn(serie.map((x) => [x.d, x.valor]), `${serie[serie.length - 1].d.slice(0, 4) - 1}-12-31`) : null; return s0 ? total / s0 - 1 : null; })(),
+    horaAcciones: filas.reduce((mx, f) => (f.p.tipo === "accion" && f.mercado > mx ? f.mercado : mx), 0),
     fechaPrecios: filas.reduce((mx, f) => (f.fechaPrecio && f.fechaPrecio > mx ? f.fechaPrecio : mx), ""),
   };
 }
@@ -202,7 +228,25 @@ export function normalizarPosiciones(lista, hoy) {
     if (!(p.participaciones > 0) && !(p.valorAlta > 0)) throw new Error(`«${p.nombre}»: indica participaciones o valor actual.`);
     p.coste = coste > 0 ? coste : null;
     if (x.robo) p.robo = true;
+    // Cotización ya revisada (elegida a mano o por el servidor): no se vuelve a buscar sola.
+    if (x.revisado) p.revisado = true;
+    if (x.buscado) p.buscado = true;
     if (peso > 0) p.pesoObjetivo = peso;
     return p;
   });
+}
+
+// Transferencias que parecen aportaciones periódicas: de «Ahorro e inversión», repetidas con el
+// mismo concepto e importe en el último año. La más frecuente primero.
+export function candidatosAportacion(movs) {
+  const desde = dia(new Date(Date.now() - 400 * 86400000));
+  const m = new Map();
+  for (const x of movs || []) {
+    if (x.omit || !(x.amount < 0) || x.category !== "Ahorro e inversión" || dia(x.date) < desde) continue;
+    const imp = Math.round(Math.abs(x.amount));
+    const k = x.pattern + "|" + imp;
+    if (!m.has(k)) m.set(k, { patron: x.pattern, concepto: x.concept, importe: imp, n: 0, ultima: "" });
+    const c = m.get(k); c.n++; if (dia(x.date) > c.ultima) c.ultima = dia(x.date);
+  }
+  return [...m.values()].filter((c) => c.n >= 2).sort((a, b) => b.n - a.n || b.importe - a.importe);
 }
