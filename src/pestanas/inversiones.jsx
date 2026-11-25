@@ -1,6 +1,6 @@
 import { C, fmtE, fmtE0, nfNum, tnum } from "../core.js";
 import { Btn, Card, Modal, Seg } from "../ui/comunes.jsx";
-import { analizarInversiones, candidatosAportacion, normalizarPosiciones, serieEUR, simbolosDe, dia, sumarDias, divisaDe } from "../inversiones.js";
+import { analizarInversiones, candidatosAportacion, fusionarPosiciones, normalizarPosiciones, serieEUR, simbolosDe, dia, sumarDias, divisaDe } from "../inversiones.js";
 import { AlertTriangle, ChevronDown, ChevronRight, Pencil, Plus, RefreshCw, Repeat, Search, Trash2, Upload, Wallet } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, Line, LineChart, ComposedChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -398,7 +398,8 @@ function Importar({ onImportar, onClose }) {
   };
   return (
     <Modal title="Importar posiciones" subtitle="Pega la lista en formato JSON" onClose={onClose}
-      footer={<div className="flex flex-wrap gap-2"><Btn kind="primary" onClick={() => ir(true)} disabled={!txt.trim()}>Reemplazar todo</Btn><Btn onClick={() => ir(false)} disabled={!txt.trim()}>Añadir</Btn><Btn onClick={onClose}>Cancelar</Btn></div>}>
+      footer={<div className="flex flex-wrap gap-2"><Btn kind="primary" onClick={() => ir(false)} disabled={!txt.trim()}>Actualizar y añadir</Btn><Btn onClick={() => ir(true)} disabled={!txt.trim()}>Reemplazar todo</Btn><Btn onClick={onClose}>Cancelar</Btn></div>}>
+      <p className="mb-2 text-xs text-slate-500">«Actualizar y añadir» cambia los productos que ya tienes (mismo ISIN o mismo nombre) y añade los nuevos. «Reemplazar todo» borra la lista actual.</p>
       <textarea value={txt} onChange={(e) => { setTxt(e.target.value); setErr(null); }} rows={10} aria-label="Posiciones en JSON"
         className="w-full rounded-lg border p-2 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ borderColor: C.line }}
         placeholder='[{"nombre":"Apple","entidad":"Mi bróker","tipo":"accion","simbolo":"AAPL","participaciones":10,"coste":1500}]' />
@@ -443,6 +444,7 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
   const [editando, setEditando] = useState(null);
   const [importando, setImportando] = useState(false);
   const [aportando, setAportando] = useState(false);
+  const [nota, setNota] = useState(null);
 
   const traer = useCallback(async () => {
     const d = await servidor.get("/inversiones/precios?desde=" + sumarDias(dia(new Date()), -800));
@@ -525,7 +527,10 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
   const guardarPos = (p) => { setInversiones((x) => ({ ...x, posiciones: x.posiciones.some((q) => q.id === p.id) ? x.posiciones.map((q) => (q.id === p.id ? p : q)) : [...x.posiciones, p] })); setEditando(null); };
   const borrar = (id) => { if (window.confirm("¿Quitar esta posición de tus inversiones?")) { setInversiones((x) => ({ ...x, posiciones: x.posiciones.filter((p) => p.id !== id) })); setAbierta(null); } };
   const importar = (lista, reemplazar, aportacion) => {
-    setInversiones((x) => ({ posiciones: reemplazar ? lista : [...x.posiciones, ...lista], aportacion: aportacion || x.aportacion || null }));
+    const r = reemplazar ? null : fusionarPosiciones(inv.posiciones, lista);
+    setInversiones((x) => ({ posiciones: reemplazar ? lista : fusionarPosiciones(x.posiciones, lista).posiciones, aportacion: aportacion || x.aportacion || null }));
+    setAviso(null);
+    setNota(reemplazar ? `Lista sustituida: ${lista.length} productos.` : `${r.actualizadas} ${r.actualizadas === 1 ? "producto actualizado" : "productos actualizados"} y ${r.añadidas} ${r.añadidas === 1 ? "añadido" : "añadidos"}.`);
     setImportando(false);
   };
 
@@ -559,6 +564,7 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
       {!servidor.listo && <Card className="p-4 text-sm text-slate-600">Para que los precios se actualicen solos necesitas tu servidor conectado (Ajustes → Tus datos y sincronización).</Card>}
       {servidor.listo && !servidor.rasgo && <Card className="p-4 text-sm text-slate-600">Tu servidor aún no sabe traer precios: se actualiza solo en unos minutos si lo publicas desde GitHub. Mientras, puedes ir añadiendo tus posiciones.</Card>}
       {aviso && <div className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800"><AlertTriangle size={16} className="mt-0.5 shrink-0" />{aviso}</div>}
+      {nota && <div role="status" className="flex items-start justify-between gap-2 rounded-xl border p-3 text-sm" style={{ borderColor: C.line, background: C.surface }}><span>{nota}</span><button type="button" className="text-xs underline" onClick={() => setNota(null)}>Cerrar</button></div>}
 
       {!inv.posiciones.length ? (
         <Card className="p-6 text-center">

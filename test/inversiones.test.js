@@ -99,3 +99,24 @@ describe("evolución", () => {
     expect(r.serie.at(-1).valor).toBeCloseTo(34.04 + 100, 6);
   });
 });
+
+import { fusionarPosiciones } from "../src/inversiones.js";
+describe("actualizar con una lista", () => {
+  it("sustituye lo que coincide por ISIN o nombre, conserva su identidad y añade lo nuevo", () => {
+    const antes = [
+      { id: "a", nombre: "Fondo Uno", entidad: "Banco", tipo: "fondo", valorAlta: 1000, alta: "2026-11-24" },
+      { id: "b", nombre: "Fondo Dos", entidad: "Banco", tipo: "fondo", isin: "XX0000000001", valorAlta: 500, alta: "2026-11-24", robo: true, pesoObjetivo: 50 },
+    ];
+    const nuevas = normalizarPosiciones([
+      { nombre: "fondo uno", entidad: "Banco", tipo: "fondo", isin: "XX0000000002", simbolo: "0PUNO.F", participaciones: 10, coste: 900, revisado: true },
+      { nombre: "Otro nombre", entidad: "Banco", tipo: "fondo", isin: "XX0000000001", participaciones: 5, coste: 450 },
+      { nombre: "Fondo Tres", entidad: "Banco", tipo: "fondo", participaciones: 1, coste: 10 },
+    ], "2026-11-26");
+    const r = fusionarPosiciones(antes, nuevas);
+    expect(r).toMatchObject({ actualizadas: 2, añadidas: 1 });
+    expect(r.posiciones[0]).toMatchObject({ id: "a", simbolo: "0PUNO.F", participaciones: 10, coste: 900, revisado: true });
+    expect(r.posiciones[0].valorAlta).toBeUndefined();
+    expect(r.posiciones[1]).toMatchObject({ id: "b", participaciones: 5, robo: true, pesoObjetivo: 50 });
+    expect(r.posiciones).toHaveLength(3);
+  });
+});
