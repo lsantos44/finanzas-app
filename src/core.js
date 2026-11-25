@@ -3134,6 +3134,38 @@ async function aiText(aiCfg, { system, user, maxTokens = 1500, webTools = null, 
   return { text: (data.choices?.[0]?.message?.content || "").trim(), stop: data.choices?.[0]?.finish_reason, usage: null };
 }
 
+/* Leer posiciones de inversión de capturas de la app de un banco o bróker (visión). Devuelve
+   { entidad, posiciones: [{ nombre, isin, ticker, tipo, participaciones, costeMedio, coste, valor, divisa }] }
+   con los números como texto, tal cual aparecen; la app los valida y el usuario los revisa.
+   imagenes: [{ tipo: "image/jpeg", base64 }]. Las capturas solo van al proveedor de IA elegido. */
+const LEER_CAPTURAS_PROMPT = [
+  "Eres un extractor de datos. Recibes capturas de la app de un banco, bróker o gestora con posiciones de inversión (acciones, fondos, ETF).",
+  "Devuelve SOLO un objeto JSON: {\"entidad\": nombre de la entidad si se ve, \"posiciones\": [ ... ]}.",
+  "Cada posición: {\"nombre\", \"isin\" (12 caracteres, si aparece), \"ticker\" (si aparece, p. ej. VRT, SOI), \"bolsa\" (mercado si aparece, p. ej. Euronext Amsterdam, Nasdaq), \"tipo\": \"accion\" o \"fondo\", \"participaciones\" (nº de acciones o participaciones), \"costeMedio\" (coste o precio medio por participación EN EUROS), \"coste\" (total invertido EN EUROS), \"valor\" (valor actual EN EUROS), \"divisa\" (de la cotización)}.",
+  "Copia los números tal como aparecen, como texto (\"1.918,438\", \"37.6316\").",
+  "Si el coste medio o el BEP está en otra divisa (dólares), NO lo pongas en costeMedio: calcula coste = valor en euros − ganancia o pérdida potencial en euros (\"G/P potencial\", \"plusvalía\"). Si aparece \"Invertido\" en euros, úsalo como coste.",
+  "No inventes nada: omite el campo que no se vea. Una posición por producto, aunque salga en varias capturas. Sin texto ni marcas de código, solo el JSON.",
+].join(" ");
+
+async function aiLeerCapturas(aiCfg, imagenes, nota = "") {
+  if (!imagenes?.length) throw new Error("No hay capturas.");
+  const texto = "Extrae las posiciones de estas capturas." + (nota ? ` Nota del usuario: ${String(nota).slice(0, 300)}` : "");
+  let text;
+  if (!aiCfg || aiCfg.provider === "claude") {
+    const content = [...imagenes.map((im) => ({ type: "image", source: { type: "base64", media_type: im.tipo, data: im.base64 } })), { type: "text", text: texto }];
+    const data = await anthropicRequest({ max_tokens: 4000, system: LEER_CAPTURAS_PROMPT, messages: [{ role: "user", content }] }, AI_MODEL.chat);
+    text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+  } else {
+    const content = [...imagenes.map((im) => ({ type: "image_url", image_url: { url: `data:${im.tipo};base64,${im.base64}` } })), { type: "text", text: texto }];
+    const data = await openaiRequest(aiCfg, { max_tokens: 6000, messages: [{ role: "system", content: LEER_CAPTURAS_PROMPT }, { role: "user", content }] });
+    text = data.choices?.[0]?.message?.content || "";
+  }
+  const obj = extractJSONObject(String(text || ""));
+  const lista = Array.isArray(obj) ? obj : obj.posiciones;
+  if (!Array.isArray(lista) || !lista.length) throw new Error("La IA no ha encontrado posiciones en las capturas.");
+  return { entidad: (!Array.isArray(obj) && obj.entidad) || "", posiciones: lista.filter((x) => x && x.nombre) };
+}
+
 // Chat con herramientas de datos: la IA decide qué consultar y la app lo ejecuta EN LOCAL.
 async function aiChatWithTools(aiCfg, { system, history, tools, runTool, onTrace, maxIter = 6, maxTokens = 3000 }) {
   const LIMIT_MSG = "He hecho demasiadas consultas seguidas sin llegar a una conclusión. Prueba a acotar la pregunta (periodo, categoría…).";
@@ -3639,6 +3671,7 @@ const convTitle = (c) => (c.title || (c.msgs.find((m) => m.role === "user")?.con
 function setTema(t) { THEME = t; }
 
 export {
+  aiLeerCapturas,
   firmaSync,
   aiEjemplos,
   ACCESO_GUARDADO_KEY,

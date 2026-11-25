@@ -255,6 +255,8 @@ export function normalizarPosiciones(lista, hoy) {
     };
     if (x.isin) p.isin = String(x.isin).toUpperCase().slice(0, 12);
     if (x.simbolo) p.simbolo = String(x.simbolo).slice(0, 40);
+    if (x.ticker) p.ticker = String(x.ticker).toUpperCase().replace(/[^A-Z0-9.-]/g, "").slice(0, 12);
+    if (x.bolsa) p.bolsa = String(x.bolsa).slice(0, 60);
     if (x.divisa) p.divisa = String(x.divisa).slice(0, 3);
     const part = num(x.participaciones), val = num(x.valorAlta), peso = num(x.pesoObjetivo);
     // Coste: el total invertido o, como lo dan las entidades, el coste (precio) medio por participación.
@@ -327,4 +329,17 @@ export function rentabilidadTWR(serie, { desde = "0000-00-00", entidad = null, p
     indice.push([serie[i].d, idx]);
   }
   return { r: idx - 1, indice };
+}
+
+// Lo que la IA lee de unas capturas → posiciones listas para revisar. Si no se ve el número de
+// participaciones, se toma el valor actual; si no hay ni eso, la fila queda para completarla.
+export function posicionesDeCapturas(leido, entidad, hoy) {
+  return (leido?.posiciones || []).map((x, i) => {
+    const tipo = x.tipo === "accion" || x.tipo === "fondo" ? x.tipo : (x.ticker && !x.isin?.startsWith?.("IE") ? "accion" : "fondo");
+    const fila = { nombre: String(x.nombre || "").trim(), entidad: entidad || leido.entidad || "Sin entidad", tipo, isin: x.isin || undefined, ticker: x.ticker || undefined, bolsa: x.bolsa || undefined,
+      participaciones: x.participaciones ?? null, coste: x.coste ?? null, costeMedio: x.coste ? null : x.costeMedio ?? null, valorAlta: x.participaciones ? null : x.valor ?? null, alta: hoy };
+    let p = null, error = null;
+    try { [p] = normalizarPosiciones([fila], hoy); } catch (e) { error = e.message; }
+    return { i, fila, p, error, valor: x.valor ?? null, incluir: !!p };
+  });
 }
