@@ -3527,6 +3527,7 @@ const RASGOS_BACKEND = {
   "saldo-por-movimiento": "saldo al día con las revisiones automáticas",
   "permiso-180-dias": "permiso del banco de hasta 180 días (la mitad de reconexiones)",
   "inversiones": "precios diarios de tus acciones y fondos",
+  "inversiones-intradia": "precios de tus acciones cada media hora y cotización de fondos elegida sola",
 };
 
 /* Conciliación: ¿cuadran los movimientos con el saldo que da el banco tras cada uno? Día a día,

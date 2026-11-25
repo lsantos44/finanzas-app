@@ -1,8 +1,8 @@
 import { C, fmtE, fmtE0, nfNum, tnum } from "../core.js";
 import { Btn, Card, Modal, Seg } from "../ui/comunes.jsx";
-import { analizarInversiones, normalizarPosiciones, serieEUR, simbolosDe, dia, sumarDias, divisaDe } from "../inversiones.js";
-import { AlertTriangle, ChevronDown, ChevronRight, Pencil, Plus, RefreshCw, Search, Trash2, Upload, Wallet } from "lucide-react";
-import { Area, AreaChart, CartesianGrid, Line, ComposedChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { analizarInversiones, candidatosAportacion, normalizarPosiciones, serieEUR, simbolosDe, dia, sumarDias, divisaDe } from "../inversiones.js";
+import { AlertTriangle, ChevronDown, ChevronRight, Pencil, Plus, RefreshCw, Repeat, Search, Trash2, Upload, Wallet } from "lucide-react";
+import { Area, AreaChart, CartesianGrid, Line, LineChart, ComposedChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 /* ============================================================
@@ -22,6 +22,16 @@ const colorDe = (v) => (v == null || Math.abs(v) < 1e-9 ? C.muted : v > 0 ? C.in
 const fechaCorta = (f) => (f ? new Date(f + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "short" }) : "");
 const fechaLarga = (f) => (f ? new Date(f + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "long", year: "numeric" }) : "");
 const RANGOS = [{ v: 30, l: "1M" }, { v: 182, l: "6M" }, { v: 365, l: "1A" }, { v: 0, l: "Todo" }];
+// Colores de las series (entidades, productos): distinguibles en claro y en oscuro.
+const PALETA = ["#2F7DE1", "#16A34A", "#E0A100", "#8B5CF6", "#E5484D", "#0EA5A4", "#EA6A2A", "#64748B"];
+const recortar = (serie, rango) => {
+  if (!serie?.length) return [];
+  const desde = rango ? sumarDias(serie[serie.length - 1].d, -rango) : "0000-00-00";
+  const s = serie.filter((p) => p.d >= desde);
+  const paso = Math.max(1, Math.ceil(s.length / 260));
+  return s.filter((_, i) => i % paso === 0 || i === s.length - 1).map((p) => ({ ...p, et: fechaCorta(p.d) }));
+};
+const ejeY = (v) => (Math.abs(v) >= 10000 ? nfNum.format(Math.round(v / 1000)) + "k" : nfNum.format(Math.round(v * 100) / 100));
 
 function Cifra({ label, children, sub, color }) {
   return (
@@ -87,6 +97,136 @@ function GraficoEvolucion({ serie, conInvertido, referencia, alto = 200 }) {
   );
 }
 
+/* Evolución de la cartera, de tres formas: el total (con lo invertido), cómo se reparte por
+   plataforma a lo largo del tiempo, y comparando la rentabilidad de plataformas y productos
+   (en %, desde el inicio del periodo, sin contar el dinero nuevo como ganancia). */
+function EvolucionCartera({ a, inv, datos }) {
+  const [modo, setModo] = useState("total");
+  const [rango, setRango] = useState(365);
+  const entidades = a.porEntidad.map((g) => g.nombre);
+  const [elegidos, setElegidos] = useState(() => entidades.map((e) => "e:" + e));
+  const datosR = useMemo(() => recortar(a.serie, rango), [a.serie, rango]);
+
+  const comparacion = useMemo(() => {
+    if (modo !== "comparar" || datosR.length < 2) return { filas: [], claves: [] };
+    const claves = elegidos.slice(0, 8);
+    const series = {};
+    for (const k of claves) {
+      if (k.startsWith("e:")) series[k] = datosR.map((p) => p.porEntidadBase?.[k.slice(2)] ?? null);
+      else {
+        const pos = inv.posiciones.find((p) => p.id === k.slice(2));
+        const s = pos ? serieEUR(pos, datos) : [];
+        const mapa = new Map(s);
+        let ult = null;
+        series[k] = datosR.map((p) => { if (mapa.has(p.d)) ult = mapa.get(p.d); return ult; });
+      }
+    }
+    const filas = datosR.map((p, i) => {
+      const o = { d: p.d, et: p.et };
+      for (const k of claves) { const base = series[k].find((x) => x); const v = series[k][i]; o[k] = base && v ? (v / base - 1) * 100 : null; }
+      return o;
+    });
+    return { filas, claves };
+  }, [modo, datosR, elegidos, inv.posiciones, datos]);
+
+  const nombreDe = (k) => (k.startsWith("e:") ? k.slice(2) : inv.posiciones.find((p) => p.id === k.slice(2))?.nombre || "?");
+  // Un color fijo por plataforma (el mismo que en «Por plataforma» y en la barra de reparto) y
+  // por producto, aunque cambie qué se compara.
+  const colorDe2 = (k) => {
+    if (k.startsWith("e:")) return PALETA[Math.max(0, entidades.indexOf(k.slice(2))) % PALETA.length];
+    return PALETA[(entidades.length + Math.max(0, inv.posiciones.findIndex((p) => p.id === k.slice(2)))) % PALETA.length];
+  };
+  const alternar = (k) => setElegidos((xs) => (xs.includes(k) ? xs.filter((x) => x !== k) : [...xs, k].slice(-8)));
+
+  return (
+    <Card className="p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold">Evolución</h3>
+        <Seg ariaLabel="Qué ver en el gráfico" value={modo} onChange={setModo} options={[{ v: "total", l: "Total" }, { v: "entidad", l: "Por plataforma" }, { v: "comparar", l: "Comparar" }]} />
+      </div>
+      {modo === "total" && (
+        <>
+          <p className="mb-2 text-xs text-slate-500">Con lo que tienes hoy, hacia atrás{inv.aportacion ? ", sumando cada aportación desde que llega" : ""}. La línea discontinua es lo invertido.</p>
+          <GraficoEvolucion serie={a.serie} conInvertido={a.costeTotal > 0} />
+        </>
+      )}
+      {modo !== "total" && (
+        <div className="mb-2 flex justify-end"><Seg ariaLabel="Periodo del gráfico" value={rango} onChange={setRango} options={RANGOS} /></div>
+      )}
+      {modo === "entidad" && (datosR.length < 2 ? <p className="py-8 text-center text-sm text-slate-400">El gráfico aparecerá cuando lleguen los precios.</p> : (
+        <>
+          <div style={{ height: 220 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={datosR.map((p) => ({ et: p.et, d: p.d, ...p.porEntidad }))} margin={{ top: 6, right: 4, left: 4, bottom: 0 }}>
+                <CartesianGrid vertical={false} stroke={C.line} />
+                <XAxis dataKey="et" tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={{ stroke: C.line }} interval="preserveStartEnd" minTickGap={48} />
+                <YAxis tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={false} width={58} tickFormatter={ejeY} />
+                <Tooltip formatter={(v, n) => [fmtE0(v), n]} labelFormatter={(_, pl) => fechaLarga(pl?.[0]?.payload?.d)} contentStyle={{ borderRadius: 12, borderColor: C.line, fontSize: 12 }} />
+                {[...entidades].reverse().map((e) => { const i = entidades.indexOf(e); return <Area key={e} type="monotone" dataKey={e} stackId="1" stroke={PALETA[i % PALETA.length]} fill={PALETA[i % PALETA.length]} fillOpacity={0.35} isAnimationActive={false} />; })}
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-600">
+            {a.porEntidad.map((g, i) => <span key={g.nombre} className="inline-flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: PALETA[i % PALETA.length] }} />{g.nombre} · {fmtE0(g.valor)}</span>)}
+          </div>
+        </>
+      ))}
+      {modo === "comparar" && (
+        <>
+          <p className="mb-2 text-xs text-slate-500">Rentabilidad en el periodo: plataformas (sin contar las aportaciones como ganancia) y productos (su precio). Toca para añadir o quitar.</p>
+          <div className="mb-3 flex flex-wrap gap-1.5">
+            {[...entidades.map((e) => "e:" + e), ...inv.posiciones.map((p) => "p:" + p.id)].map((k) => {
+              const on = elegidos.includes(k);
+              return (
+                <button key={k} type="button" onClick={() => alternar(k)} aria-pressed={on}
+                  className={`max-w-[12rem] truncate rounded-full border px-2.5 py-1 text-xs ${k.startsWith("e:") ? "font-semibold" : ""}`}
+                  style={on ? { borderColor: colorDe2(k), color: colorDe2(k), background: C.surfaceAlt } : { borderColor: C.line, color: C.muted }}>
+                  {nombreDe(k)}
+                </button>
+              );
+            })}
+          </div>
+          {comparacion.filas.length < 2 || !comparacion.claves.length ? <p className="py-8 text-center text-sm text-slate-400">Elige qué comparar.</p> : (
+            <>
+              <div style={{ height: 230 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={comparacion.filas} margin={{ top: 6, right: 4, left: 4, bottom: 0 }}>
+                    <CartesianGrid vertical={false} stroke={C.line} />
+                    <XAxis dataKey="et" tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={{ stroke: C.line }} interval="preserveStartEnd" minTickGap={48} />
+                    <YAxis tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${Math.round(v)}%`} />
+                    <ReferenceLine y={0} stroke={C.lineStrong} />
+                    <Tooltip formatter={(v, k) => [pct(v / 100), nombreDe(k)]} labelFormatter={(_, pl) => fechaLarga(pl?.[0]?.payload?.d)} contentStyle={{ borderRadius: 12, borderColor: C.line, fontSize: 12 }} />
+                    {comparacion.claves.map((k) => <Line key={k} type="monotone" dataKey={k} stroke={colorDe2(k)} strokeWidth={k.startsWith("e:") ? 2.25 : 1.5} dot={false} connectNulls isAnimationActive={false} />)}
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="mt-2 grid grid-cols-1 gap-1 text-xs sm:grid-cols-2">
+                {comparacion.claves.map((k) => { const ult = comparacion.filas[comparacion.filas.length - 1][k]; return (
+                  <span key={k} className="flex min-w-0 items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: colorDe2(k) }} /><span className="truncate">{nombreDe(k)}</span><span className="ml-auto shrink-0 font-semibold" style={{ ...tnum, color: colorDe(ult) }}>{ult == null ? "–" : pct(ult / 100)}</span></span>
+                ); })}
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
+function Reparto({ grupos, total }) {
+  if (!total) return null;
+  return (
+    <div>
+      <div className="flex h-2.5 w-full overflow-hidden rounded-full" style={{ background: C.line }} role="img" aria-label={grupos.map((g) => `${g.nombre} ${pct(g.peso, false)}`).join(", ")}>
+        {grupos.map((g, i) => <div key={g.nombre} style={{ width: `${g.peso * 100}%`, background: PALETA[i % PALETA.length] }} />)}
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-600">
+        {grupos.map((g, i) => <span key={g.nombre} className="inline-flex items-center gap-1" style={tnum}><span className="inline-block h-2 w-2 rounded-sm" style={{ background: PALETA[i % PALETA.length] }} />{g.nombre} {pct(g.peso, false)}</span>)}
+      </div>
+    </div>
+  );
+}
+
 function Mini({ serie }) {
   if (!serie || serie.length < 2) return null;
   const s = serie.slice(-60).map(([d, v]) => ({ d, v }));
@@ -122,7 +262,7 @@ function FilaPosicion({ f, datos, onAbrir }) {
   );
 }
 
-function Grupo({ g, datos, onAbrir }) {
+function Grupo({ g, datos, onAbrir, nota }) {
   const [abierto, setAbierto] = useState(true);
   return (
     <Card className="overflow-hidden">
@@ -139,6 +279,7 @@ function Grupo({ g, datos, onAbrir }) {
         </div>
       </button>
       {abierto && <div className="divide-y border-t" style={{ borderColor: C.line }}>{g.filas.map((f) => <FilaPosicion key={f.p.id} f={f} datos={datos} onAbrir={onAbrir} />)}</div>}
+      {abierto && nota && <div className="border-t px-4 py-2.5" style={{ borderColor: C.line }}>{nota}</div>}
     </Card>
   );
 }
@@ -156,8 +297,8 @@ function Detalle({ f, datos, onClose, onEditar, onBorrar }) {
         <Cifra label="Peso en tu cartera">{pct(f.peso, false)}</Cifra>
       </div>
       <div className="mt-4"><GraficoEvolucion serie={serie} referencia={f.precioMedio} alto={210} /></div>
-      <div className="mt-4 grid grid-cols-3 gap-3 text-center">
-        {[["1 semana", f.var.s], ["1 mes", f.var.m], ["1 año", f.var.a]].map(([l, v]) => (
+      <div className="mt-4 grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
+        {[["1 semana", f.var.s], ["1 mes", f.var.m], ["Este año", f.var.ytd], ["1 año", f.var.a]].map(([l, v]) => (
           <div key={l} className="rounded-xl border px-2 py-2" style={{ borderColor: C.line }}>
             <div className="text-[11px] text-slate-500">{l}</div>
             <div className="text-sm font-semibold" style={{ ...tnum, color: colorDe(v) }}>{pct(v)}</div>
@@ -207,10 +348,11 @@ function Editor({ inicial, entidades, servidor, onGuardar, onClose }) {
         {res && (res.length ? (
           <div className="max-h-48 overflow-y-auto rounded-lg border" style={{ borderColor: C.line }}>
             {res.map((r) => (
-              <button key={r.simbolo} type="button" onClick={() => { setP((x) => ({ ...x, simbolo: r.simbolo, nombre: x.nombre || r.nombre, tipo: r.tipo === "EQUITY" ? "accion" : x.tipo, isin: /^[A-Z]{2}[A-Z0-9]{9}\d$/.test(q.trim().toUpperCase()) ? q.trim().toUpperCase() : x.isin })); setRes(null); }}
+              <button key={r.simbolo} type="button" onClick={() => { setP((x) => ({ ...x, simbolo: r.simbolo, revisado: true, nombre: x.nombre || r.nombre, tipo: r.tipo === "EQUITY" ? "accion" : x.tipo, isin: /^[A-Z]{2}[A-Z0-9]{9}\d$/.test(q.trim().toUpperCase()) ? q.trim().toUpperCase() : x.isin })); setRes(null); }}
                 className="block w-full border-b px-3 py-2 text-left text-sm last:border-0 hover:bg-slate-50" style={{ borderColor: C.line }}>
                 <span className="font-medium">{r.nombre}</span>
-                <span className="block text-xs text-slate-500">{r.simbolo} · {r.tipo === "MUTUALFUND" ? "Fondo" : r.tipo === "EQUITY" ? "Acción" : r.tipo || "?"} · {r.bolsa || ""}</span>
+                <span className="block text-xs text-slate-500">{r.simbolo} · {r.tipo === "MUTUALFUND" ? "Fondo" : r.tipo === "EQUITY" ? "Acción" : r.tipo || "?"} · {r.bolsa || ""}
+                  {r.puntos != null && (r.puntos >= 10 ? <span style={{ color: C.income }}> · con historial</span> : <span style={{ color: C.expense }}> · sin historial de precios</span>)}</span>
               </button>
             ))}
           </div>
@@ -266,18 +408,7 @@ function Importar({ onImportar, onClose }) {
 }
 
 function Aportacion({ inv, movs, onGuardar, onClose }) {
-  const candidatos = useMemo(() => {
-    const desde = dia(new Date(Date.now() - 400 * 86400000));
-    const m = new Map();
-    for (const x of movs || []) {
-      if (x.omit || !(x.amount < 0) || x.category !== "Ahorro e inversión" || dia(x.date) < desde) continue;
-      const imp = Math.round(Math.abs(x.amount));
-      const k = x.pattern + "|" + imp;
-      if (!m.has(k)) m.set(k, { patron: x.pattern, concepto: x.concept, importe: imp, n: 0, ultima: "" });
-      const c = m.get(k); c.n++; if (dia(x.date) > c.ultima) c.ultima = dia(x.date);
-    }
-    return [...m.values()].filter((c) => c.n >= 2).sort((a, b) => b.n - a.n);
-  }, [movs]);
+  const candidatos = useMemo(() => candidatosAportacion(movs), [movs]);
   const robo = inv.posiciones.filter((p) => p.robo);
   const desde = robo.reduce((mx, p) => (p.alta > mx ? p.alta : mx), "0000-00-00");
   return (
@@ -331,7 +462,7 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
           await servidor.post("/inversiones/seguir", { simbolos: simbolos.split(",") });
           guardar(SEGUIDOS_KEY, simbolos);
           await traer();
-        } else if (simbolos && (!datos.ts || Date.now() - datos.ts > 3 * 3600000)) await traer();
+        } else if (simbolos && (!datos.ts || Date.now() - datos.ts > 10 * 60000)) await traer();
         if (vivo) setAviso(null);
       } catch (e) { if (vivo) setAviso("No se pudieron traer los precios: " + e.message + ". Se muestran los últimos guardados."); }
       finally { if (vivo) setCargando(false); }
@@ -340,24 +471,46 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [simbolos, servidor.listo, servidor.rasgo]);
 
-  // Fondos importados solo con ISIN: se busca su cotización una vez.
+  // Cotización de cada producto, elegida sola: los que no tienen (importados con ISIN o solo con
+  // nombre) y los que tienen una sin historial (un listado de bolsa con un único dato). Se intenta
+  // una vez por producto; si no se encuentra, queda con el valor que se puso.
+  const conResolver = servidor.rasgos?.includes("inversiones-intradia");
   useEffect(() => {
     if (!servidor.listo || !servidor.rasgo) return;
-    const pend = inv.posiciones.filter((p) => p.isin && !p.simbolo && !p.buscado);
+    const pend = inv.posiciones.filter((p) => !p.revisado && (
+      (!p.simbolo && !p.buscado && (p.isin || (conResolver && p.nombre)))
+      || (conResolver && p.simbolo && datos.meta?.[p.simbolo] && (datos.series?.[p.simbolo] || []).length < 10)));
     if (!pend.length) return;
+    let vivo = true;
     (async () => {
       const cambios = {};
       for (const p of pend) {
         try {
-          const d = await servidor.get("/inversiones/buscar?q=" + encodeURIComponent(p.isin));
-          const r = (d.resultados || []).find((x) => ["MUTUALFUND", "ETF", "EQUITY"].includes(x.tipo)) || (d.resultados || [])[0];
-          cambios[p.id] = r ? { simbolo: r.simbolo } : { buscado: true };
-        } catch { cambios[p.id] = { buscado: true }; }
+          if (conResolver) {
+            const r = await servidor.get(`/inversiones/resolver?isin=${encodeURIComponent(p.isin || "")}&nombre=${encodeURIComponent(p.nombre || "")}&tipo=${p.tipo}`);
+            cambios[p.id] = r.simbolo ? { simbolo: r.simbolo, revisado: true } : { revisado: true, buscado: true };
+          } else {
+            const d = await servidor.get("/inversiones/buscar?q=" + encodeURIComponent(p.isin));
+            const r = (d.resultados || []).find((x) => x.tipo === (p.tipo === "accion" ? "EQUITY" : "MUTUALFUND")) || (d.resultados || [])[0];
+            cambios[p.id] = r ? { simbolo: r.simbolo } : { buscado: true };
+          }
+        } catch { /* sin conexión: se reintenta la próxima vez */ }
       }
-      setInversiones((x) => ({ ...x, posiciones: x.posiciones.map((p) => (cambios[p.id] ? { ...p, ...cambios[p.id] } : p)) }));
+      if (vivo && Object.keys(cambios).length) setInversiones((x) => ({ ...x, posiciones: x.posiciones.map((p) => (cambios[p.id] ? { ...p, ...cambios[p.id] } : p)) }));
     })();
+    return () => { vivo = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inv.posiciones.map((p) => p.id + (p.simbolo || "") + (p.buscado ? 1 : 0)).join(), servidor.listo, servidor.rasgo]);
+  }, [inv.posiciones.map((p) => p.id + (p.simbolo || "") + (p.revisado ? 1 : 0) + (p.buscado ? 1 : 0)).join(), datos.ts, servidor.listo, servidor.rasgo, conResolver]);
+
+  // Mientras la pestaña está abierta: precios nuevos cada 10 minutos y al volver a ella. Es solo
+  // leer de tu servidor, que los renueva cada media hora en horario de bolsa.
+  useEffect(() => {
+    if (!servidor.listo || !servidor.rasgo || !simbolos) return;
+    const refrescar = () => { if (document.visibilityState === "visible" && Date.now() - (leer(PRECIOS_KEY)?.ts || 0) > 10 * 60000) traer().catch(() => {}); };
+    const t = setInterval(refrescar, 60000);
+    document.addEventListener("visibilitychange", refrescar);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", refrescar); };
+  }, [servidor.listo, servidor.rasgo, simbolos, traer]);
 
   const actualizar = async () => {
     setCargando(true); setAviso(null);
@@ -382,6 +535,24 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
   const solos = new Set(a.porEntidad.filter((g) => g.filas.length === 1 && g.peso > 0.5 && a.porEntidad.length > 1).map((g) => g.filas[0].p.id));
   for (const f of a.filas) if (f.peso > 0.25 && !solos.has(f.p.id)) avisosCartera.push(`«${f.p.nombre}» pesa el ${pct(f.peso, false)} de tu cartera.`);
   const sinPrecio = a.filas.filter((f) => f.sinPrecio);
+  const robo = inv.posiciones.filter((p) => p.robo);
+  const entidadRobo = robo[0]?.entidad || null;
+  const candidato = useMemo(() => (robo.length && !inv.aportacion ? candidatosAportacion(movs)[0] || null : null), [robo.length, inv.aportacion, movs]);
+  const desdeRobo = robo.reduce((mx, p) => (p.alta > mx ? p.alta : mx), "0000-00-00");
+  const usarAportacion = (c) => setInversiones((x) => ({ ...x, aportacion: { patron: c.patron, importe: c.importe, desde: desdeRobo } }));
+  const notaRobo = entidadRobo && (inv.aportacion ? (
+    <p className="flex items-start gap-2 text-xs text-slate-600"><Repeat size={13} className="mt-0.5 shrink-0" />
+      <span>Aportación automática de <strong style={tnum}>{fmtE0(inv.aportacion.importe)}</strong>: cada transferencia se reparte entre los {robo.length} fondos según su peso.
+        {a.aportes.length ? ` Sumadas ${a.aportes.length} (${fmtE0(a.aportes.reduce((x, y) => x + y.importe, 0))}), la última el ${fechaLarga(a.aportes[a.aportes.length - 1].fecha)}.` : ` Aún ninguna desde el ${fechaLarga(inv.aportacion.desde)}: se sumará la próxima.`}
+        {" "}<button type="button" className="underline" onClick={() => setAportando(true)}>Cambiar</button></span></p>
+  ) : candidato ? (
+    <div className="text-xs text-slate-600">
+      <p className="flex items-start gap-2"><Repeat size={13} className="mt-0.5 shrink-0" /><span>¿Tu aportación mensual a esta cartera es <strong>«{candidato.concepto}» de {fmtE0(candidato.importe)}</strong>? La has hecho {candidato.n} veces en el último año. Si la usas, cada una se sumará sola, repartida entre los fondos.</span></p>
+      <div className="mt-2 flex gap-2 pl-5"><Btn size="sm" kind="primary" onClick={() => usarAportacion(candidato)}>Sí, usarla</Btn><Btn size="sm" onClick={() => setAportando(true)}>Elegir otra</Btn></div>
+    </div>
+  ) : (
+    <p className="flex items-start gap-2 text-xs text-slate-500"><Repeat size={13} className="mt-0.5 shrink-0" />Si aportas cada mes, clasifica esas transferencias como «Ahorro e inversión» y elígela en <button type="button" className="underline" onClick={() => setAportando(true)}>Aportación periódica</button>: se sumarán solas.</p>
+  ));
 
   return (
     <div className="space-y-4">
@@ -415,27 +586,44 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
               <Cifra label="Último cambio" color={colorDe(a.hoy)} sub={pct(a.hoyPct)}>{eur(a.hoy, true)}</Cifra>
               <Cifra label="Resultado" color={colorDe(a.resultado)} sub={a.resultado == null ? "añade el coste" : `${pct(a.resultadoPct)} sobre ${fmtE0(a.costeTotal)}${a.sinCoste ? ` · ${a.sinCoste} sin coste` : ""}`}>{a.resultado == null ? "–" : eur(a.resultado, true)}</Cifra>
             </div>
-            <p className="mt-3 text-[11px] text-slate-400">{a.fechaPrecios ? `Precios de cierre hasta el ${fechaLarga(a.fechaPrecios)}. Los fondos publican su valor con 1–2 días de retraso.` : "Aún no hay precios: llegarán en cuanto tu servidor los descargue."}</p>
+            <div className="mt-3"><Reparto grupos={a.porEntidad} total={a.total} /></div>
+            <p className="mt-3 text-[11px] text-slate-400">{a.fechaPrecios
+              ? <>{a.ytd != null && <>En lo que va de año: <span style={{ ...tnum, color: colorDe(a.ytd) }}>{pct(a.ytd)}</span>. </>}
+                  {a.horaAcciones ? `Acciones actualizadas ${new Date(a.horaAcciones).toLocaleString("es-ES", { weekday: "short", hour: "2-digit", minute: "2-digit" })} (con 15 min de retraso). ` : ""}
+                  Fondos al {fechaLarga(a.filas.filter((f) => f.p.tipo !== "accion" && f.fechaPrecio).reduce((mx, f) => (f.fechaPrecio > mx ? f.fechaPrecio : mx), "") || a.fechaPrecios)}: publican su valor una vez al día.</>
+              : "Aún no hay precios: llegarán en cuanto tu servidor los descargue."}</p>
           </Card>
 
-          <Card className="p-4">
-            <h3 className="mb-1 text-sm font-semibold">Evolución</h3>
-            <p className="mb-2 text-xs text-slate-500">Con lo que tienes hoy, hacia atrás{inv.aportacion ? ", y sumando cada aportación desde que llega" : ""}. La línea discontinua es lo invertido.</p>
-            <GraficoEvolucion serie={a.serie} conInvertido={a.costeTotal > 0} />
-          </Card>
+          <EvolucionCartera a={a} inv={inv} datos={datos} />
+
+          {a.movidos.length > 0 && (
+            <Card className="p-4">
+              <h3 className="text-sm font-semibold">Lo que más se ha movido</h3>
+              <div className="mt-2 divide-y" style={{ borderColor: C.line }}>
+                {a.movidos.map((f) => (
+                  <button key={f.p.id} type="button" onClick={() => setAbierta(f.p.id)} className="flex w-full items-center gap-2 py-2 text-left text-sm">
+                    <span className="min-w-0 flex-1 truncate">{f.p.nombre}</span>
+                    <span className="shrink-0 text-xs text-slate-500" style={tnum}>{eur(f.hoy, true)}</span>
+                    <span className="w-16 shrink-0 text-right font-semibold" style={{ ...tnum, color: colorDe(f.hoyPct) }}>{pct(f.hoyPct)}</span>
+                  </button>
+                ))}
+              </div>
+            </Card>
+          )}
 
           <div className="flex items-center justify-between gap-2">
-            <Seg ariaLabel="Agrupar por" value={vista} onChange={setVista} options={[{ v: "entidad", l: "Por entidad" }, { v: "tipo", l: "Por tipo" }]} />
+            <Seg ariaLabel="Agrupar por" value={vista} onChange={setVista} options={[{ v: "entidad", l: "Por plataforma" }, { v: "tipo", l: "Por tipo" }]} />
             <Btn size="sm" onClick={() => setEditando({})}><Plus size={14} /> Añadir</Btn>
           </div>
-          {(vista === "entidad" ? a.porEntidad : a.porTipo).map((g) => <Grupo key={g.nombre} g={g} datos={datos} onAbrir={setAbierta} />)}
+          {(vista === "entidad" ? a.porEntidad : a.porTipo).map((g) => <Grupo key={g.nombre} g={g} datos={datos} onAbrir={setAbierta} nota={vista === "entidad" && g.nombre === entidadRobo ? notaRobo : null} />)}
 
           {(avisosCartera.length > 0 || sinPrecio.length > 0) && (
             <Card className="p-4">
               <h3 className="text-sm font-semibold">A tener en cuenta</h3>
               <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-600">
                 {avisosCartera.map((t) => <li key={t}>{t}</li>)}
-                {sinPrecio.map((f) => <li key={f.p.id}>«{f.p.nombre}» no tiene precio automático: se cuenta con el valor que pusiste. Edítala y busca su cotización.</li>)}
+                {sinPrecio.map((f) => <li key={f.p.id}>«{f.p.nombre}» no tiene precio automático: se cuenta con el valor que pusiste.{" "}
+                  <button type="button" className="underline" onClick={() => setEditando(f.p)}>Buscar su cotización</button>{f.p.isin ? "" : " (con el ISIN es más fácil de encontrar)"}.</li>)}
               </ul>
             </Card>
           )}
@@ -444,7 +632,6 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
             <Btn size="sm" onClick={() => setAportando(true)}>Aportación periódica{inv.aportacion ? ` · ${fmtE0(inv.aportacion.importe)}` : ""}</Btn>
             <Btn size="sm" onClick={() => setImportando(true)}><Upload size={13} /> Importar</Btn>
           </div>
-          {a.aportes.length > 0 && <p className="text-xs text-slate-500">{a.aportes.length} {a.aportes.length === 1 ? "aportación sumada" : "aportaciones sumadas"} a la cartera automatizada ({fmtE0(a.aportes.reduce((s, x) => s + x.importe, 0))}).</p>}
         </>
       )}
 
