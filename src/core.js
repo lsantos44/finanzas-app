@@ -82,10 +82,10 @@ const migrateCat = (c) => (c === "Ingresos" ? "Otros ingresos" : c === "Gastos f
 const DEFAULT_REDUCIBLE = ["Ocio", "Restauración", "Suscripciones", "Compras", "Ropa"];
 const ALL_TABS = [
   { id: "resumen", label: "Resumen", icon: LayoutGrid },
+  { id: "inversiones", label: "Inversiones", short: "Invers.", icon: LineChart },
   { id: "analisis", label: "Análisis", icon: TrendingUp },
   { id: "clasificar", label: "Clasificación", short: "Clasif.", icon: ClipboardList },
   { id: "activos", label: "Activos", icon: Car },
-  { id: "inversiones", label: "Inversiones", short: "Invers.", icon: LineChart },
   { id: "ideas", label: "Ideas", icon: Sparkles },
   { id: "asistente", label: "Asistente", icon: Bot },
 ];

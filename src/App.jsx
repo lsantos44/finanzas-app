@@ -4,6 +4,7 @@ import { Plus, X, AlertTriangle, Search, Wallet, Settings, ClipboardList, Sun, M
 import { aiEjemplos, firmaSync, ALL_TABS, ASSET_EMOJI, BANK_KEY, BUILD_STAMP, C, CATEGORIES, CHATS_KEY, DEFAULT_AI_CFG, DEFAULT_MATERIALIDAD, DEFAULT_REDUCIBLE, DEFAULT_RULES, ENTITY_STOP, GROUP_COLORS, INGRESO_SET, INTERNAL_SET, LLEGA_CON_ENLACE, PRIO, SAMPLE_GROUPS, SNAP_PREFIX, STORE, STORE_KEYS, SYNC_KEY, THEME, THEME_KEY, TOKENS, TRANSFER_SET, VIVIENDA, abrirAcceso, aiProviderLabel, ambKey, ambiguousPatterns, analyzeReceiptTrends, analyzeRows, applyCfg, auditRules, b64u, bankErrDetail, bankIsEmpty, buildAlerts, buildMonthClose, buildMovements, calcImputacion, calcRentaInmueble, classifyForImport, computeBankSaldo, computeOutliers, conciliar, daysBetween, decodeBuffer, dedupeAgainst, describePeriod, deserializeMovs, detectDelimiter, detectRecurring, expandParts, fmtAgo, fmtDate, fmtDateShort, genSampleCSV, identifiesMerchant, isConditional, isProcessorPattern, isRefundPart, isSpreadsheetFile, isoDay, learnedRule, leerAccesoGuardado, listSnapshots, loadBank, loadSync, makeAccessLink, matchRule, merchantEntity, mergeBank, missingIncome, monthKey, monthLabel, monthsCoveredOf, movInGroup, movKey, needsAmount, newConv, nfEUR, nfNum, normalizePattern, parseAccessLink, parseDateAny, parseEsNumber, r2c, rebuildRules, recordarAcceso, recoverBackupFromStore, refundFromHistory, refundIndex, ruleConditionsHold, ruleId, runQuery, saveBank, saveSync, serializeCfg, serializeMovs, setItemSeguro, setTema, shouldSnapshot, sortedRules, spreadsheetToRows, stripAccents, tipoActivo, tnum, tokenizeCSV, totalsOf, upcomingCharges, upcomingIncome, viviendaPorDefecto, writeSnapshot } from "./core.js";
 import { Card, Seg, Spinner, useBackClose } from "./ui/comunes.jsx";
 import { INV_VACIO } from "./inversiones.js";
+import { TarjetaInversiones } from "./ui/inversiones-resumen.jsx";
 import { DrillPanel, FiltersBar, MovEditModal, PendientesPanel } from "./ui/movimientos.jsx";
 import { AsistenteConexion, EmptyState, EntrarModal, MappingModal, ValidationModal, VueltaOtroNavegador } from "./ui/portada.jsx";
 
@@ -2354,6 +2355,7 @@ function AppMain() {
           )}
 
           <Suspense fallback={<Cargando />}>
+          {tab === "resumen" && agg && <TarjetaInversiones inversiones={inversiones} movs={movs} onAbrir={() => setTab("inversiones")} />}
           {tab === "resumen" && agg && (
             <ResumenTab agg={agg} allAgg={allAgg} granularity={granularity} setGranularity={setGranularity} onDrill={setDrill} onPickMonth={onPickMonth}
               outlierMovs={outlierMovs} recurring={recurring} monthlySpark={monthlySpark} saldoSerie={saldoSerie} momDelta={momDelta} alerts={alerts} cierre={cierre} onOpenPending={() => setPendingOpen(true)} onDismissAlert={dismissAlert} />
