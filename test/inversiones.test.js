@@ -90,12 +90,14 @@ describe("evolución", () => {
   it("un producto con un solo precio no deja el gráfico vacío, y se desglosa por entidad", () => {
     const d = { series: { ...datos.series, SOLO: [["2026-11-24", 50]] }, meta: { ...datos.meta, SOLO: { divisa: "EUR" } } };
     const inv = { posiciones: [
-      { id: "x", nombre: "Con historia", entidad: "Uno", tipo: "accion", simbolo: "TEF.MC", participaciones: 10, coste: 30, alta: "2026-11-24" },
-      { id: "y", nombre: "Un solo dato", entidad: "Dos", tipo: "fondo", simbolo: "SOLO", participaciones: 2, coste: 100, alta: "2026-11-24" },
+      { id: "x", nombre: "Con historia", entidad: "Uno", tipo: "accion", simbolo: "TEF.MC", participaciones: 10, coste: 30, alta: "2026-11-24", compra: "2026-11-20" },
+      { id: "y", nombre: "Un solo dato", entidad: "Dos", tipo: "fondo", simbolo: "SOLO", participaciones: 2, coste: 100, alta: "2026-11-24", compra: "2026-11-23" },
     ] };
     const r = analizarInversiones(inv, d, []);
     expect(r.serie.map((p) => p.d)).toEqual(["2026-11-20", "2026-11-23", "2026-11-24"]);
-    expect(r.serie[0].porEntidad).toEqual({ Uno: 35, Dos: 100 });
+    // Antes de comprarlo, un producto no está en tu cartera.
+    expect(r.serie[0].porEntidad).toEqual({ Uno: 35, Dos: 0 });
+    expect(r.serie[1].porEntidad.Dos).toBe(100);
     expect(r.serie.at(-1).valor).toBeCloseTo(34.04 + 100, 6);
   });
 });
@@ -205,5 +207,81 @@ describe("actualizar sin duplicar lo que se llama distinto", () => {
     expect(r.posiciones[0]).toMatchObject({ id: "s", nombre: "Acme", simbolo: "ACM.PA", revisado: true, participaciones: 12, coste: 130 });
     expect(r.posiciones[1]).toMatchObject({ id: "v", nombre: "Vértice", simbolo: "VTX", participaciones: 3 });
     expect(r.posiciones[2]).toMatchObject({ id: "o", participaciones: 1 });
+  });
+});
+
+describe("desde que entraste", () => {
+  it("una posición cuenta desde su compra, con lo invertido desde ese día", () => {
+    const inv = { posiciones: [{ id: "x", nombre: "Acción", entidad: "Uno", tipo: "accion", simbolo: "TEF.MC", participaciones: 10, coste: 35, alta: "2026-11-24", compra: "2026-11-23" }] };
+    const r = analizarInversiones(inv, datos, []);
+    expect(r.serie[0].d).toBe("2026-11-23");
+    expect(r.serie.map((p) => p.invertido)).toEqual([35, 35]);
+    expect(r.filas[0]).toMatchObject({ entrada: "2026-11-23", compraConocida: true });
+  });
+  it("sin fecha de compra, empieza en la fecha de tus datos (nunca hacia atrás)", () => {
+    const inv = { posiciones: [{ id: "x", nombre: "Acción", entidad: "Uno", tipo: "accion", simbolo: "TEF.MC", participaciones: 10, coste: 35, alta: "2026-11-24" }] };
+    const r = analizarInversiones(inv, datos, []);
+    expect(r.serie.map((p) => p.d)).toEqual(["2026-11-24"]);
+    expect(r.filas[0].compraConocida).toBe(false);
+  });
+  it("la cartera automatizada se reconstruye con las transferencias anteriores y cuadra con tus datos", () => {
+    const inv = {
+      posiciones: [
+        { id: "a", nombre: "Fondo A", entidad: "Robo", tipo: "fondo", simbolo: "F1", participaciones: 150, coste: 1500, alta: "2026-11-27", robo: true, pesoObjetivo: 50 },
+        { id: "b", nombre: "Fondo B", entidad: "Robo", tipo: "fondo", simbolo: "F2", participaciones: 60, coste: 1200, alta: "2026-11-27", robo: true, pesoObjetivo: 50 },
+      ],
+      aportacion: { patron: "TRANSF ROBO", importe: 500, desde: "2026-11-27" },
+    };
+    const movs = [
+      { id: 1, date: new Date("2026-11-18T12:00:00"), pattern: "TRANSF ROBO", amount: -500 },
+      { id: 2, date: new Date("2026-11-21T12:00:00"), pattern: "TRANSF ROBO", amount: -500 },
+    ];
+    const r = analizarInversiones(inv, datos, movs);
+    // Hoy coincide exactamente con tus datos…
+    expect(r.filas[0]).toMatchObject({ unidades: 150, coste: 1500 });
+    expect(r.filas[1].unidades).toBeCloseTo(60, 9);
+    expect(r.filas[0].entrada).toBe("2026-11-20");
+    // …y antes iba creciendo con cada transferencia.
+    const inv20 = r.serie.find((p) => p.d === "2026-11-20").invPos.a, inv23 = r.serie.find((p) => p.d === "2026-11-23").invPos.a;
+    expect(inv20).toBeGreaterThan(0);
+    expect(inv23).toBeCloseTo(1500, 6);
+    expect(inv20).toBeLessThan(inv23);
+  });
+});
+
+import { actualizarCampos, leerFecha } from "../src/inversiones.js";
+describe("actualizar solo algunos datos", () => {
+  it("pone la fecha de compra sin tocar participaciones ni coste, y avisa de lo que no encuentra", () => {
+    const antes = [
+      { id: "a", nombre: "Fondo Uno", entidad: "Banco", tipo: "fondo", isin: "XX0000000001", participaciones: 10, coste: 100, alta: "2026-11-24" },
+      { id: "b", nombre: "Fondo Dos", entidad: "Banco", tipo: "fondo", participaciones: 5, coste: 50, alta: "2026-11-24" },
+    ];
+    const r = actualizarCampos(antes, [
+      { isin: "XX0000000001", compra: "09/03/2026" },
+      { nombre: "Fondo Dos", compra: "2026-04-21", costeMedio: "11,5" },
+      { nombre: "No existe", compra: "2026-01-01" },
+    ]);
+    expect(r.actualizadas).toBe(2);
+    expect(r.sinEncontrar).toEqual(["No existe"]);
+    expect(r.posiciones[0]).toMatchObject({ compra: "2026-03-09", participaciones: 10, coste: 100, alta: "2026-11-24" });
+    expect(r.posiciones[1]).toMatchObject({ compra: "2026-04-21", coste: 57.5 });
+  });
+  it("entiende las fechas como se escriben", () => {
+    expect(leerFecha("09/03/2026")).toBe("2026-03-09");
+    expect(leerFecha("1-7-2026")).toBe("2026-07-01");
+    expect(leerFecha("julio")).toBeNull();
+  });
+});
+
+describe("ganas/pierdes en el tiempo", () => {
+  it("el último punto coincide con la plusvalía: los productos sin coste no cuentan", () => {
+    const inv = { posiciones: [
+      { id: "x", nombre: "Con coste", entidad: "Uno", tipo: "accion", simbolo: "TEF.MC", participaciones: 10, coste: 30, alta: "2026-11-24", compra: "2026-11-20" },
+      { id: "y", nombre: "Sin coste", entidad: "Uno", tipo: "accion", simbolo: "COHR", participaciones: 5, coste: null, alta: "2026-11-24", compra: "2026-11-20" },
+    ] };
+    const r = analizarInversiones(inv, datos, []);
+    const u = r.serie[r.serie.length - 1];
+    expect(u.valorCC / u.invertido - 1).toBeCloseTo(r.resultadoPct, 10);
+    expect(u.ccEntidad.Uno / u.invEntidad.Uno - 1).toBeCloseTo(r.porEntidad[0].resultadoPct, 10);
   });
 });

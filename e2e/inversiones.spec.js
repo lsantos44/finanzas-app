@@ -32,9 +32,9 @@ async function preparar(page) {
     ] }));
     localStorage.setItem("finz:cfg:v1", JSON.stringify({ v: 5, customRules: [], disabledRules: [], assets: [], groups: [], budgets: {}, reducible: [], aiOn: false, ai: {}, aiProfiles: [], aiDetail: false, ruleStats: {}, materialidad: 10, assetMem: {},
       inversiones: { posiciones: [
-        { id: "tef", nombre: "Telefónica", entidad: "Plan de empleados", tipo: "accion", simbolo: "TEF.MC", participaciones: 1000, coste: null, alta: "2026-11-24" },
-        { id: "cohr", nombre: "Coherent", entidad: "Bróker", tipo: "accion", simbolo: "COHR", participaciones: 5, coste: 1000, alta: "2026-11-24" },
-        { id: "fondo", nombre: "Fondo con ISIN", entidad: "Banco privado", tipo: "fondo", isin: "DE0008474024", valorAlta: 10000, coste: 9000, alta: "2026-11-24" },
+        { id: "tef", nombre: "Telefónica", entidad: "Plan de empleados", tipo: "accion", simbolo: "TEF.MC", participaciones: 1000, coste: null, alta: "2026-11-24", compra: "2026-01-15" },
+        { id: "cohr", nombre: "Coherent", entidad: "Bróker", tipo: "accion", simbolo: "COHR", participaciones: 5, coste: 1000, alta: "2026-11-24", compra: "2026-02-10" },
+        { id: "fondo", nombre: "Fondo con ISIN", entidad: "Banco privado", tipo: "fondo", isin: "XX0000000009", valorAlta: 10000, coste: 9000, alta: "2026-11-24", compra: "2026-06-03" },
         { id: "robo", nombre: "Fondo de bolsa", entidad: "Roboadvisor", tipo: "fondo", simbolo: "LISTADO.MU", valorAlta: 2000, coste: 1800, alta: "2026-11-24", robo: true, pesoObjetivo: 100 },
       ], aportacion: null } }));
   }, WORKER);
@@ -67,8 +67,12 @@ test("la pestaña Inversiones valora, agrupa, resuelve ISIN y abre el detalle", 
   await page.getByRole("button", { name: /^Coherent/ }).first().click();
   await expect(page.getByLabel("Producto")).toHaveValue("cohr");
   await expect(page.getByRole("button", { name: "Ver ficha" })).toBeVisible();
-  await page.getByRole("button", { name: "%", exact: true }).click();
-  await expect(page.getByText(/Rentabilidad en 1A/)).toBeVisible();
+  // «Mi %»: desde que entraste (lo mismo que tu entidad); «Producto»: el precio en el periodo.
+  await page.getByRole("button", { name: "Mi %", exact: true }).click();
+  await expect(page.getByText(/Ganas\/pierdes desde que entraste \(10 feb\)/)).toBeVisible();
+  await expect(page.getByText(/-10,5\d\s?%/).first()).toBeVisible();
+  await page.getByRole("button", { name: "Producto", exact: true }).click();
+  await expect(page.getByText(/Precio de lo que tienes en 1A/)).toBeVisible();
   await page.getByRole("button", { name: "€", exact: true }).click();
   await plataforma.selectOption("");
   // Aportación periódica detectada y aplicada con un toque.
@@ -94,6 +98,10 @@ test("captura visual (solo con CAPTURAS)", async ({ page }) => {
   await page.waitForTimeout(800);
   const dir = process.env.CAPTURAS;
   await page.screenshot({ path: `${dir}/tab-${test.info().project.name}.png`, fullPage: true });
+  await page.getByRole("button", { name: "Mi %", exact: true }).click();
+  await page.waitForTimeout(300);
+  await page.getByRole("button", { name: "Mi %", exact: true }).locator("xpath=ancestor::div[contains(@class,'rounded-2xl')][1]").screenshot({ path: `${dir}/mipct-${test.info().project.name}.png` });
+  await page.getByRole("button", { name: "€", exact: true }).click();
   await page.getByLabel("Plataforma").selectOption("Bróker");
   await page.waitForTimeout(400);
   await page.screenshot({ path: `${dir}/filtro-broker-${test.info().project.name}.png` });

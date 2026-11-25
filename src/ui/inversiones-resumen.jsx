@@ -24,7 +24,7 @@ export function TarjetaInversiones({ inversiones, movs, onAbrir }) {
           <div className="text-xl font-semibold" style={tnum}>{fmtE0(a.total)}</div>
           <div className="text-xs" style={tnum}>
             {a.resultado != null && <><span className="text-slate-500">Ganas/pierdes </span><span style={{ color: color(a.resultado) }}>{signo(a.resultado)} ({pct(a.resultadoPct)})</span></>}
-            {a.resultado != null && " · "}<span className="text-slate-500">hoy </span><span style={{ color: color(a.hoy) }}>{signo(a.hoy)}</span>
+            {a.resultado != null && " · "}<span className="text-slate-500">último cambio </span><span style={{ color: color(a.hoy) }}>{signo(a.hoy)}</span>
           </div>
         </div>
         <ChevronRight size={18} className="shrink-0 text-slate-400" />

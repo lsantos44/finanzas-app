@@ -68,23 +68,48 @@ const unidadesEn = (lotes, f) => lotes.reduce((s, l) => (l.fecha <= f ? s + l.un
 // Participaciones de cada posición a lo largo del tiempo, en lotes: el de partida (vale para
 // todas las fechas: lo que tienes hoy, hacia atrás) y uno por cada aportación repartida.
 // La gestora compra unos días después de la transferencia: se usa el precio de dos días más tarde.
-export function calcularLotes(inv, datos, aportes) {
+export function calcularLotes(inv, datos, aportes, previas = []) {
   const lotes = {};
-  for (const p of inv.posiciones) lotes[p.id] = [{ fecha: "0000-00-00", unidades: unidadesBase(p, datos) ?? 0, coste: p.coste ?? null, base: true }];
   const robo = inv.posiciones.filter((p) => p.robo);
+  const pesosObj = robo.map((p) => (p.pesoObjetivo > 0 ? p.pesoObjetivo : 0));
+  // Lo que tienes cuenta desde que lo compraste (`compra`) o, si no se sabe, desde la fecha de tus
+  // datos (`alta`): antes no estaba en tu cartera. Nunca hacia atrás.
+  for (const p of inv.posiciones) {
+    const desde = p.compra && (!p.alta || p.compra <= p.alta) ? p.compra : p.alta || "0000-00-00";
+    lotes[p.id] = [{ fecha: desde, unidades: unidadesBase(p, datos) ?? 0, coste: p.coste ?? 0, base: true }];
+  }
+  // Cartera automatizada: lo que tenías en la fecha de tus datos se compró con las aportaciones
+  // anteriores (tus transferencias). Se reparte en ellas según los pesos objetivo y se ajusta para
+  // que el total coincida con tus participaciones y lo invertido.
+  const tot = pesosObj.reduce((x, y) => x + y, 0);
+  if (robo.length && previas.length && tot) {
+    robo.forEach((p, i) => {
+      const base = lotes[p.id][0];
+      const raw = [];
+      for (const a of previas) {
+        const fe = sumarDias(a.fecha, 2);
+        if ((p.alta && fe > p.alta) || (p.compra && a.fecha < p.compra)) continue;
+        const imp = (a.importe * pesosObj[i]) / tot;
+        const pr = precioEUR(p, fe, datos);
+        if (imp > 0 && pr) raw.push({ fecha: fe, u: imp / pr, c: imp });
+      }
+      const su = raw.reduce((x, r) => x + r.u, 0), sc = raw.reduce((x, r) => x + r.c, 0);
+      if (su > 0 && base.unidades > 0) lotes[p.id] = raw.map((r) => ({ fecha: r.fecha, unidades: (r.u * base.unidades) / su, coste: sc ? (r.c * base.coste) / sc : 0, base: true }));
+    });
+  }
   for (const a of aportes) {
     const fe = sumarDias(a.fecha, 2);
-    let pesos = robo.map((p) => (p.pesoObjetivo > 0 ? p.pesoObjetivo : 0));
+    let pesos = pesosObj;
     if (!pesos.some(Boolean)) pesos = robo.map((p) => { const pr = precioEUR(p, fe, datos); return pr ? unidadesEn(lotes[p.id], fe) * pr : 0; });
-    const tot = pesos.reduce((s, x) => s + x, 0);
-    if (!tot) continue;
+    const t = pesos.reduce((x, y) => x + y, 0);
+    if (!t) continue;
     robo.forEach((p, i) => {
       // Las participaciones de alta ya incluyen lo comprado hasta esa fecha: si recalibras con
       // los datos de tu entidad, las aportaciones anteriores no se vuelven a sumar.
       if (p.alta && fe <= p.alta) return;
-      const imp = (a.importe * pesos[i]) / tot;
+      const imp = (a.importe * pesos[i]) / t;
       const pr = precioEUR(p, fe, datos);
-      if (imp > 0 && pr) lotes[p.id].push({ fecha: fe, unidades: imp / pr, coste: imp });
+      if (imp > 0 && pr) lotes[p.id].push({ fecha: fe, unidades: imp / pr, coste: imp, aporte: true });
     });
   }
   return lotes;
@@ -115,22 +140,23 @@ function variacion(serie, dias) {
 export function analizarInversiones(inv, datos, movs) {
   const posiciones = inv?.posiciones || [];
   const aportes = aportacionesDe(movs, inv?.aportacion);
-  const lotes = calcularLotes({ posiciones }, datos, aportes);
+  const previas = inv?.aportacion ? aportacionesDe(movs, { ...inv.aportacion, desde: "0000-00-00" }).filter((a) => a.fecha <= (inv.aportacion.desde || "0000-00-00")) : [];
+  const lotes = calcularLotes({ posiciones }, datos, aportes, previas);
 
   const filas = posiciones.map((p) => {
     const s = serieEUR(p, datos);
     const ls = lotes[p.id];
     const unidades = unidadesEn(ls, "9999-12-31");
-    const costeBase = ls[0].coste;
-    const aportado = ls.slice(1).reduce((x, l) => x + l.coste, 0);
-    const coste = costeBase == null ? null : costeBase + aportado;
+    const aportado = ls.filter((l) => l.aporte).reduce((x, l) => x + l.coste, 0);
+    const coste = p.coste == null ? null : ls.reduce((x, l) => x + l.coste, 0);
+    const entrada = ls.reduce((mn, l) => (l.fecha < mn ? l.fecha : mn), "9999-12-31");
     const sinPrecio = !s.length;
     const precio = sinPrecio ? null : s[s.length - 1][1];
     const precioAnt = s.length > 1 ? s[s.length - 2][1] : null;
     const valor = sinPrecio ? (p.valorAlta || 0) : unidades * precio;
     const hoy = precio != null && precioAnt != null ? unidades * (precio - precioAnt) : null;
     return {
-      p, unidades, precio, valor, coste, aportado, sinPrecio,
+      p, unidades, precio, valor, coste, aportado, sinPrecio, entrada, compraConocida: Boolean(p.compra || (p.robo && ls.length > 1 && ls[0].fecha < (p.alta || ""))),
       fechaPrecio: sinPrecio ? null : s[s.length - 1][0],
       hoy, hoyPct: precioAnt ? precio / precioAnt - 1 : null,
       resultado: coste != null ? valor - coste : null,
@@ -169,7 +195,13 @@ export function analizarInversiones(inv, datos, movs) {
   const conHist = posiciones.filter((p) => (datos?.series?.[p.simbolo] || []).length >= 2);
   const conAlgo = posiciones.filter((p) => (datos?.series?.[p.simbolo] || []).length > 0);
   const inicio = conHist.length ? conHist.reduce((mn, p) => { const f = datos.series[p.simbolo][0][0]; return f < mn ? f : mn; }, "9999-12-31") : null;
-  const fechas = inicio ? [...new Set(conHist.flatMap((p) => datos.series[p.simbolo].map((x) => x[0])))].filter((f) => f >= inicio).sort() : [];
+  // …y desde que entraste en la primera: antes no tenías nada que valorar.
+  const entradaMin = posiciones.reduce((mn, p) => lotes[p.id].reduce((m2, l) => (l.fecha < m2 ? l.fecha : m2), mn), "9999-12-31");
+  const desdeSerie = inicio && entradaMin > inicio ? entradaMin : inicio;
+  const fechasTodas = inicio ? [...new Set(conHist.flatMap((p) => datos.series[p.simbolo].map((x) => x[0])))].sort() : [];
+  // El último día con precio en o antes de la entrada, para que la serie arranque en la entrada.
+  const iArranque = fechasTodas.reduce((k, f, i) => (f <= desdeSerie ? i : k), 0);
+  const fechas = fechasTodas.slice(iArranque);
   const primero = {};
   for (const p of conAlgo) { const s0 = datos.series[p.simbolo][0]; primero[p.id] = precioEUR(p, s0[0], datos); }
   const entidadDe = (p) => p.entidad || "Sin entidad";
@@ -177,8 +209,8 @@ export function analizarInversiones(inv, datos, movs) {
   // después de su fecha. Hacen falta para que la rentabilidad no cuente el dinero nuevo como ganancia.
   const flujos = new Map();
   for (const p of posiciones) {
-    if (lotes[p.id][0].coste == null && !p.robo) continue;
-    for (const l of lotes[p.id].slice(1)) {
+    // Cada compra (la de entrada y cada aportación) es dinero que entra, no ganancia.
+    for (const l of lotes[p.id]) {
       const f = fechas.find((x) => x >= l.fecha);
       if (!f) continue;
       const o = flujos.get(f) || { total: 0, porEntidad: {}, porPos: {} };
@@ -190,23 +222,27 @@ export function analizarInversiones(inv, datos, movs) {
     }
   }
   const serie = fechas.map((f) => {
-    const porPos = {}, porEntidad = {}, porEntidadBase = {}, invPos = {}, invEntidad = {};
-    let v = 0, inv2 = 0;
+    const porPos = {}, porEntidad = {}, porEntidadBase = {}, porPosBase = {}, invPos = {}, invEntidad = {}, ccEntidad = {};
+    let v = 0, inv2 = 0, vcc = 0;
     for (const p of posiciones) {
       let x, xb;
-      if (conAlgo.includes(p)) { const pr = precioEUR(p, f, datos) ?? primero[p.id] ?? 0; x = unidadesEn(lotes[p.id], f) * pr; xb = lotes[p.id][0].unidades * pr; }
-      else x = xb = p.valorAlta || 0;
+      // x: lo que valía tu posición ese día (0 antes de entrar). xb: lo que valdría lo que tienes hoy
+      // (para ver cómo ha ido el precio del producto, aunque entonces no lo tuvieras).
+      if (conAlgo.includes(p)) { const pr = precioEUR(p, f, datos) ?? primero[p.id] ?? 0; x = unidadesEn(lotes[p.id], f) * pr; xb = unidadesEn(lotes[p.id], "9999-12-31") * pr; }
+      else { xb = p.valorAlta || 0; x = f >= lotes[p.id][0].fecha ? xb : 0; }
       const e = entidadDe(p);
-      porPos[p.id] = x; porEntidad[e] = (porEntidad[e] || 0) + x; v += x;
+      porPos[p.id] = x; porPosBase[p.id] = xb; porEntidad[e] = (porEntidad[e] || 0) + x; v += x;
       // Sin aportaciones: para comparar rentabilidades, que el dinero nuevo no parezca ganancia.
       porEntidadBase[e] = (porEntidadBase[e] || 0) + xb;
-      if (lotes[p.id][0].coste != null) {
+      // Solo lo que tiene coste entra en «lo que ganas o pierdes» (valor y lo invertido, a la par).
+      if (p.coste != null) { vcc += x; ccEntidad[e] = (ccEntidad[e] || 0) + x; }
+      if (p.coste != null) {
         let ip = 0;
         for (const l of lotes[p.id]) if (l.fecha <= f) ip += l.coste;
         inv2 += ip; invPos[p.id] = ip; invEntidad[e] = (invEntidad[e] || 0) + ip;
       }
     }
-    return { d: f, valor: v, invertido: inv2, porPos, porEntidad, porEntidadBase, invPos, invEntidad, flujo: flujos.get(f)?.total || 0, flujoEntidad: flujos.get(f)?.porEntidad || {}, flujoPos: flujos.get(f)?.porPos || {} };
+    return { d: f, valor: v, invertido: inv2, valorCC: vcc, ccEntidad, porPos, porEntidad, porEntidadBase, porPosBase, invPos, invEntidad, flujo: flujos.get(f)?.total || 0, flujoEntidad: flujos.get(f)?.porEntidad || {}, flujoPos: flujos.get(f)?.porPos || {} };
   });
 
   // Lo que más se ha movido en su último cambio.
@@ -230,20 +266,31 @@ export function analizarInversiones(inv, datos, movs) {
 export const simbolosDe = (inv) => [...new Set((inv?.posiciones || []).map((p) => p.simbolo).filter(Boolean))];
 
 // Importación de posiciones (texto JSON): valida y normaliza, sin aceptar campos raros.
+// Fecha como la escribe la gente o la muestran las entidades: 2026-03-09, 09/03/2026, 09-03-2026.
+export function leerFecha(x) {
+  const t = String(x || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+  const m = t.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/);
+  if (m) return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  return null;
+}
+
+// Números como los escriben las entidades: «1.234,567» (español), «12.3456» o «1234.5600» (punto
+// decimal, como en la ficha de algunas entidades) y «2.500» (millar). Un único punto seguido de exactamente
+// tres cifras se toma como separador de millares; si no, como decimal.
+export function leerNumero(x) {
+  if (typeof x === "number") return isFinite(x) ? x : null;
+  if (typeof x !== "string" || !x.trim()) return null;
+  let t = x.trim().replace(/[\s€]/g, "");
+  if (t.includes(",")) t = t.replace(/\./g, "").replace(",", ".");
+  else if ((t.match(/\./g) || []).length > 1 || /^-?\d{1,3}\.\d{3}$/.test(t)) t = t.replace(/\./g, "");
+  const n = Number(t);
+  return isFinite(n) ? n : null;
+}
+
 export function normalizarPosiciones(lista, hoy) {
   if (!Array.isArray(lista)) throw new Error("Se esperaba una lista de posiciones.");
-  // Números como los escriben las entidades: «1.234,567» (español), «12.3456» o «1234.5600» (punto
-  // decimal, como en la ficha de algunas entidades) y «2.500» (millar). Un único punto seguido de exactamente
-  // tres cifras se toma como separador de millares; si no, como decimal.
-  const num = (x) => {
-    if (typeof x === "number") return isFinite(x) ? x : null;
-    if (typeof x !== "string" || !x.trim()) return null;
-    let t = x.trim().replace(/[\s€]/g, "");
-    if (t.includes(",")) t = t.replace(/\./g, "").replace(",", ".");
-    else if ((t.match(/\./g) || []).length > 1 || /^-?\d{1,3}\.\d{3}$/.test(t)) t = t.replace(/\./g, "");
-    const n = Number(t);
-    return isFinite(n) ? n : null;
-  };
+  const num = leerNumero;
   return lista.map((x, i) => {
     if (!x || typeof x !== "object" || !x.nombre) throw new Error(`La posición ${i + 1} no tiene nombre.`);
     const p = {
@@ -257,6 +304,9 @@ export function normalizarPosiciones(lista, hoy) {
     if (x.simbolo) p.simbolo = String(x.simbolo).slice(0, 40);
     if (x.ticker) p.ticker = String(x.ticker).toUpperCase().replace(/[^A-Z0-9.-]/g, "").slice(0, 12);
     if (x.bolsa) p.bolsa = String(x.bolsa).slice(0, 60);
+    // Desde cuándo lo tienes (primera compra): la evolución de tu posición empieza ese día.
+    const compra = leerFecha(x.compra);
+    if (compra) p.compra = compra;
     if (x.divisa) p.divisa = String(x.divisa).slice(0, 3);
     const part = num(x.participaciones), val = num(x.valorAlta), peso = num(x.pesoObjetivo);
     // Coste: el total invertido o, como lo dan las entidades, el coste (precio) medio por participación.
@@ -293,23 +343,17 @@ export function candidatosAportacion(movs) {
 // Actualizar con una lista: lo que ya existe (mismo ISIN, mismo nombre o misma cotización) se
 // sustituye conservando su identidad; lo nuevo se añade. Así recalibrar no duplica posiciones.
 export function fusionarPosiciones(existentes, nuevas) {
-  const norm = (t) => String(t || "").trim().toLowerCase();
   const out = [...(existentes || [])];
   let actualizadas = 0, añadidas = 0;
   for (const n of nuevas) {
-    const misma = (p) => norm(p.entidad) === norm(n.entidad);
-    // El mismo valor con otro nombre («Soitec» y «Soitec SA»): por ticker (VRT ↔ VRT, SOI ↔ SOI.PA)
-    // o porque un nombre contiene al otro, dentro de la misma plataforma.
-    const porTicker = (p) => n.ticker && p.simbolo && (p.simbolo === n.ticker || p.simbolo.startsWith(n.ticker + ".") || p.ticker === n.ticker);
-    const contiene = (a, b) => a.length >= 4 && b.length >= 4 && (a.startsWith(b + " ") || b.startsWith(a + " ") || a === b);
-    const i = out.findIndex((p) => (n.isin && p.isin && n.isin === p.isin) || norm(p.nombre) === norm(n.nombre)
-      || (n.simbolo && p.simbolo === n.simbolo && misma(p))
-      || (misma(p) && (porTicker(p) || contiene(norm(p.nombre), norm(n.nombre)))));
+    const i = buscarIgual(out, n);
     if (i >= 0) {
       const v = out[i];
-      // Se conserva el nombre que ya usabas y la cotización ya elegida, salvo que la lista traiga otra.
+      // Se conserva el nombre que ya usabas y la cotización ya elegida, salvo que la lista traiga otra;
+      // y un dato que la lista no trae (coste, fecha de compra) no borra el que ya había.
       out[i] = { ...v, ...n, id: v.id, nombre: n.isin && n.isin === v.isin ? n.nombre : v.nombre, simbolo: n.simbolo || v.simbolo, revisado: n.simbolo ? n.revisado : v.revisado,
-        alta: n.alta || v.alta, robo: n.robo ?? v.robo, pesoObjetivo: n.pesoObjetivo ?? v.pesoObjetivo };
+        coste: n.coste ?? v.coste, compra: n.compra || v.compra, alta: n.alta || v.alta, robo: n.robo ?? v.robo, pesoObjetivo: n.pesoObjetivo ?? v.pesoObjetivo };
+      if (!out[i].compra) delete out[i].compra;
       // Si ahora se sabe el número de participaciones, el valor de alta ya no hace falta (y al revés).
       if (n.participaciones > 0) delete out[i].valorAlta;
       else if (n.valorAlta > 0) delete out[i].participaciones;
@@ -317,6 +361,45 @@ export function fusionarPosiciones(existentes, nuevas) {
     } else { out.push(n); añadidas++; }
   }
   return { posiciones: out, actualizadas, añadidas };
+}
+
+// ¿Cuál de las posiciones es la misma que n? Por ISIN, por nombre, por cotización y plataforma, o
+// dentro de la misma plataforma por ticker o porque un nombre contiene al otro.
+function buscarIgual(out, n) {
+  const norm = (t) => String(t || "").trim().toLowerCase();
+  {
+    const misma = (p) => !n.entidad || norm(p.entidad) === norm(n.entidad);
+    // El mismo valor con otro nombre («Soitec» y «Soitec SA»): por ticker (VRT ↔ VRT, SOI ↔ SOI.PA)
+    // o porque un nombre contiene al otro, dentro de la misma plataforma.
+    const porTicker = (p) => n.ticker && p.simbolo && (p.simbolo === n.ticker || p.simbolo.startsWith(n.ticker + ".") || p.ticker === n.ticker);
+    const contiene = (a, b) => a.length >= 4 && b.length >= 4 && (a.startsWith(b + " ") || b.startsWith(a + " ") || a === b);
+    const i = out.findIndex((p) => (n.isin && p.isin && n.isin === p.isin) || norm(p.nombre) === norm(n.nombre)
+      || (n.simbolo && p.simbolo === n.simbolo && misma(p))
+      || (misma(p) && (porTicker(p) || contiene(norm(p.nombre), norm(n.nombre)))));
+    return i;
+  }
+}
+
+/* Actualizar solo algunos datos (p. ej. la fecha de compra) de productos que ya tienes: cada
+   elemento dice cuál es (ISIN o nombre, y si quieres plataforma o ticker) y qué cambia. */
+export function actualizarCampos(existentes, cambios) {
+  const out = [...(existentes || [])];
+  let actualizadas = 0;
+  const sinEncontrar = [];
+  for (const c of cambios || []) {
+    const n = { nombre: c.nombre, isin: c.isin ? String(c.isin).toUpperCase() : undefined, entidad: c.entidad, ticker: c.ticker ? String(c.ticker).toUpperCase() : undefined };
+    const i = buscarIgual(out, n);
+    if (i < 0) { sinEncontrar.push(c.nombre || c.isin || "?"); continue; }
+    const v = { ...out[i] };
+    const compra = leerFecha(c.compra);
+    if (compra) v.compra = compra;
+    for (const k of ["isin", "ticker", "bolsa"]) if (c[k]) v[k] = String(c[k]);
+    const coste = leerNumero(c.coste), medio = leerNumero(c.costeMedio);
+    if (coste > 0) v.coste = coste;
+    else if (medio > 0 && v.participaciones > 0) v.coste = Math.round(medio * v.participaciones * 100) / 100;
+    out[i] = v; actualizadas++;
+  }
+  return { posiciones: out, actualizadas, sinEncontrar };
 }
 
 /* Rentabilidad de un periodo, ponderada por tiempo (TWR, el estándar de gestoras y
