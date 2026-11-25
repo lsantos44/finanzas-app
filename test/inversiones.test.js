@@ -188,3 +188,22 @@ describe("posiciones leídas de capturas", () => {
     expect(r[3].error).toMatch(/participaciones o valor/);
   });
 });
+
+describe("actualizar sin duplicar lo que se llama distinto", () => {
+  it("reconoce el mismo valor por ticker o por nombre más largo en la misma plataforma, y conserva su cotización", () => {
+    const antes = [
+      { id: "s", nombre: "Acme", entidad: "Bróker", tipo: "accion", simbolo: "ACM.PA", participaciones: 10, coste: 100, alta: "2026-11-24", revisado: true },
+      { id: "v", nombre: "Vértice", entidad: "Bróker", tipo: "accion", simbolo: "VTX", participaciones: 2, coste: 50, alta: "2026-11-24" },
+      { id: "o", nombre: "Acme", entidad: "Otro banco", tipo: "accion", simbolo: "ACM", participaciones: 1, coste: 9, alta: "2026-11-24" },
+    ];
+    const nuevas = normalizarPosiciones([
+      { nombre: "Acme SA", entidad: "Bróker", tipo: "accion", ticker: "ACM", participaciones: 12, coste: 130 },
+      { nombre: "Vertice Holdings Class A", entidad: "Bróker", tipo: "accion", ticker: "VTX", participaciones: 3, coste: 80 },
+    ], "2026-11-27");
+    const r = fusionarPosiciones(antes, nuevas);
+    expect(r).toMatchObject({ actualizadas: 2, añadidas: 0 });
+    expect(r.posiciones[0]).toMatchObject({ id: "s", nombre: "Acme", simbolo: "ACM.PA", revisado: true, participaciones: 12, coste: 130 });
+    expect(r.posiciones[1]).toMatchObject({ id: "v", nombre: "Vértice", simbolo: "VTX", participaciones: 3 });
+    expect(r.posiciones[2]).toMatchObject({ id: "o", participaciones: 1 });
+  });
+});

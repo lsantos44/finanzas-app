@@ -297,10 +297,19 @@ export function fusionarPosiciones(existentes, nuevas) {
   const out = [...(existentes || [])];
   let actualizadas = 0, añadidas = 0;
   for (const n of nuevas) {
-    const i = out.findIndex((p) => (n.isin && p.isin && n.isin === p.isin) || norm(p.nombre) === norm(n.nombre) || (n.simbolo && p.simbolo === n.simbolo && norm(p.entidad) === norm(n.entidad)));
+    const misma = (p) => norm(p.entidad) === norm(n.entidad);
+    // El mismo valor con otro nombre («Soitec» y «Soitec SA»): por ticker (VRT ↔ VRT, SOI ↔ SOI.PA)
+    // o porque un nombre contiene al otro, dentro de la misma plataforma.
+    const porTicker = (p) => n.ticker && p.simbolo && (p.simbolo === n.ticker || p.simbolo.startsWith(n.ticker + ".") || p.ticker === n.ticker);
+    const contiene = (a, b) => a.length >= 4 && b.length >= 4 && (a.startsWith(b + " ") || b.startsWith(a + " ") || a === b);
+    const i = out.findIndex((p) => (n.isin && p.isin && n.isin === p.isin) || norm(p.nombre) === norm(n.nombre)
+      || (n.simbolo && p.simbolo === n.simbolo && misma(p))
+      || (misma(p) && (porTicker(p) || contiene(norm(p.nombre), norm(n.nombre)))));
     if (i >= 0) {
       const v = out[i];
-      out[i] = { ...v, ...n, id: v.id, alta: n.alta || v.alta, robo: n.robo ?? v.robo, pesoObjetivo: n.pesoObjetivo ?? v.pesoObjetivo };
+      // Se conserva el nombre que ya usabas y la cotización ya elegida, salvo que la lista traiga otra.
+      out[i] = { ...v, ...n, id: v.id, nombre: n.isin && n.isin === v.isin ? n.nombre : v.nombre, simbolo: n.simbolo || v.simbolo, revisado: n.simbolo ? n.revisado : v.revisado,
+        alta: n.alta || v.alta, robo: n.robo ?? v.robo, pesoObjetivo: n.pesoObjetivo ?? v.pesoObjetivo };
       // Si ahora se sabe el número de participaciones, el valor de alta ya no hace falta (y al revés).
       if (n.participaciones > 0) delete out[i].valorAlta;
       else if (n.valorAlta > 0) delete out[i].participaciones;
