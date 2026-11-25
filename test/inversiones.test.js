@@ -120,3 +120,34 @@ describe("actualizar con una lista", () => {
     expect(r.posiciones).toHaveLength(3);
   });
 });
+
+import { rentabilidadTWR } from "../src/inversiones.js";
+describe("rentabilidad de un periodo (ponderada por tiempo)", () => {
+  it("una aportación no cuenta como ganancia", () => {
+    // 1.000 € que suben un 10 %, luego entran 500 € y el conjunto sube otro 10 %.
+    const serie = [
+      { d: "2026-01-01", valor: 1000, flujo: 0 },
+      { d: "2026-02-01", valor: 1100, flujo: 0 },
+      { d: "2026-02-02", valor: 1600, flujo: 500 },
+      { d: "2026-03-01", valor: 1760, flujo: 0 },
+    ];
+    expect(rentabilidadTWR(serie).r).toBeCloseTo(0.21, 10); // 1,1 × 1,1 − 1, no 1760/1000 − 1
+    expect(rentabilidadTWR(serie, { desde: "2026-02-01" }).r).toBeCloseTo(0.1, 10);
+  });
+  it("el coste se puede dar como coste medio por participación, como en las entidades", () => {
+    const [p] = normalizarPosiciones([{ nombre: "F", tipo: "fondo", participaciones: 1234.567, costeMedio: "12,3456" }], "2026-11-26");
+    expect(p.coste).toBeCloseTo(15241.47, 2);
+  });
+});
+
+describe("números como los muestran las entidades", () => {
+  it("entiende coma decimal, punto decimal y punto de millar", () => {
+    const leer = (v) => normalizarPosiciones([{ nombre: "F", tipo: "fondo", participaciones: v }], "2026-11-26")[0].participaciones;
+    expect(leer("1.234,567")).toBeCloseTo(1234.567, 6);
+    expect(leer("45,6789")).toBeCloseTo(45.6789, 6);
+    expect(leer("12.3456")).toBeCloseTo(12.3456, 6);
+    expect(leer("1234.5600")).toBeCloseTo(1234.56, 6);
+    expect(leer("2.500")).toBe(2500);
+    expect(leer("1.234.567,5")).toBeCloseTo(1234567.5, 6);
+  });
+});

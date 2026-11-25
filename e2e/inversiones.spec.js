@@ -65,7 +65,7 @@ test("la pestaña Inversiones valora, agrupa, resuelve ISIN y abre el detalle", 
   await page.getByRole("button", { name: "Sí, usarla" }).click();
   await expect(page.getByText(/Aportación automática de/)).toBeVisible();
   await page.getByRole("button", { name: /Coherent/ }).first().click();
-  await expect(page.getByText("Precio medio de compra")).toBeVisible();
+  await expect(page.getByText("Coste medio por participación")).toBeVisible();
   await expect(page.getByText("Tu precio medio")).toBeVisible();
 });
 
@@ -87,7 +87,7 @@ test("captura visual (solo con CAPTURAS)", async ({ page }) => {
   await evo.screenshot({ path: `${dir}/comparar-${test.info().project.name}.png` });
   await page.getByRole("button", { name: "Total", exact: true }).click();
   await page.getByRole("button", { name: /Coherent/ }).first().click();
-  await page.getByText("Precio medio de compra").waitFor();
+  await page.getByText("Coste medio por participación").waitFor();
   await page.waitForTimeout(500);
   await page.screenshot({ path: `${dir}/detalle-${test.info().project.name}.png` });
 });
