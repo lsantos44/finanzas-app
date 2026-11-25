@@ -103,8 +103,7 @@ function GraficoEvolucion({ serie, conInvertido, referencia, alto = 200 }) {
    (áreas apiladas y la línea de lo invertido); en «%», cómo ha rendido cada parte en el periodo
    (rentabilidad ponderada por tiempo: las aportaciones no cuentan como ganancia). Debajo, lo que
    compone el nivel, con su valor y su %: tocar una fila baja un nivel. */
-function Evolucion({ a, inv, onAbrirProducto }) {
-  const [nivel, setNivel] = useState({ e: null, id: null });
+function Evolucion({ a, inv, nivel, setNivel, onAbrirProducto }) {
   const [rango, setRango] = useState(365);
   const [unidad, setUnidad] = useState("eur");
   const entidades = a.porEntidad.map((g) => g.nombre);
@@ -144,11 +143,8 @@ function Evolucion({ a, inv, onAbrirProducto }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [a.serie, rango, unidad, partes, nivel]);
 
-  const valorAhora = nivel.id ? filaPos?.valor : nivel.e ? a.porEntidad.find((g) => g.nombre === nivel.e)?.valor : a.total;
   const rNivel = twr(actual).r;
   const ultimo = a.serie[a.serie.length - 1];
-  const invAhora = ultimo ? leerInv(ultimo, actual) : null;
-  const plusv = invAhora ? valorAhora - invAhora : null;
   const nombreRango = RANGOS.find((r) => r.v === rango)?.l;
 
   const TT = ({ active, payload }) => {
@@ -166,31 +162,16 @@ function Evolucion({ a, inv, onAbrirProducto }) {
     );
   };
 
-  const migas = [{ l: "Todo", n: { e: null, id: null } }, ...(nivel.e ? [{ l: nivel.e, n: { e: nivel.e, id: null } }] : []), ...(pos ? [{ l: pos.nombre, n: nivel }] : [])];
   const color = colorDe(rNivel);
+  const ganancia = (x) => (x.pos ? a.filas.find((f) => f.p.id === x.pos)?.resultadoPct : a.porEntidad.find((g) => g.nombre === x.entidad)?.resultadoPct) ?? null;
 
   return (
     <Card className="p-4">
-      <nav aria-label="Nivel" className="flex min-w-0 items-center gap-1 text-xs text-slate-500">
-        {migas.map((m, i) => (
-          <span key={m.l} className="flex min-w-0 items-center gap-1">
-            {i > 0 && <ChevronRight size={12} className="shrink-0" />}
-            {i < migas.length - 1
-              ? <button type="button" className="shrink-0 underline-offset-2 hover:underline" onClick={() => setNivel(m.n)}>{m.l}</button>
-              : <span className="truncate font-semibold text-slate-700">{m.l}</span>}
-          </span>
-        ))}
-      </nav>
-      <div className="mt-1 flex items-end justify-between gap-2">
-        <div className="min-w-0">
-          <div className="text-2xl font-semibold" style={tnum}>{fmtE0(valorAhora || 0)}</div>
-          <div className="text-xs" style={tnum}>
-            <span style={{ color }}>{pct(rNivel)}</span><span className="text-slate-500"> en {nombreRango === "Todo" ? "todo el periodo" : nombreRango}</span>
-            {plusv != null && <span className="text-slate-500"> · plusvalía <span style={{ color: colorDe(plusv) }}>{eur(plusv, true)}</span></span>}
-          </div>
-        </div>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold">Evolución</h3>
         <Seg ariaLabel="Euros o porcentaje" value={unidad} onChange={setUnidad} options={[{ v: "eur", l: "€" }, { v: "pct", l: "%" }]} />
       </div>
+      {unidad === "pct" && <p className="mt-1 text-xs" style={tnum}><span className="text-slate-500">Rentabilidad en {nombreRango === "Todo" ? "todo el periodo" : nombreRango}: </span><span className="font-semibold" style={{ color }}>{pct(rNivel)}</span></p>}
 
       <div className="mt-3" style={{ height: 210 }}>
         {datos.length < 2 ? <p className="pt-16 text-center text-sm text-slate-400">Aún no hay precios suficientes.</p> : (
@@ -211,22 +192,24 @@ function Evolucion({ a, inv, onAbrirProducto }) {
         )}
       </div>
       <div className="mt-2 flex items-center justify-between gap-2">
-        <span className="text-[11px] text-slate-400">{unidad === "eur" ? "– – lo invertido" : "— " + (pos?.nombre || nivel.e || "todo")}</span>
+        <span className="text-[11px] text-slate-400">{unidad === "eur" ? "– – invertido" : "— " + (pos?.nombre || nivel.e || "total")}</span>
         <Seg ariaLabel="Periodo" value={rango} onChange={setRango} options={RANGOS} />
       </div>
 
       {partes.length > 0 ? (
         <div className="mt-3 divide-y border-t" style={{ borderColor: C.line }}>
+          <div className="flex justify-end gap-2 pt-2 text-[10px] uppercase tracking-wide text-slate-400"><span>Valor</span><span className="w-16 text-right">{unidad === "pct" ? `En ${nombreRango}` : "Ganancia"}</span><span className="w-3.5" /></div>
           {partes.map((x) => {
             const v = ultimo ? leerValor(ultimo, x) : 0;
-            const r = twr(x).r;
+            // En «€», la ganancia desde que compraste (como en tu entidad); en «%», la del periodo.
+            const r = unidad === "pct" ? twr(x).r : ganancia(x);
             return (
               <button key={x.k} type="button" onClick={() => setNivel(x.pos ? { e: nivel.e, id: x.pos } : { e: x.entidad, id: null })}
                 className="flex w-full items-center gap-2 py-2.5 text-left text-sm hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500">
                 <span className="inline-block h-3 w-3 shrink-0 rounded-sm" style={{ background: x.color }} />
                 <span className="min-w-0 flex-1 truncate">{x.nombre}</span>
                 <span className="shrink-0 font-medium" style={tnum}>{fmtE0(v)}</span>
-                <span className="w-16 shrink-0 text-right text-xs font-semibold" style={{ ...tnum, color: colorDe(r) }}>{pct(r)}</span>
+                <span className="w-16 shrink-0 text-right text-xs font-semibold" style={{ ...tnum, color: colorDe(r) }}>{r == null ? "–" : pct(r)}</span>
                 <ChevronRight size={14} className="shrink-0 text-slate-400" />
               </button>
             );
@@ -474,6 +457,8 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
   const [importando, setImportando] = useState(false);
   const [aportando, setAportando] = useState(false);
   const [nota, setNota] = useState(null);
+  // Qué estás mirando: todo, una plataforma o un producto. Manda en la tarjeta, la gráfica y las listas.
+  const [nivel, setNivel] = useState({ e: null, id: null });
 
   const traer = useCallback(async () => {
     const d = await servidor.get("/inversiones/precios?desde=" + sumarDias(dia(new Date()), -800));
@@ -553,6 +538,17 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
   const a = useMemo(() => analizarInversiones(inv, datos, movs), [inv, datos, movs]);
   const entidades = [...new Set(inv.posiciones.map((p) => p.entidad).filter(Boolean))];
   const filaAbierta = a.filas.find((f) => f.p.id === abierta);
+  const entidadDe = (p) => p.entidad || "Sin entidad";
+  const selFilas = nivel.id ? a.filas.filter((f) => f.p.id === nivel.id) : nivel.e ? a.filas.filter((f) => entidadDe(f.p) === nivel.e) : a.filas;
+  const sel = (() => {
+    const valor = selFilas.reduce((x, f) => x + f.valor, 0), hoy = selFilas.reduce((x, f) => x + (f.hoy || 0), 0);
+    const cc = selFilas.filter((f) => f.coste != null);
+    const invertido = cc.reduce((x, f) => x + f.coste, 0), valorCC = cc.reduce((x, f) => x + f.valor, 0);
+    return { valor, hoy, hoyPct: valor - hoy ? hoy / (valor - hoy) : null, invertido, ganancia: cc.length ? valorCC - invertido : null, gananciaPct: invertido ? valorCC / invertido - 1 : null, sinCoste: selFilas.length - cc.length };
+  })();
+  const nombreSel = nivel.id ? selFilas[0]?.p.nombre : nivel.e || "Todas tus inversiones";
+  const fechaFondos = selFilas.filter((f) => f.p.tipo !== "accion" && f.fechaPrecio).reduce((mx, f) => (f.fechaPrecio > mx ? f.fechaPrecio : mx), "");
+  const horaAcc = selFilas.reduce((mx, f) => (f.p.tipo === "accion" && f.mercado > mx ? f.mercado : mx), 0);
   const guardarPos = (p) => { setInversiones((x) => ({ ...x, posiciones: x.posiciones.some((q) => q.id === p.id) ? x.posiciones.map((q) => (q.id === p.id ? p : q)) : [...x.posiciones, p] })); setEditando(null); };
   const borrar = (id) => { if (window.confirm("¿Quitar esta posición de tus inversiones?")) { setInversiones((x) => ({ ...x, posiciones: x.posiciones.filter((p) => p.id !== id) })); setAbierta(null); } };
   const importar = (lista, reemplazar, aportacion) => {
@@ -563,6 +559,7 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
     setImportando(false);
   };
 
+  const movidos = selFilas.filter((f) => f.hoyPct != null).sort((x, y) => Math.abs(y.hoyPct) - Math.abs(x.hoyPct)).slice(0, 4);
   const avisosCartera = [];
   for (const g of a.porEntidad) if (g.peso > 0.5 && a.porEntidad.length > 1) avisosCartera.push(`El ${pct(g.peso, false)} de lo invertido está en ${g.nombre}.`);
   // Un producto que ya es toda su entidad no repite el aviso.
@@ -607,35 +604,50 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
         </Card>
       ) : (
         <>
+          {/* Filtro: plataforma y producto. Todo lo de debajo se refiere a lo elegido. */}
+          <div className="grid grid-cols-2 gap-2">
+            <select aria-label="Plataforma" value={nivel.e || ""} onChange={(e) => setNivel({ e: e.target.value || null, id: null })}
+              className="min-w-0 rounded-lg border bg-white px-2.5 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ borderColor: C.line }}>
+              <option value="">Plataformas: todas</option>
+              {a.porEntidad.map((g) => <option key={g.nombre} value={g.nombre}>{g.nombre}</option>)}
+            </select>
+            <select aria-label="Producto" value={nivel.id || ""} onChange={(e) => { const f = a.filas.find((x) => x.p.id === e.target.value); setNivel(f ? { e: entidadDe(f.p), id: f.p.id } : { e: nivel.e, id: null }); }}
+              className="min-w-0 rounded-lg border bg-white px-2.5 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ borderColor: C.line }}>
+              <option value="">Productos: todos</option>
+              {(nivel.e ? a.filas.filter((f) => entidadDe(f.p) === nivel.e) : a.filas).map((f) => <option key={f.p.id} value={f.p.id}>{f.p.nombre}</option>)}
+            </select>
+          </div>
+
           <Card className="p-4">
             <div className="flex items-start justify-between gap-2">
-              <div>
-                <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Valor de tus inversiones</div>
-                <div className="mt-0.5 text-3xl font-semibold" style={tnum}>{fmtE0(a.total)}</div>
+              <div className="min-w-0">
+                <div className="truncate text-xs font-medium text-slate-500">{nombreSel}</div>
+                <div className="text-[11px] uppercase tracking-wide text-slate-400">Valor hoy</div>
+                <div className="text-3xl font-semibold" style={tnum}>{fmtE0(sel.valor)}</div>
               </div>
               <Btn size="sm" onClick={actualizar} disabled={cargando || !servidor.listo || !servidor.rasgo} title="Pedir los últimos precios ahora">
                 <RefreshCw size={13} className={cargando ? "animate-spin" : ""} /> {cargando ? "Actualizando" : "Actualizar"}
               </Btn>
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-4">
-              <Cifra label="Último cambio" color={colorDe(a.hoy)} sub={pct(a.hoyPct)}>{eur(a.hoy, true)}</Cifra>
-              <Cifra label="Plusvalía" color={colorDe(a.resultado)} sub={a.resultado == null ? "añade el coste" : `${pct(a.resultadoPct)} sobre ${fmtE0(a.costeTotal)} invertidos${a.sinCoste ? ` · ${a.sinCoste} sin coste` : ""}`}>{a.resultado == null ? "–" : eur(a.resultado, true)}</Cifra>
+            <div className="mt-3 grid grid-cols-3 gap-3">
+              <Cifra label="Invertido">{sel.invertido ? fmtE0(sel.invertido) : "–"}</Cifra>
+              <Cifra label="Ganas / pierdes" color={colorDe(sel.ganancia)} sub={sel.ganancia == null ? "falta el coste" : pct(sel.gananciaPct)}>{sel.ganancia == null ? "–" : eur(Math.round(sel.ganancia), true).replace(/,00(?=\s?€)/, "")}</Cifra>
+              <Cifra label="Hoy" color={colorDe(sel.hoy)} sub={pct(sel.hoyPct)}>{eur(Math.round(sel.hoy), true).replace(/,00(?=\s?€)/, "")}</Cifra>
             </div>
-            <div className="mt-3"><Reparto grupos={a.porEntidad} total={a.total} /></div>
-            <p className="mt-2 text-[11px] text-slate-400">{a.fechaPrecios
-              ? <>{a.ytd != null && <>Este año <span style={{ ...tnum, color: colorDe(a.ytd) }}>{pct(a.ytd)}</span> · </>}
-                  {a.horaAcciones ? `acciones ${new Date(a.horaAcciones).toLocaleString("es-ES", { weekday: "short", hour: "2-digit", minute: "2-digit" })} · ` : ""}
-                  fondos al {fechaCorta(a.filas.filter((f) => f.p.tipo !== "accion" && f.fechaPrecio).reduce((mx, f) => (f.fechaPrecio > mx ? f.fechaPrecio : mx), "") || a.fechaPrecios)}</>
-              : "Esperando los primeros precios."}</p>
+            <p className="mt-2 text-[11px] leading-snug text-slate-400">
+              <strong className="font-medium">Ganas / pierdes</strong>: valor hoy − invertido, desde que compraste (como en tu entidad){sel.sinCoste ? `; ${sel.sinCoste} sin coste no cuenta${sel.sinCoste === 1 ? "" : "n"}` : ""}.{" "}
+              <strong className="font-medium">Hoy</strong>: lo que se ha movido con el último precio{horaAcc ? ` (acciones a las ${new Date(horaAcc).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}` : ""}{fechaFondos ? `${horaAcc ? "; " : " ("}fondos al ${fechaCorta(fechaFondos)}` : ""}{horaAcc || fechaFondos ? ")" : ""}.
+            </p>
+            {!nivel.e && <div className="mt-3"><Reparto grupos={a.porEntidad} total={a.total} /></div>}
           </Card>
 
-          <Evolucion a={a} inv={inv} onAbrirProducto={setAbierta} />
+          <Evolucion a={a} inv={inv} nivel={nivel} setNivel={setNivel} onAbrirProducto={setAbierta} />
 
-          {a.movidos.length > 0 && (
+          {movidos.length > 1 && (
             <Card className="p-4">
               <h3 className="text-sm font-semibold">Lo que más se ha movido</h3>
               <div className="mt-2 divide-y" style={{ borderColor: C.line }}>
-                {a.movidos.map((f) => (
+                {movidos.map((f) => (
                   <button key={f.p.id} type="button" onClick={() => setAbierta(f.p.id)} className="flex w-full items-center gap-2 py-2 text-left text-sm">
                     <span className="min-w-0 flex-1 truncate">{f.p.nombre}</span>
                     <span className="shrink-0 text-xs text-slate-500" style={tnum}>{eur(f.hoy, true)}</span>
@@ -650,7 +662,9 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
             <Seg ariaLabel="Agrupar por" value={vista} onChange={setVista} options={[{ v: "entidad", l: "Por plataforma" }, { v: "tipo", l: "Por tipo" }]} />
             <Btn size="sm" onClick={() => setEditando({})}><Plus size={14} /> Añadir</Btn>
           </div>
-          {(vista === "entidad" ? a.porEntidad : a.porTipo).map((g) => <Grupo key={g.nombre} g={g} datos={datos} onAbrir={setAbierta} nota={vista === "entidad" && g.nombre === entidadRobo ? notaRobo : null} />)}
+          {(vista === "entidad" ? a.porEntidad : a.porTipo)
+            .map((g) => (nivel.e ? { ...g, filas: g.filas.filter((f) => selFilas.includes(f)) } : g)).filter((g) => g.filas.length)
+            .map((g) => <Grupo key={g.nombre} g={g} datos={datos} onAbrir={setAbierta} nota={vista === "entidad" && g.nombre === entidadRobo ? notaRobo : null} />)}
 
           {(avisosCartera.length > 0 || sinPrecio.length > 0) && (
             <Card className="p-4">

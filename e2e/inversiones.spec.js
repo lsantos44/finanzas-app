@@ -45,27 +45,32 @@ test("la pestaña Inversiones valora, agrupa, resuelve ISIN y abre el detalle", 
   const peticiones = await preparar(page);
   await page.goto("/");
   await page.getByRole("button", { name: /Invers/ }).first().click();
-  await expect(page.getByText("Valor de tus inversiones")).toBeVisible();
+  await expect(page.getByText("Valor hoy", { exact: true })).toBeVisible();
   // ISIN → cotización, y se le pide al servidor que la siga.
   await expect.poll(() => peticiones.includes("GET /inversiones/resolver")).toBe(true);
   await expect.poll(() => peticiones.includes("POST /inversiones/seguir")).toBe(true);
-  await expect(page.getByText("Plan de empleados", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("Bróker", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Plan de empleados/ }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Bróker/ }).first()).toBeVisible();
   // 3.404 + 894,93 + 10.000 + 2.000 ≈ 16.299 €
   await expect(page.getByText(/16\.29[89]\s?€/).first()).toBeVisible();
   // El listado de bolsa con un solo dato se cambia por la cotización con historial.
   await expect.poll(() => peticiones.filter((x) => x === "GET /inversiones/resolver").length).toBeGreaterThanOrEqual(2);
   await expect(page.getByText("El gráfico aparecerá cuando lleguen los precios.")).toHaveCount(0);
-  // Gráfica navegable: Todo → plataforma → producto, en € y en %.
-  const nivel = page.getByRole("navigation", { name: "Nivel" });
-  await page.getByRole("button", { name: "%", exact: true }).click();
-  await page.getByRole("button", { name: /^Bróker/ }).first().click();
-  await expect(nivel.getByText("Bróker")).toBeVisible();
+  // La ganancia de una plataforma es desde que compraste (valor − invertido), no lo que han subido
+  // sus acciones en el año: el bróker de prueba pierde aunque Coherent suba en el periodo.
+  const plataforma = page.getByLabel("Plataforma");
+  await plataforma.selectOption("Bróker");
+  await expect(page.getByText("Valor hoy", { exact: true })).toBeVisible();
+  await expect(page.getByText(/-105\s?€/).first()).toBeVisible();
+  await expect(page.getByText(/-10,5\d\s?%/).first()).toBeVisible();
+  // Gráfica y listas siguen al filtro; en un producto, «Ver ficha».
   await page.getByRole("button", { name: /^Coherent/ }).first().click();
-  await expect(nivel.getByText("Coherent")).toBeVisible();
+  await expect(page.getByLabel("Producto")).toHaveValue("cohr");
   await expect(page.getByRole("button", { name: "Ver ficha" })).toBeVisible();
-  await nivel.getByRole("button", { name: "Todo" }).click();
+  await page.getByRole("button", { name: "%", exact: true }).click();
+  await expect(page.getByText(/Rentabilidad en 1A/)).toBeVisible();
   await page.getByRole("button", { name: "€", exact: true }).click();
+  await plataforma.selectOption("");
   // Aportación periódica detectada y aplicada con un toque.
   await expect(page.getByText(/Tu aportación mensual a esta cartera/)).toBeVisible();
   await page.getByRole("button", { name: "Sí, usarla" }).click();
@@ -73,27 +78,26 @@ test("la pestaña Inversiones valora, agrupa, resuelve ISIN y abre el detalle", 
   await page.getByRole("button", { name: /Coherent/ }).first().click();
   await expect(page.getByText("Coste medio por participación")).toBeVisible();
   await expect(page.getByText("Tu precio medio")).toBeVisible();
+  await page.keyboard.press("Escape");
+  // En Resumen, la tarjeta de inversiones con el valor y lo que ganas o pierdes.
+  await page.getByRole("button", { name: "Resumen", exact: true }).click();
+  await expect(page.getByText(/Ganas\/pierdes/)).toBeVisible();
 });
 
 test("captura visual (solo con CAPTURAS)", async ({ page }) => {
   test.skip(!process.env.CAPTURAS, "solo para revisar a ojo");
   await preparar(page);
   await page.goto("/");
+  await page.screenshot({ path: `${process.env.CAPTURAS}/resumen-${test.info().project.name}.png` });
   await page.getByRole("button", { name: /Invers/ }).first().click();
-  await page.getByText("Valor de tus inversiones").waitFor();
+  await page.getByText("Valor hoy", { exact: true }).waitFor();
   await page.waitForTimeout(800);
   const dir = process.env.CAPTURAS;
   await page.screenshot({ path: `${dir}/tab-${test.info().project.name}.png`, fullPage: true });
-  const evo = page.getByRole("navigation", { name: "Nivel" }).locator("xpath=ancestor::div[contains(@class,'rounded-2xl')][1]");
-  await evo.screenshot({ path: `${dir}/evo-todo-${test.info().project.name}.png` });
-  await page.getByRole("button", { name: /^Roboadvisor/ }).first().click();
-  await page.waitForTimeout(300);
-  await evo.screenshot({ path: `${dir}/evo-plataforma-${test.info().project.name}.png` });
-  await page.getByRole("button", { name: "%", exact: true }).click();
-  await page.getByRole("navigation", { name: "Nivel" }).getByRole("button", { name: "Todo" }).click();
-  await page.waitForTimeout(300);
-  await evo.screenshot({ path: `${dir}/evo-pct-${test.info().project.name}.png` });
-  await page.getByRole("button", { name: "€", exact: true }).click();
+  await page.getByLabel("Plataforma").selectOption("Bróker");
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `${dir}/filtro-broker-${test.info().project.name}.png` });
+  await page.getByLabel("Plataforma").selectOption("");
   await page.getByRole("button", { name: /Coherent/ }).first().click();
   await page.getByText("Coste medio por participación").waitFor();
   await page.waitForTimeout(500);
