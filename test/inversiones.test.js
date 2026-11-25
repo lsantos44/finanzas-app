@@ -151,3 +151,22 @@ describe("números como los muestran las entidades", () => {
     expect(leer("1.234.567,5")).toBeCloseTo(1234567.5, 6);
   });
 });
+
+describe("recalibrar la cartera automatizada", () => {
+  it("las aportaciones anteriores a los datos de un fondo no se suman dos veces", () => {
+    const inv = {
+      posiciones: [
+        // Recalibrado el 27/11 con los datos de la entidad (ya incluye lo comprado el 27).
+        { id: "a", nombre: "Fondo A", entidad: "Roboadvisor", tipo: "fondo", simbolo: "F1", participaciones: 131.25, coste: 1375, alta: "2026-11-27", robo: true, pesoObjetivo: 75 },
+        // Sin recalibrar: sigue recibiendo su parte.
+        { id: "b", nombre: "Fondo B", entidad: "Roboadvisor", tipo: "fondo", simbolo: "F2", valorAlta: 400, coste: 400, alta: "2026-11-24", robo: true, pesoObjetivo: 25 },
+      ],
+      aportacion: { patron: "TRANSF PERIODICA", importe: 500, desde: "2026-11-24" },
+    };
+    const movs = [{ id: 1, date: new Date("2026-11-25T12:00:00"), pattern: "TRANSF PERIODICA", amount: -500 }];
+    const r = analizarInversiones(inv, datos, movs);
+    expect(r.filas[0].unidades).toBeCloseTo(131.25, 6);
+    expect(r.filas[0].coste).toBeCloseTo(1375, 6);
+    expect(r.filas[1].unidades).toBeCloseTo(20 + 125 / 20, 6);
+  });
+});

@@ -79,6 +79,9 @@ export function calcularLotes(inv, datos, aportes) {
     const tot = pesos.reduce((s, x) => s + x, 0);
     if (!tot) continue;
     robo.forEach((p, i) => {
+      // Las participaciones de alta ya incluyen lo comprado hasta esa fecha: si recalibras con
+      // los datos de tu entidad, las aportaciones anteriores no se vuelven a sumar.
+      if (p.alta && fe <= p.alta) return;
       const imp = (a.importe * pesos[i]) / tot;
       const pr = precioEUR(p, fe, datos);
       if (imp > 0 && pr) lotes[p.id].push({ fecha: fe, unidades: imp / pr, coste: imp });
