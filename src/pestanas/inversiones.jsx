@@ -2,7 +2,7 @@ import { C, fmtE, fmtE0, nfNum, tnum } from "../core.js";
 import { Btn, Card, Modal, Seg } from "../ui/comunes.jsx";
 import { analizarInversiones, candidatosAportacion, fusionarPosiciones, normalizarPosiciones, rentabilidadTWR, serieEUR, simbolosDe, dia, sumarDias, divisaDe } from "../inversiones.js";
 import { AlertTriangle, ChevronDown, ChevronRight, Pencil, Plus, RefreshCw, Repeat, Search, Trash2, Upload, Wallet } from "lucide-react";
-import { Area, AreaChart, CartesianGrid, Line, LineChart, ComposedChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, CartesianGrid, Line, ComposedChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 /* ============================================================
@@ -99,122 +99,144 @@ function GraficoEvolucion({ serie, conInvertido, referencia, alto = 200 }) {
   );
 }
 
-/* Evolución de la cartera, de tres formas: el total (con lo invertido), cómo se reparte por
-   plataforma a lo largo del tiempo, y comparando la rentabilidad de plataformas y productos
-   (en %, desde el inicio del periodo, sin contar el dinero nuevo como ganancia). */
-function EvolucionCartera({ a, inv, datos }) {
-  const [modo, setModo] = useState("total");
+/* Evolución navegable: Todo → plataforma → producto. En «€», cuánto vale y de qué se compone
+   (áreas apiladas y la línea de lo invertido); en «%», cómo ha rendido cada parte en el periodo
+   (rentabilidad ponderada por tiempo: las aportaciones no cuentan como ganancia). Debajo, lo que
+   compone el nivel, con su valor y su %: tocar una fila baja un nivel. */
+function Evolucion({ a, inv, onAbrirProducto }) {
+  const [nivel, setNivel] = useState({ e: null, id: null });
   const [rango, setRango] = useState(365);
+  const [unidad, setUnidad] = useState("eur");
   const entidades = a.porEntidad.map((g) => g.nombre);
-  const [elegidos, setElegidos] = useState(() => entidades.map((e) => "e:" + e));
-  const datosR = useMemo(() => recortar(a.serie, rango), [a.serie, rango]);
+  const pos = nivel.id ? inv.posiciones.find((p) => p.id === nivel.id) : null;
+  const filaPos = pos ? a.filas.find((f) => f.p.id === pos.id) : null;
+  const colorEntidad = (e) => PALETA[Math.max(0, entidades.indexOf(e)) % PALETA.length];
 
-  const comparacion = useMemo(() => {
-    if (modo !== "comparar" || datosR.length < 2) return { filas: [], claves: [] };
-    const claves = elegidos.slice(0, 8);
-    const series = {};
-    for (const k of claves) {
-      if (k.startsWith("e:")) {
-        // Índice de rentabilidad de la plataforma (sin contar las aportaciones como ganancia).
-        const { indice } = rentabilidadTWR(a.serie, { desde: datosR[0].d, entidad: k.slice(2) });
-        const mapa = new Map(indice);
-        series[k] = datosR.map((p) => mapa.get(p.d) ?? null);
-      }
-      else {
-        const pos = inv.posiciones.find((p) => p.id === k.slice(2));
-        const s = pos ? serieEUR(pos, datos) : [];
-        const mapa = new Map(s);
-        let ult = null;
-        series[k] = datosR.map((p) => { if (mapa.has(p.d)) ult = mapa.get(p.d); return ult; });
-      }
-    }
-    const filas = datosR.map((p, i) => {
-      const o = { d: p.d, et: p.et };
-      for (const k of claves) { const base = series[k].find((x) => x); const v = series[k][i]; o[k] = base && v ? (v / base - 1) * 100 : null; }
+  // Qué hay en este nivel: sus partes (para apilar y para la lista) y cómo leer cada una.
+  const partes = useMemo(() => {
+    if (nivel.id) return [];
+    if (!nivel.e) return a.porEntidad.map((g) => ({ k: g.nombre, nombre: g.nombre, color: colorEntidad(g.nombre), entidad: g.nombre }));
+    const g = a.porEntidad.find((x) => x.nombre === nivel.e);
+    return (g?.filas || []).map((f, i) => ({ k: f.p.id, nombre: f.p.nombre, color: PALETA[i % PALETA.length], pos: f.p.id }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nivel, a.porEntidad]);
+
+  const desde = useMemo(() => (a.serie.length ? (rango ? sumarDias(a.serie[a.serie.length - 1].d, -rango) : a.serie[0].d) : null), [a.serie, rango]);
+  const leerValor = (p, x) => (x.pos ? p.porPos?.[x.pos] : x.entidad ? p.porEntidad?.[x.entidad] : p.valor) ?? 0;
+  const leerInv = (p, x) => (x.pos ? p.invPos?.[x.pos] : x.entidad ? p.invEntidad?.[x.entidad] : p.invertido);
+  const actual = nivel.id ? { pos: nivel.id } : nivel.e ? { entidad: nivel.e } : {};
+  const twr = (x) => rentabilidadTWR(a.serie, { desde, entidad: x.entidad || null, pos: x.pos || null });
+
+  const datos = useMemo(() => {
+    const s = recortar(a.serie, rango);
+    if (unidad === "eur") return s.map((p) => {
+      const o = { d: p.d, et: p.et, inv: leerInv(p, actual) ?? null };
+      if (partes.length) for (const x of partes) o[x.k] = leerValor(p, x);
+      else o.valor = leerValor(p, actual);
       return o;
     });
-    return { filas, claves };
-  }, [modo, datosR, elegidos, inv.posiciones, datos, a.serie]);
+    const indices = [actual, ...partes].map((x) => new Map(twr(x).indice));
+    return s.map((p) => {
+      const o = { d: p.d, et: p.et };
+      [actual, ...partes].forEach((x, i) => { const v = indices[i].get(p.d); o[i ? x.k : "_total"] = v == null ? null : (v - 1) * 100; });
+      return o;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [a.serie, rango, unidad, partes, nivel]);
 
-  const nombreDe = (k) => (k.startsWith("e:") ? k.slice(2) : inv.posiciones.find((p) => p.id === k.slice(2))?.nombre || "?");
-  // Un color fijo por plataforma (el mismo que en «Por plataforma» y en la barra de reparto) y
-  // por producto, aunque cambie qué se compara.
-  const colorDe2 = (k) => {
-    if (k.startsWith("e:")) return PALETA[Math.max(0, entidades.indexOf(k.slice(2))) % PALETA.length];
-    return PALETA[(entidades.length + Math.max(0, inv.posiciones.findIndex((p) => p.id === k.slice(2)))) % PALETA.length];
+  const valorAhora = nivel.id ? filaPos?.valor : nivel.e ? a.porEntidad.find((g) => g.nombre === nivel.e)?.valor : a.total;
+  const rNivel = twr(actual).r;
+  const ultimo = a.serie[a.serie.length - 1];
+  const invAhora = ultimo ? leerInv(ultimo, actual) : null;
+  const plusv = invAhora ? valorAhora - invAhora : null;
+  const nombreRango = RANGOS.find((r) => r.v === rango)?.l;
+
+  const TT = ({ active, payload }) => {
+    if (!active || !payload?.length) return null;
+    const p = payload[0].payload;
+    const filas = payload.filter((x) => x.value != null && x.dataKey !== "inv").sort((x, y) => y.value - x.value).slice(0, 6);
+    const nombre = (k) => (k === "_total" ? (pos?.nombre || nivel.e || "Todo") : k === "valor" ? (pos?.nombre || "Valor") : partes.find((x) => x.k === k)?.nombre || k);
+    return (
+      <div className="max-w-[16rem] rounded-xl border bg-white px-3 py-2 text-xs shadow-lg" style={{ borderColor: C.line }}>
+        <div className="mb-1 font-medium">{fechaLarga(p.d)}</div>
+        {unidad === "eur" && partes.length > 0 && <div className="flex justify-between gap-3 font-semibold" style={tnum}><span>Total</span><span>{fmtE0(partes.reduce((t, x) => t + (p[x.k] || 0), 0))}</span></div>}
+        {filas.map((x) => <div key={x.dataKey} className="flex justify-between gap-3" style={tnum}><span className="truncate" style={{ color: x.color }}>{nombre(x.dataKey)}</span><span>{unidad === "eur" ? fmtE0(x.value) : pct(x.value / 100)}</span></div>)}
+        {unidad === "eur" && p.inv != null && <div className="mt-0.5 flex justify-between gap-3 text-slate-500" style={tnum}><span>Invertido</span><span>{fmtE0(p.inv)}</span></div>}
+      </div>
+    );
   };
-  const alternar = (k) => setElegidos((xs) => (xs.includes(k) ? xs.filter((x) => x !== k) : [...xs, k].slice(-8)));
+
+  const migas = [{ l: "Todo", n: { e: null, id: null } }, ...(nivel.e ? [{ l: nivel.e, n: { e: nivel.e, id: null } }] : []), ...(pos ? [{ l: pos.nombre, n: nivel }] : [])];
+  const color = colorDe(rNivel);
 
   return (
     <Card className="p-4">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold">Evolución</h3>
-        <Seg ariaLabel="Qué ver en el gráfico" value={modo} onChange={setModo} options={[{ v: "total", l: "Total" }, { v: "entidad", l: "Por plataforma" }, { v: "comparar", l: "Comparar" }]} />
+      <nav aria-label="Nivel" className="flex min-w-0 items-center gap-1 text-xs text-slate-500">
+        {migas.map((m, i) => (
+          <span key={m.l} className="flex min-w-0 items-center gap-1">
+            {i > 0 && <ChevronRight size={12} className="shrink-0" />}
+            {i < migas.length - 1
+              ? <button type="button" className="shrink-0 underline-offset-2 hover:underline" onClick={() => setNivel(m.n)}>{m.l}</button>
+              : <span className="truncate font-semibold text-slate-700">{m.l}</span>}
+          </span>
+        ))}
+      </nav>
+      <div className="mt-1 flex items-end justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-2xl font-semibold" style={tnum}>{fmtE0(valorAhora || 0)}</div>
+          <div className="text-xs" style={tnum}>
+            <span style={{ color }}>{pct(rNivel)}</span><span className="text-slate-500"> en {nombreRango === "Todo" ? "todo el periodo" : nombreRango}</span>
+            {plusv != null && <span className="text-slate-500"> · plusvalía <span style={{ color: colorDe(plusv) }}>{eur(plusv, true)}</span></span>}
+          </div>
+        </div>
+        <Seg ariaLabel="Euros o porcentaje" value={unidad} onChange={setUnidad} options={[{ v: "eur", l: "€" }, { v: "pct", l: "%" }]} />
       </div>
-      {modo === "total" && (
-        <>
-          <p className="mb-2 text-xs text-slate-500">Con lo que tienes hoy, hacia atrás{inv.aportacion ? ", sumando cada aportación desde que llega" : ""}. La línea discontinua es lo invertido.</p>
-          <GraficoEvolucion serie={a.serie} conInvertido={a.costeTotal > 0} />
-        </>
-      )}
-      {modo !== "total" && (
-        <div className="mb-2 flex justify-end"><Seg ariaLabel="Periodo del gráfico" value={rango} onChange={setRango} options={RANGOS} /></div>
-      )}
-      {modo === "entidad" && (datosR.length < 2 ? <p className="py-8 text-center text-sm text-slate-400">El gráfico aparecerá cuando lleguen los precios.</p> : (
-        <>
-          <div style={{ height: 220 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={datosR.map((p) => ({ et: p.et, d: p.d, ...p.porEntidad }))} margin={{ top: 6, right: 4, left: 4, bottom: 0 }}>
-                <CartesianGrid vertical={false} stroke={C.line} />
-                <XAxis dataKey="et" tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={{ stroke: C.line }} interval="preserveStartEnd" minTickGap={48} />
-                <YAxis tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={false} width={58} tickFormatter={ejeY} />
-                <Tooltip formatter={(v, n) => [fmtE0(v), n]} labelFormatter={(_, pl) => fechaLarga(pl?.[0]?.payload?.d)} contentStyle={{ borderRadius: 12, borderColor: C.line, fontSize: 12 }} />
-                {[...entidades].reverse().map((e) => { const i = entidades.indexOf(e); return <Area key={e} type="monotone" dataKey={e} stackId="1" stroke={PALETA[i % PALETA.length]} fill={PALETA[i % PALETA.length]} fillOpacity={0.35} isAnimationActive={false} />; })}
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-600">
-            {a.porEntidad.map((g, i) => <span key={g.nombre} className="inline-flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: PALETA[i % PALETA.length] }} />{g.nombre} · {fmtE0(g.valor)}</span>)}
-          </div>
-        </>
-      ))}
-      {modo === "comparar" && (
-        <>
-          <p className="mb-2 text-xs text-slate-500">Rentabilidad en el periodo: plataformas (sin contar las aportaciones como ganancia) y productos (su precio). Toca para añadir o quitar.</p>
-          <div className="mb-3 flex flex-wrap gap-1.5">
-            {[...entidades.map((e) => "e:" + e), ...inv.posiciones.map((p) => "p:" + p.id)].map((k) => {
-              const on = elegidos.includes(k);
-              return (
-                <button key={k} type="button" onClick={() => alternar(k)} aria-pressed={on}
-                  className={`max-w-[12rem] truncate rounded-full border px-2.5 py-1 text-xs ${k.startsWith("e:") ? "font-semibold" : ""}`}
-                  style={on ? { borderColor: colorDe2(k), color: colorDe2(k), background: C.surfaceAlt } : { borderColor: C.line, color: C.muted }}>
-                  {nombreDe(k)}
-                </button>
-              );
-            })}
-          </div>
-          {comparacion.filas.length < 2 || !comparacion.claves.length ? <p className="py-8 text-center text-sm text-slate-400">Elige qué comparar.</p> : (
-            <>
-              <div style={{ height: 230 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={comparacion.filas} margin={{ top: 6, right: 4, left: 4, bottom: 0 }}>
-                    <CartesianGrid vertical={false} stroke={C.line} />
-                    <XAxis dataKey="et" tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={{ stroke: C.line }} interval="preserveStartEnd" minTickGap={48} />
-                    <YAxis tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${Math.round(v)}%`} />
-                    <ReferenceLine y={0} stroke={C.lineStrong} />
-                    <Tooltip formatter={(v, k) => [pct(v / 100), nombreDe(k)]} labelFormatter={(_, pl) => fechaLarga(pl?.[0]?.payload?.d)} contentStyle={{ borderRadius: 12, borderColor: C.line, fontSize: 12 }} />
-                    {comparacion.claves.map((k) => <Line key={k} type="monotone" dataKey={k} stroke={colorDe2(k)} strokeWidth={k.startsWith("e:") ? 2.25 : 1.5} dot={false} connectNulls isAnimationActive={false} />)}
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="mt-2 grid grid-cols-1 gap-1 text-xs sm:grid-cols-2">
-                {comparacion.claves.map((k) => { const ult = comparacion.filas[comparacion.filas.length - 1][k]; return (
-                  <span key={k} className="flex min-w-0 items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: colorDe2(k) }} /><span className="truncate">{nombreDe(k)}</span><span className="ml-auto shrink-0 font-semibold" style={{ ...tnum, color: colorDe(ult) }}>{ult == null ? "–" : pct(ult / 100)}</span></span>
-                ); })}
-              </div>
-            </>
-          )}
-        </>
+
+      <div className="mt-3" style={{ height: 210 }}>
+        {datos.length < 2 ? <p className="pt-16 text-center text-sm text-slate-400">Aún no hay precios suficientes.</p> : (
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={datos} margin={{ top: 6, right: 4, left: 4, bottom: 0 }}>
+              <CartesianGrid vertical={false} stroke={C.line} />
+              <XAxis dataKey="et" tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={{ stroke: C.line }} interval="preserveStartEnd" minTickGap={48} />
+              <YAxis tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={false} width={unidad === "eur" ? 52 : 40} domain={["auto", "auto"]} tickFormatter={unidad === "eur" ? ejeY : (v) => `${Math.round(v)}%`} />
+              <Tooltip content={<TT />} cursor={{ stroke: C.lineStrong }} />
+              {unidad === "pct" && <ReferenceLine y={0} stroke={C.lineStrong} />}
+              {unidad === "eur" && partes.map((x) => <Area key={x.k} type="monotone" dataKey={x.k} stackId="1" stroke={x.color} fill={x.color} fillOpacity={0.3} isAnimationActive={false} />)}
+              {unidad === "eur" && !partes.length && <Area type="monotone" dataKey="valor" stroke={color} fill={color} fillOpacity={0.15} strokeWidth={2} isAnimationActive={false} />}
+              {unidad === "eur" && <Line type="stepAfter" dataKey="inv" stroke={C.ink2} strokeDasharray="4 3" strokeWidth={1.25} dot={false} isAnimationActive={false} />}
+              {unidad === "pct" && partes.map((x) => <Line key={x.k} type="monotone" dataKey={x.k} stroke={x.color} strokeWidth={1.5} dot={false} connectNulls isAnimationActive={false} />)}
+              {unidad === "pct" && <Line type="monotone" dataKey="_total" stroke={C.ink} strokeWidth={2.5} dot={false} connectNulls isAnimationActive={false} />}
+            </ComposedChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <span className="text-[11px] text-slate-400">{unidad === "eur" ? "– – lo invertido" : "— " + (pos?.nombre || nivel.e || "todo")}</span>
+        <Seg ariaLabel="Periodo" value={rango} onChange={setRango} options={RANGOS} />
+      </div>
+
+      {partes.length > 0 ? (
+        <div className="mt-3 divide-y border-t" style={{ borderColor: C.line }}>
+          {partes.map((x) => {
+            const v = ultimo ? leerValor(ultimo, x) : 0;
+            const r = twr(x).r;
+            return (
+              <button key={x.k} type="button" onClick={() => setNivel(x.pos ? { e: nivel.e, id: x.pos } : { e: x.entidad, id: null })}
+                className="flex w-full items-center gap-2 py-2.5 text-left text-sm hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500">
+                <span className="inline-block h-3 w-3 shrink-0 rounded-sm" style={{ background: x.color }} />
+                <span className="min-w-0 flex-1 truncate">{x.nombre}</span>
+                <span className="shrink-0 font-medium" style={tnum}>{fmtE0(v)}</span>
+                <span className="w-16 shrink-0 text-right text-xs font-semibold" style={{ ...tnum, color: colorDe(r) }}>{pct(r)}</span>
+                <ChevronRight size={14} className="shrink-0 text-slate-400" />
+              </button>
+            );
+          })}
+        </div>
+      ) : filaPos && (
+        <div className="mt-3 flex items-center justify-between gap-2 border-t pt-3 text-sm" style={{ borderColor: C.line }}>
+          <span className="text-slate-500" style={tnum}>{nfNum.format(Math.round(filaPos.unidades * 1000) / 1000)} × {filaPos.precio == null ? "–" : fmtE(filaPos.precio)}</span>
+          <Btn size="sm" onClick={() => onAbrirProducto(filaPos.p.id)}>Ver ficha</Btn>
+        </div>
       )}
     </Card>
   );
@@ -600,14 +622,14 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
               <Cifra label="Plusvalía" color={colorDe(a.resultado)} sub={a.resultado == null ? "añade el coste" : `${pct(a.resultadoPct)} sobre ${fmtE0(a.costeTotal)} invertidos${a.sinCoste ? ` · ${a.sinCoste} sin coste` : ""}`}>{a.resultado == null ? "–" : eur(a.resultado, true)}</Cifra>
             </div>
             <div className="mt-3"><Reparto grupos={a.porEntidad} total={a.total} /></div>
-            <p className="mt-3 text-[11px] text-slate-400">{a.fechaPrecios
-              ? <>{a.ytd != null && <>En lo que va de año: <span style={{ ...tnum, color: colorDe(a.ytd) }}>{pct(a.ytd)}</span>. </>}
-                  {a.horaAcciones ? `Acciones actualizadas ${new Date(a.horaAcciones).toLocaleString("es-ES", { weekday: "short", hour: "2-digit", minute: "2-digit" })} (con 15 min de retraso). ` : ""}
-                  Fondos al {fechaLarga(a.filas.filter((f) => f.p.tipo !== "accion" && f.fechaPrecio).reduce((mx, f) => (f.fechaPrecio > mx ? f.fechaPrecio : mx), "") || a.fechaPrecios)}: publican su valor una vez al día.</>
-              : "Aún no hay precios: llegarán en cuanto tu servidor los descargue."}</p>
+            <p className="mt-2 text-[11px] text-slate-400">{a.fechaPrecios
+              ? <>{a.ytd != null && <>Este año <span style={{ ...tnum, color: colorDe(a.ytd) }}>{pct(a.ytd)}</span> · </>}
+                  {a.horaAcciones ? `acciones ${new Date(a.horaAcciones).toLocaleString("es-ES", { weekday: "short", hour: "2-digit", minute: "2-digit" })} · ` : ""}
+                  fondos al {fechaCorta(a.filas.filter((f) => f.p.tipo !== "accion" && f.fechaPrecio).reduce((mx, f) => (f.fechaPrecio > mx ? f.fechaPrecio : mx), "") || a.fechaPrecios)}</>
+              : "Esperando los primeros precios."}</p>
           </Card>
 
-          <EvolucionCartera a={a} inv={inv} datos={datos} />
+          <Evolucion a={a} inv={inv} onAbrirProducto={setAbierta} />
 
           {a.movidos.length > 0 && (
             <Card className="p-4">

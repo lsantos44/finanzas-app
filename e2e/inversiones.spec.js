@@ -56,10 +56,16 @@ test("la pestaña Inversiones valora, agrupa, resuelve ISIN y abre el detalle", 
   // El listado de bolsa con un solo dato se cambia por la cotización con historial.
   await expect.poll(() => peticiones.filter((x) => x === "GET /inversiones/resolver").length).toBeGreaterThanOrEqual(2);
   await expect(page.getByText("El gráfico aparecerá cuando lleguen los precios.")).toHaveCount(0);
-  await page.getByRole("button", { name: "Por plataforma" }).first().click();
-  await page.getByRole("button", { name: "Comparar" }).click();
-  await expect(page.getByText(/Rentabilidad en el periodo/)).toBeVisible();
-  await page.getByRole("button", { name: "Total", exact: true }).click();
+  // Gráfica navegable: Todo → plataforma → producto, en € y en %.
+  const nivel = page.getByRole("navigation", { name: "Nivel" });
+  await page.getByRole("button", { name: "%", exact: true }).click();
+  await page.getByRole("button", { name: /^Bróker/ }).first().click();
+  await expect(nivel.getByText("Bróker")).toBeVisible();
+  await page.getByRole("button", { name: /^Coherent/ }).first().click();
+  await expect(nivel.getByText("Coherent")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Ver ficha" })).toBeVisible();
+  await nivel.getByRole("button", { name: "Todo" }).click();
+  await page.getByRole("button", { name: "€", exact: true }).click();
   // Aportación periódica detectada y aplicada con un toque.
   await expect(page.getByText(/Tu aportación mensual a esta cartera/)).toBeVisible();
   await page.getByRole("button", { name: "Sí, usarla" }).click();
@@ -78,14 +84,16 @@ test("captura visual (solo con CAPTURAS)", async ({ page }) => {
   await page.waitForTimeout(800);
   const dir = process.env.CAPTURAS;
   await page.screenshot({ path: `${dir}/tab-${test.info().project.name}.png`, fullPage: true });
-  const evo = page.getByText("Evolución", { exact: true }).locator("xpath=ancestor::div[contains(@class,'rounded-2xl')][1]");
-  await page.getByRole("button", { name: "Por plataforma" }).first().click();
+  const evo = page.getByRole("navigation", { name: "Nivel" }).locator("xpath=ancestor::div[contains(@class,'rounded-2xl')][1]");
+  await evo.screenshot({ path: `${dir}/evo-todo-${test.info().project.name}.png` });
+  await page.getByRole("button", { name: /^Roboadvisor/ }).first().click();
   await page.waitForTimeout(300);
-  await evo.screenshot({ path: `${dir}/plataforma-${test.info().project.name}.png` });
-  await page.getByRole("button", { name: "Comparar" }).click();
+  await evo.screenshot({ path: `${dir}/evo-plataforma-${test.info().project.name}.png` });
+  await page.getByRole("button", { name: "%", exact: true }).click();
+  await page.getByRole("navigation", { name: "Nivel" }).getByRole("button", { name: "Todo" }).click();
   await page.waitForTimeout(300);
-  await evo.screenshot({ path: `${dir}/comparar-${test.info().project.name}.png` });
-  await page.getByRole("button", { name: "Total", exact: true }).click();
+  await evo.screenshot({ path: `${dir}/evo-pct-${test.info().project.name}.png` });
+  await page.getByRole("button", { name: "€", exact: true }).click();
   await page.getByRole("button", { name: /Coherent/ }).first().click();
   await page.getByText("Coste medio por participación").waitFor();
   await page.waitForTimeout(500);

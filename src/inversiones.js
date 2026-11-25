@@ -181,14 +181,16 @@ export function analizarInversiones(inv, datos, movs) {
     for (const l of lotes[p.id].slice(1)) {
       const f = fechas.find((x) => x >= l.fecha);
       if (!f) continue;
-      const o = flujos.get(f) || { total: 0, porEntidad: {} };
-      o.total += l.unidades * (precioEUR(p, f, datos) ?? 0);
-      o.porEntidad[entidadDe(p)] = (o.porEntidad[entidadDe(p)] || 0) + l.unidades * (precioEUR(p, f, datos) ?? 0);
+      const o = flujos.get(f) || { total: 0, porEntidad: {}, porPos: {} };
+      const x = l.unidades * (precioEUR(p, f, datos) ?? 0);
+      o.total += x;
+      o.porEntidad[entidadDe(p)] = (o.porEntidad[entidadDe(p)] || 0) + x;
+      o.porPos[p.id] = (o.porPos[p.id] || 0) + x;
       flujos.set(f, o);
     }
   }
   const serie = fechas.map((f) => {
-    const porPos = {}, porEntidad = {}, porEntidadBase = {};
+    const porPos = {}, porEntidad = {}, porEntidadBase = {}, invPos = {}, invEntidad = {};
     let v = 0, inv2 = 0;
     for (const p of posiciones) {
       let x, xb;
@@ -198,9 +200,13 @@ export function analizarInversiones(inv, datos, movs) {
       porPos[p.id] = x; porEntidad[e] = (porEntidad[e] || 0) + x; v += x;
       // Sin aportaciones: para comparar rentabilidades, que el dinero nuevo no parezca ganancia.
       porEntidadBase[e] = (porEntidadBase[e] || 0) + xb;
-      if (lotes[p.id][0].coste != null) for (const l of lotes[p.id]) if (l.fecha <= f) inv2 += l.coste;
+      if (lotes[p.id][0].coste != null) {
+        let ip = 0;
+        for (const l of lotes[p.id]) if (l.fecha <= f) ip += l.coste;
+        inv2 += ip; invPos[p.id] = ip; invEntidad[e] = (invEntidad[e] || 0) + ip;
+      }
     }
-    return { d: f, valor: v, invertido: inv2, porPos, porEntidad, porEntidadBase, flujo: flujos.get(f)?.total || 0, flujoEntidad: flujos.get(f)?.porEntidad || {} };
+    return { d: f, valor: v, invertido: inv2, porPos, porEntidad, porEntidadBase, invPos, invEntidad, flujo: flujos.get(f)?.total || 0, flujoEntidad: flujos.get(f)?.porEntidad || {}, flujoPos: flujos.get(f)?.porPos || {} };
   });
 
   // Lo que más se ha movido en su último cambio.
@@ -307,10 +313,10 @@ export function fusionarPosiciones(existentes, nuevas) {
    así una aportación no cuenta como ganancia.  r = Π (V_t − F_t) / V_{t−1} − 1.
    Sin aportaciones equivale a valor final / valor inicial − 1. Devuelve también el índice (1 = inicio)
    para dibujarlo. Con `entidad`, solo esa plataforma. */
-export function rentabilidadTWR(serie, { desde = "0000-00-00", entidad = null } = {}) {
+export function rentabilidadTWR(serie, { desde = "0000-00-00", entidad = null, pos = null } = {}) {
   if (!serie || serie.length < 2) return { r: null, indice: [] };
-  const val = (p) => (entidad ? p.porEntidad?.[entidad] ?? 0 : p.valor);
-  const flu = (p) => (entidad ? p.flujoEntidad?.[entidad] ?? 0 : p.flujo ?? 0);
+  const val = (p) => (pos ? p.porPos?.[pos] ?? 0 : entidad ? p.porEntidad?.[entidad] ?? 0 : p.valor);
+  const flu = (p) => (pos ? p.flujoPos?.[pos] ?? 0 : entidad ? p.flujoEntidad?.[entidad] ?? 0 : p.flujo ?? 0);
   let base = 0;
   for (let i = 0; i < serie.length; i++) { if (serie[i].d <= desde) base = i; else break; }
   let idx = 1;
