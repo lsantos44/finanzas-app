@@ -2390,7 +2390,7 @@ function AppMain() {
                     movsAll={movs} annualFactor={allAgg.annualFactor} mesesData={allAgg.mesesData} onDrill={setDrill} />}
             </div>
           )}
-          {tab === "inversiones" && <InversionesTab inversiones={inversiones} setInversiones={setInversiones} movs={movs} servidor={servidorInv} />}
+          {tab === "inversiones" && <InversionesTab inversiones={inversiones} setInversiones={setInversiones} movs={movs} servidor={servidorInv} ai={ai} aiOn={aiOn} />}
           {tab === "ideas" && agg && (
             <div className="space-y-4">
               <div className="flex"><Seg ariaLabel="Recap, ideas o plan" value={subIdea} onChange={setSubIdea}

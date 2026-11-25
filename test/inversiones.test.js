@@ -170,3 +170,21 @@ describe("recalibrar la cartera automatizada", () => {
     expect(r.filas[1].unidades).toBeCloseTo(20 + 125 / 20, 6);
   });
 });
+
+import { posicionesDeCapturas } from "../src/inversiones.js";
+describe("posiciones leídas de capturas", () => {
+  it("convierte lo leído en posiciones revisables, con coste en euros y sin inventar", () => {
+    const leido = { entidad: "Mi bróker", posiciones: [
+      { nombre: "Acción Uno", ticker: "uno", tipo: "accion", participaciones: "7", coste: "1.234,56", valor: "1.000,00", costeMedio: "200,5" },
+      { nombre: "Fondo Dos", isin: "IE00TEST0001", participaciones: "12,5", costeMedio: "10.5" },
+      { nombre: "Fondo Tres", valor: "2.000" },
+      { nombre: "Sin datos" },
+    ] };
+    const r = posicionesDeCapturas(leido, "", "2026-11-26");
+    expect(r[0].p).toMatchObject({ nombre: "Acción Uno", entidad: "Mi bróker", tipo: "accion", ticker: "UNO", participaciones: 7, coste: 1234.56 });
+    expect(r[1].p).toMatchObject({ tipo: "fondo", isin: "IE00TEST0001", participaciones: 12.5, coste: 131.25 });
+    expect(r[2].p).toMatchObject({ valorAlta: 2000, coste: null });
+    expect(r[3]).toMatchObject({ p: null, incluir: false });
+    expect(r[3].error).toMatch(/participaciones o valor/);
+  });
+});

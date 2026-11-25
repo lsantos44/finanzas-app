@@ -4,6 +4,23 @@ La pestaña **Inversiones** valora tus acciones y fondos con precios que tu serv
 Yahoo Finance. Este documento fija el estándar: qué datos de tu entidad necesitas para que las
 cifras **coincidan con las suyas**, y qué significa cada cifra.
 
+## Cómo cargar tus inversiones
+
+Tres formas, de más fácil a más técnica:
+
+1. **Desde capturas de tu banco o bróker** (Inversiones → *Capturas*). Haz capturas de la ficha
+   de cada producto, o de la cartera, donde se vean el nº de participaciones y el coste (o la
+   ganancia). La IA que tengas configurada las lee —nombre, ISIN o ticker y bolsa, participaciones,
+   coste en euros— y tú revisas la lista antes de guardar. Si un producto ya estaba (mismo ISIN o
+   nombre), se actualiza; si no, se añade. Sirve igual para recalibrar más adelante.
+2. **Añadir un producto** (Inversiones → *Añadir*), en dos pasos: lo buscas por nombre, ISIN o
+   ticker (se marca cuál tiene precios), y dices cuántas tienes, a qué precio medio (o cuánto
+   invertiste en total) y en qué plataforma.
+3. **Pegar una lista** en formato JSON, con los campos de abajo.
+
+Tu servidor elige solo la cotización de cada producto: por ISIN; si no, por ticker y bolsa (como
+los muestran los brókeres: «SOI · Euronext Paris»); si no, por nombre.
+
 ## Los datos de cada producto
 
 Cada producto (posición) se describe con estos campos. Los dos que más importan son las

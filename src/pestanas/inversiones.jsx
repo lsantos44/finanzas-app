@@ -1,7 +1,7 @@
-import { C, fmtE, fmtE0, nfNum, tnum } from "../core.js";
+import { C, aiLeerCapturas, fmtE, fmtE0, nfNum, tnum } from "../core.js";
 import { Btn, Card, Modal, Seg } from "../ui/comunes.jsx";
-import { analizarInversiones, candidatosAportacion, fusionarPosiciones, normalizarPosiciones, rentabilidadTWR, serieEUR, simbolosDe, dia, sumarDias, divisaDe } from "../inversiones.js";
-import { AlertTriangle, ChevronDown, ChevronRight, Pencil, Plus, RefreshCw, Repeat, Search, Trash2, Upload, Wallet } from "lucide-react";
+import { analizarInversiones, candidatosAportacion, fusionarPosiciones, normalizarPosiciones, posicionesDeCapturas, rentabilidadTWR, serieEUR, simbolosDe, dia, sumarDias, divisaDe } from "../inversiones.js";
+import { AlertTriangle, Camera, ChevronDown, ChevronRight, Pencil, Plus, RefreshCw, Repeat, Search, Trash2, Upload, Wallet } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, Line, ComposedChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -328,72 +328,215 @@ function Detalle({ f, datos, onClose, onEditar, onBorrar }) {
   );
 }
 
+/* Añadir o editar un producto, en dos pasos: 1) buscarlo (nombre, ISIN o ticker); 2) cuántas
+   tienes y a qué precio medio (o cuánto invertiste), y en qué plataforma. Lo demás, en «Más». */
 function Editor({ inicial, entidades, servidor, onGuardar, onClose }) {
-  const [p, setP] = useState(() => ({ tipo: "fondo", entidad: "", ...inicial }));
-  const [modo, setModo] = useState(inicial?.participaciones > 0 ? "unidades" : "valor");
-  const [q, setQ] = useState(inicial?.isin || inicial?.simbolo || "");
+  const nuevo = !inicial?.id;
+  const [paso, setPaso] = useState(nuevo && !inicial?.simbolo ? 1 : 2);
+  const [p, setP] = useState(() => ({ tipo: "fondo", entidad: entidades.length === 1 ? entidades[0] : "", ...inicial }));
+  const [q, setQ] = useState(inicial?.isin || "");
   const [res, setRes] = useState(null);
+  const [buscando, setBuscando] = useState(false);
   const [err, setErr] = useState(null);
+  const [sinUnidades, setSinUnidades] = useState(!(inicial?.participaciones > 0) && inicial?.valorAlta > 0);
+  const [costeModo, setCosteModo] = useState("medio");
+  const [costeMedio, setCosteMedio] = useState(() => (inicial?.coste && inicial?.participaciones ? String(Math.round((inicial.coste / inicial.participaciones) * 10000) / 10000).replace(".", ",") : ""));
   const set = (k, v) => setP((x) => ({ ...x, [k]: v }));
   const buscar = async () => {
-    setErr(null); setRes(null);
+    if (!q.trim()) return;
+    setErr(null); setRes(null); setBuscando(true);
     try { const d = await servidor.get("/inversiones/buscar?q=" + encodeURIComponent(q.trim())); setRes(d.resultados || []); }
     catch (e) { setErr("No se pudo buscar: " + e.message); }
+    finally { setBuscando(false); }
+  };
+  const elegir = (r) => {
+    const isin = /^[A-Z]{2}[A-Z0-9]{9}\d$/.test(q.trim().toUpperCase()) ? q.trim().toUpperCase() : p.isin;
+    setP((x) => ({ ...x, simbolo: r.simbolo, revisado: true, nombre: x.id ? x.nombre : r.nombre, tipo: r.tipo === "EQUITY" ? "accion" : r.tipo === "MUTUALFUND" ? "fondo" : x.tipo, isin }));
+    setPaso(2);
   };
   const ok = () => {
     try {
-      const [n] = normalizarPosiciones([{ ...p, participaciones: modo === "unidades" ? p.participaciones : null, valorAlta: modo === "valor" ? p.valorAlta : null }], dia(new Date()));
+      const datos = { ...p,
+        participaciones: sinUnidades ? null : p.participaciones,
+        valorAlta: sinUnidades ? p.valorAlta : null,
+        coste: costeModo === "total" ? p.coste : null,
+        costeMedio: costeModo === "medio" && !sinUnidades ? costeMedio : null };
+      if (costeModo === "medio" && sinUnidades) datos.coste = p.coste;
+      const [n] = normalizarPosiciones([datos], dia(new Date()));
       onGuardar({ ...n, id: inicial?.id || n.id });
     } catch (e) { setErr(e.message); }
   };
   const campo = "mt-0.5 w-full rounded-lg border px-2.5 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500";
   return (
-    <Modal title={inicial?.id ? "Editar posición" : "Añadir posición"} onClose={onClose}
-      footer={<div className="flex gap-2"><Btn kind="primary" onClick={ok}>Guardar</Btn><Btn onClick={onClose}>Cancelar</Btn></div>}>
-      <div className="space-y-3">
-        <label className="block text-xs text-slate-600">Busca por ISIN, ticker o nombre
-          <div className="mt-0.5 flex gap-2">
-            <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && buscar()} placeholder="IE00BYX5N771, TEF.MC…" className={campo + " flex-1"} style={{ borderColor: C.line }} />
-            <Btn onClick={buscar} disabled={!q.trim() || !servidor.listo}><Search size={14} /> Buscar</Btn>
+    <Modal title={nuevo ? "Añadir producto" : "Editar producto"} subtitle={paso === 1 ? "Paso 1 de 2 · búscalo" : nuevo ? "Paso 2 de 2 · cuánto tienes" : p.nombre} onClose={onClose}
+      footer={paso === 1
+        ? <div className="flex gap-2"><Btn onClick={() => { set("simbolo", undefined); setPaso(2); }}>No lo encuentro</Btn><Btn onClick={onClose} className="ml-auto">Cancelar</Btn></div>
+        : <div className="flex gap-2"><Btn kind="primary" onClick={ok}>Guardar</Btn><Btn onClick={onClose}>Cancelar</Btn></div>}>
+      {paso === 1 ? (
+        <div className="space-y-3">
+          <div className="flex gap-2">
+            <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && buscar()} aria-label="Buscar producto"
+              placeholder="Nombre, ISIN o ticker" className={campo + " mt-0 flex-1"} style={{ borderColor: C.line }} />
+            <Btn kind="primary" onClick={buscar} disabled={!q.trim() || !servidor.listo || buscando}><Search size={14} /> {buscando ? "Buscando" : "Buscar"}</Btn>
           </div>
-        </label>
-        {res && (res.length ? (
-          <div className="max-h-48 overflow-y-auto rounded-lg border" style={{ borderColor: C.line }}>
-            {res.map((r) => (
-              <button key={r.simbolo} type="button" onClick={() => { setP((x) => ({ ...x, simbolo: r.simbolo, revisado: true, nombre: x.nombre || r.nombre, tipo: r.tipo === "EQUITY" ? "accion" : x.tipo, isin: /^[A-Z]{2}[A-Z0-9]{9}\d$/.test(q.trim().toUpperCase()) ? q.trim().toUpperCase() : x.isin })); setRes(null); }}
-                className="block w-full border-b px-3 py-2 text-left text-sm last:border-0 hover:bg-slate-50" style={{ borderColor: C.line }}>
-                <span className="font-medium">{r.nombre}</span>
-                <span className="block text-xs text-slate-500">{r.simbolo} · {r.tipo === "MUTUALFUND" ? "Fondo" : r.tipo === "EQUITY" ? "Acción" : r.tipo || "?"} · {r.bolsa || ""}
-                  {r.puntos != null && (r.puntos >= 10 ? <span style={{ color: C.income }}> · con historial</span> : <span style={{ color: C.expense }}> · sin historial de precios</span>)}</span>
-              </button>
-            ))}
+          {!servidor.listo && <p className="text-xs text-slate-500">Para buscar cotizaciones necesitas tu servidor conectado.</p>}
+          {res && (res.length ? (
+            <div className="overflow-hidden rounded-xl border" style={{ borderColor: C.line }}>
+              {res.map((r) => (
+                <button key={r.simbolo} type="button" onClick={() => elegir(r)}
+                  className="flex w-full items-center gap-2 border-b px-3 py-2.5 text-left text-sm last:border-0 hover:bg-slate-50" style={{ borderColor: C.line }}>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">{r.nombre}</span>
+                    <span className="block text-xs text-slate-500">{r.tipo === "MUTUALFUND" ? "Fondo" : r.tipo === "EQUITY" ? "Acción" : r.tipo || "?"} · {r.simbolo}{r.bolsa ? ` · ${r.bolsa}` : ""}</span>
+                  </span>
+                  {r.puntos != null && (r.puntos >= 10
+                    ? <span className="shrink-0 text-[11px]" style={{ color: C.income }}>con precios</span>
+                    : <span className="shrink-0 text-[11px]" style={{ color: C.expense }}>sin precios</span>)}
+                  <ChevronRight size={14} className="shrink-0 text-slate-400" />
+                </button>
+              ))}
+            </div>
+          ) : <p className="text-sm text-slate-500">Sin resultados. Prueba con el ISIN (está en la ficha del producto en tu banco).</p>)}
+          {err && <p className="text-xs" style={{ color: C.expense }}>{err}</p>}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 rounded-xl border px-3 py-2" style={{ borderColor: C.line }}>
+            <div className="min-w-0 flex-1">
+              <input value={p.nombre || ""} onChange={(e) => set("nombre", e.target.value)} aria-label="Nombre" placeholder="Nombre del producto" className="w-full bg-transparent text-sm font-medium focus:outline-none" />
+              <div className="text-xs text-slate-500">{p.simbolo ? `Precio automático · ${p.simbolo}` : "Sin precio automático: se usará el valor que pongas"}</div>
+            </div>
+            <Btn size="sm" onClick={() => setPaso(1)}>{p.simbolo ? "Cambiar" : "Buscar"}</Btn>
           </div>
-        ) : <p className="text-xs text-slate-500">Sin resultados. Prueba con el ISIN o con otro nombre.</p>)}
-        {p.simbolo && <p className="text-xs text-slate-500">Cotización: <strong>{p.simbolo}</strong></p>}
-        <label className="block text-xs text-slate-600">Nombre<input value={p.nombre || ""} onChange={(e) => set("nombre", e.target.value)} className={campo} style={{ borderColor: C.line }} /></label>
-        <div className="grid grid-cols-2 gap-2">
-          <label className="block text-xs text-slate-600">Entidad
-            <input value={p.entidad || ""} onChange={(e) => set("entidad", e.target.value)} list="inv-entidades" className={campo} style={{ borderColor: C.line }} />
-            <datalist id="inv-entidades">{entidades.map((e) => <option key={e} value={e} />)}</datalist>
+
+          <label className="block text-sm font-medium">¿Cuántas tienes?
+            {!sinUnidades
+              ? <input inputMode="decimal" value={p.participaciones ?? ""} onChange={(e) => set("participaciones", e.target.value)} placeholder="Nº de acciones o participaciones" className={campo + " font-normal"} style={{ borderColor: C.line }} />
+              : <input inputMode="decimal" value={p.valorAlta ?? ""} onChange={(e) => set("valorAlta", e.target.value)} placeholder="Valor actual en euros" className={campo + " font-normal"} style={{ borderColor: C.line }} />}
+            <button type="button" className="mt-1 text-xs font-normal text-slate-500 underline" onClick={() => setSinUnidades((x) => !x)}>{sinUnidades ? "Sé el número de participaciones" : "No lo sé: pondré su valor actual"}</button>
           </label>
-          <label className="block text-xs text-slate-600">Tipo
-            <select value={p.tipo} onChange={(e) => set("tipo", e.target.value)} className={campo} style={{ borderColor: C.line }}>
-              <option value="fondo">Fondo</option><option value="accion">Acción</option>
-            </select>
+
+          <div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-medium">¿Cuánto te costó?</span>
+              {!sinUnidades && <Seg ariaLabel="Cómo indicar el coste" value={costeModo} onChange={setCosteModo} options={[{ v: "medio", l: "Precio medio" }, { v: "total", l: "Total" }]} />}
+            </div>
+            {costeModo === "medio" && !sinUnidades
+              ? <input inputMode="decimal" value={costeMedio} onChange={(e) => setCosteMedio(e.target.value)} aria-label="Precio medio de compra en euros" placeholder="Precio medio de compra (€ por participación)" className={campo} style={{ borderColor: C.line }} />
+              : <input inputMode="decimal" value={p.coste ?? ""} onChange={(e) => set("coste", e.target.value)} aria-label="Total invertido en euros" placeholder="Total invertido (€)" className={campo} style={{ borderColor: C.line }} />}
+            <p className="mt-1 text-[11px] text-slate-400">Está en la ficha del producto en tu entidad («coste medio», «BEP», «invertido»). Opcional: sin él no se calcula lo que ganas.</p>
+          </div>
+
+          <div>
+            <span className="text-sm font-medium">Plataforma</span>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {entidades.map((e) => (
+                <button key={e} type="button" onClick={() => set("entidad", e)} aria-pressed={p.entidad === e}
+                  className="rounded-full border px-3 py-1 text-xs" style={p.entidad === e ? { borderColor: C.accent, color: C.accent, background: C.accentSoft } : { borderColor: C.line }}>{e}</button>
+              ))}
+            </div>
+            <input value={entidades.includes(p.entidad) ? "" : p.entidad || ""} onChange={(e) => set("entidad", e.target.value)} placeholder={entidades.length ? "u otra nueva…" : "Banco, bróker…"} aria-label="Otra plataforma" className={campo} style={{ borderColor: C.line }} />
+          </div>
+
+          <details className="text-sm">
+            <summary className="cursor-pointer text-slate-500">Más opciones</summary>
+            <div className="mt-2 space-y-2">
+              <label className="block text-xs text-slate-600">Tipo
+                <select value={p.tipo} onChange={(e) => set("tipo", e.target.value)} className={campo} style={{ borderColor: C.line }}><option value="fondo">Fondo</option><option value="accion">Acción o ETF</option></select>
+              </label>
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="accent-blue-600" checked={!!p.robo} onChange={(e) => set("robo", e.target.checked)} /> Parte de una cartera automatizada con aportaciones periódicas</label>
+              {p.robo && <label className="block text-xs text-slate-600">Peso objetivo en la cartera (%)<input inputMode="decimal" value={p.pesoObjetivo ?? ""} onChange={(e) => set("pesoObjetivo", e.target.value)} className={campo} style={{ borderColor: C.line }} /></label>}
+            </div>
+          </details>
+          {err && <p className="text-xs" style={{ color: C.expense }}>{err}</p>}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/* Cargar posiciones desde capturas de la app de tu banco o bróker: la IA las lee, tú revisas. */
+const aJpeg = (file) => new Promise((ok, mal) => {
+  const img = new Image();
+  const url = URL.createObjectURL(file);
+  img.onload = () => {
+    const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    URL.revokeObjectURL(url);
+    ok({ tipo: "image/jpeg", base64: c.toDataURL("image/jpeg", 0.85).split(",")[1] });
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); mal(new Error("No se pudo abrir la imagen " + file.name)); };
+  img.src = url;
+});
+
+function DesdeCapturas({ ai, aiOn, entidades, onGuardar, onClose }) {
+  const [imagenes, setImagenes] = useState([]);
+  const [entidad, setEntidad] = useState("");
+  const [filas, setFilas] = useState(null);
+  const [leyendo, setLeyendo] = useState(false);
+  const [err, setErr] = useState(null);
+  const elegir = async (files) => {
+    setErr(null);
+    try { const nuevas = await Promise.all([...files].slice(0, 8).map(aJpeg)); setImagenes((x) => [...x, ...nuevas].slice(0, 8)); }
+    catch (e) { setErr(e.message); }
+  };
+  const leer = async () => {
+    setLeyendo(true); setErr(null);
+    try {
+      const leido = await aiLeerCapturas(ai, imagenes);
+      setEntidad((e) => e || leido.entidad || "");
+      setFilas(posicionesDeCapturas(leido, entidad || leido.entidad, dia(new Date())));
+    } catch (e) { setErr("No se han podido leer: " + e.message); }
+    finally { setLeyendo(false); }
+  };
+  const guardar = () => onGuardar(filas.filter((f) => f.incluir && f.p).map((f) => ({ ...f.p, entidad: entidad || f.p.entidad })));
+  const n = filas ? filas.filter((f) => f.incluir && f.p).length : 0;
+  return (
+    <Modal title="Cargar desde capturas" subtitle="De la app de tu banco o bróker" onClose={onClose}
+      footer={filas
+        ? <div className="flex gap-2"><Btn kind="primary" onClick={guardar} disabled={!n}>Guardar {n} {n === 1 ? "producto" : "productos"}</Btn><Btn onClick={() => setFilas(null)}>Atrás</Btn></div>
+        : <div className="flex gap-2"><Btn kind="primary" onClick={leer} disabled={!imagenes.length || leyendo || !aiOn}>{leyendo ? "Leyendo…" : "Leer con IA"}</Btn><Btn onClick={onClose}>Cancelar</Btn></div>}>
+      {!aiOn ? <p className="text-sm text-slate-600">Para leer capturas activa la IA en Ajustes → Inteligencia artificial. Sin ella puedes añadir cada producto con «Buscar».</p> : !filas ? (
+        <div className="space-y-3 text-sm">
+          <p className="text-slate-600">Haz capturas de la ficha de cada producto (o de la cartera) donde se vean el nº de participaciones y el coste o la ganancia. La IA las lee y tú revisas antes de guardar.</p>
+          <label className="flex cursor-pointer flex-col items-center gap-1 rounded-xl border border-dashed px-3 py-5 text-center" style={{ borderColor: C.lineStrong }}>
+            <Upload size={18} className="text-slate-400" />
+            <span className="font-medium">{imagenes.length ? `${imagenes.length} ${imagenes.length === 1 ? "captura" : "capturas"} · añadir más` : "Elegir capturas"}</span>
+            <input type="file" accept="image/*" multiple className="sr-only" onChange={(e) => { elegir(e.target.files); e.target.value = ""; }} />
           </label>
+          <label className="block text-xs text-slate-600">Plataforma (si no se ve en las capturas)
+            <input value={entidad} onChange={(e) => setEntidad(e.target.value)} list="inv-ent-capt" placeholder="Banco, bróker…" className="mt-0.5 w-full rounded-lg border px-2.5 py-2 text-sm" style={{ borderColor: C.line }} />
+            <datalist id="inv-ent-capt">{entidades.map((e) => <option key={e} value={e} />)}</datalist>
+          </label>
+          <p className="text-[11px] text-slate-400">Las capturas se envían a tu proveedor de IA solo para leerlas; la app no las guarda.</p>
+          {err && <p className="text-xs" style={{ color: C.expense }}>{err}</p>}
         </div>
-        <div>
-          <Seg ariaLabel="Qué sabes de la posición" value={modo} onChange={setModo} options={[{ v: "valor", l: "Sé su valor" }, { v: "unidades", l: "Sé las participaciones" }]} />
-          {modo === "valor"
-            ? <label className="mt-2 block text-xs text-slate-600">Valor actual (€), como lo muestra tu entidad<input inputMode="decimal" value={p.valorAlta ?? ""} onChange={(e) => set("valorAlta", e.target.value)} className={campo} style={{ borderColor: C.line }} /></label>
-            : <label className="mt-2 block text-xs text-slate-600">Número de acciones o participaciones<input inputMode="decimal" value={p.participaciones ?? ""} onChange={(e) => set("participaciones", e.target.value)} className={campo} style={{ borderColor: C.line }} /></label>}
+      ) : (
+        <div className="space-y-2 text-sm">
+          <label className="block text-xs text-slate-600">Plataforma
+            <input value={entidad} onChange={(e) => setEntidad(e.target.value)} className="mt-0.5 w-full rounded-lg border px-2.5 py-2 text-sm" style={{ borderColor: C.line }} />
+          </label>
+          <p className="text-xs text-slate-500">Revisa lo leído. Si ya lo tenías (mismo ISIN o nombre), se actualiza; si no, se añade.</p>
+          {filas.map((f, i) => (
+            <label key={i} className={`flex items-start gap-2 rounded-xl border px-3 py-2 ${f.p ? "" : "opacity-60"}`} style={{ borderColor: C.line }}>
+              <input type="checkbox" className="mt-1 accent-blue-600" disabled={!f.p} checked={f.incluir}
+                onChange={(e) => setFilas((xs) => xs.map((x, j) => (j === i ? { ...x, incluir: e.target.checked } : x)))} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium">{f.fila.nombre || "(sin nombre)"}</span>
+                <span className="block text-xs text-slate-500" style={tnum}>
+                  {f.p ? <>
+                    {f.p.participaciones ? `${nfNum.format(f.p.participaciones)} part.` : `valor ${fmtE0(f.p.valorAlta)}`}
+                    {" · "}{f.p.coste != null ? `invertido ${fmtE(f.p.coste)}` : "sin coste"}
+                    {f.fila.isin ? ` · ${f.fila.isin}` : f.fila.ticker ? ` · ${f.fila.ticker}` : ""}
+                  </> : <span style={{ color: C.expense }}>{f.error}</span>}
+                </span>
+              </span>
+            </label>
+          ))}
         </div>
-        <label className="block text-xs text-slate-600">Lo que invertiste en total (€), opcional<input inputMode="decimal" value={p.coste ?? ""} onChange={(e) => set("coste", e.target.value)} className={campo} style={{ borderColor: C.line }} />
-          <span className="mt-0.5 block text-[11px] text-slate-400">Si tu entidad da la plusvalía, es el valor menos la plusvalía. Sin esto no se calcula el resultado.</span></label>
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="accent-blue-600" checked={!!p.robo} onChange={(e) => set("robo", e.target.checked)} /> Es parte de una cartera automatizada con aportaciones periódicas</label>
-        {p.robo && <label className="block text-xs text-slate-600">Peso objetivo en la cartera (%)<input inputMode="decimal" value={p.pesoObjetivo ?? ""} onChange={(e) => set("pesoObjetivo", e.target.value)} className={campo} style={{ borderColor: C.line }} /></label>}
-        {err && <p className="text-xs" style={{ color: C.expense }}>{err}</p>}
-      </div>
+      )}
     </Modal>
   );
 }
@@ -446,7 +589,7 @@ function Aportacion({ inv, movs, onGuardar, onClose }) {
   );
 }
 
-export function InversionesTab({ inversiones, setInversiones, movs, servidor }) {
+export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai, aiOn }) {
   const inv = inversiones || { posiciones: [], aportacion: null };
   const [datos, setDatos] = useState(() => leer(PRECIOS_KEY) || { series: {}, meta: {} });
   const [cargando, setCargando] = useState(false);
@@ -457,6 +600,7 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
   const [importando, setImportando] = useState(false);
   const [aportando, setAportando] = useState(false);
   const [nota, setNota] = useState(null);
+  const [capturas, setCapturas] = useState(false);
   // Qué estás mirando: todo, una plataforma o un producto. Manda en la tarjeta, la gráfica y las listas.
   const [nivel, setNivel] = useState({ e: null, id: null });
 
@@ -503,7 +647,7 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
       for (const p of pend) {
         try {
           if (conResolver) {
-            const r = await servidor.get(`/inversiones/resolver?isin=${encodeURIComponent(p.isin || "")}&nombre=${encodeURIComponent(p.nombre || "")}&tipo=${p.tipo}`);
+            const r = await servidor.get(`/inversiones/resolver?isin=${encodeURIComponent(p.isin || "")}&nombre=${encodeURIComponent(p.nombre || "")}&tipo=${p.tipo}&ticker=${encodeURIComponent(p.ticker || "")}&bolsa=${encodeURIComponent(p.bolsa || "")}`);
             cambios[p.id] = r.simbolo ? { simbolo: r.simbolo, revisado: true } : { revisado: true, buscado: true };
           } else {
             const d = await servidor.get("/inversiones/buscar?q=" + encodeURIComponent(p.isin));
@@ -598,8 +742,9 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
           <h2 className="mt-2 text-lg font-semibold">Tus inversiones, al día solas</h2>
           <p className="mx-auto mt-1 max-w-md text-sm text-slate-600">Añade tus acciones y fondos una vez. Cada noche tu servidor trae los precios de cierre y aquí ves cuánto valen, cómo evolucionan y cuánto ganas o pierdes.</p>
           <div className="mt-4 flex flex-wrap justify-center gap-2">
-            <Btn kind="primary" onClick={() => setEditando({})}><Plus size={14} /> Añadir posición</Btn>
-            <Btn onClick={() => setImportando(true)}><Upload size={14} /> Importar lista</Btn>
+            <Btn kind="primary" onClick={() => setEditando({})}><Plus size={14} /> Añadir un producto</Btn>
+            <Btn onClick={() => setCapturas(true)}><Camera size={14} /> Desde capturas de tu banco</Btn>
+            <Btn onClick={() => setImportando(true)}><Upload size={14} /> Pegar lista</Btn>
           </div>
         </Card>
       ) : (
@@ -660,7 +805,10 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
 
           <div className="flex items-center justify-between gap-2">
             <Seg ariaLabel="Agrupar por" value={vista} onChange={setVista} options={[{ v: "entidad", l: "Por plataforma" }, { v: "tipo", l: "Por tipo" }]} />
-            <Btn size="sm" onClick={() => setEditando({})}><Plus size={14} /> Añadir</Btn>
+            <div className="flex gap-1.5">
+              <Btn size="sm" onClick={() => setCapturas(true)} title="Cargar o actualizar desde capturas de tu banco"><Camera size={14} /> Capturas</Btn>
+              <Btn size="sm" kind="primary" onClick={() => setEditando({})}><Plus size={14} /> Añadir</Btn>
+            </div>
           </div>
           {(vista === "entidad" ? a.porEntidad : a.porTipo)
             .map((g) => (nivel.e ? { ...g, filas: g.filas.filter((f) => selFilas.includes(f)) } : g)).filter((g) => g.filas.length)
@@ -690,7 +838,7 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
 
           <div className="flex flex-wrap gap-2">
             <Btn size="sm" onClick={() => setAportando(true)}>Aportación periódica{inv.aportacion ? ` · ${fmtE0(inv.aportacion.importe)}` : ""}</Btn>
-            <Btn size="sm" onClick={() => setImportando(true)}><Upload size={13} /> Importar</Btn>
+            <Btn size="sm" onClick={() => setImportando(true)}><Upload size={13} /> Pegar lista</Btn>
           </div>
         </>
       )}
@@ -698,6 +846,7 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor }) 
       {filaAbierta && <Detalle f={filaAbierta} datos={datos} onClose={() => setAbierta(null)} onEditar={() => { setEditando(filaAbierta.p); setAbierta(null); }} onBorrar={() => borrar(filaAbierta.p.id)} />}
       {editando && <Editor inicial={editando} entidades={entidades} servidor={servidor} onGuardar={guardarPos} onClose={() => setEditando(null)} />}
       {importando && <Importar onImportar={importar} onClose={() => setImportando(false)} />}
+      {capturas && <DesdeCapturas ai={ai} aiOn={aiOn} entidades={entidades} onClose={() => setCapturas(false)} onGuardar={(lista) => { importar(lista, false, null); setCapturas(false); }} />}
       {aportando && <Aportacion inv={inv} movs={movs} onGuardar={(ap) => { setInversiones((x) => ({ ...x, aportacion: ap })); setAportando(false); }} onClose={() => setAportando(false)} />}
     </div>
   );
