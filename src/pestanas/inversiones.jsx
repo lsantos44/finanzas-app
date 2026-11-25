@@ -1,6 +1,6 @@
 import { C, aiLeerCapturas, fmtE, fmtE0, nfNum, tnum } from "../core.js";
 import { Btn, Card, Modal, Seg } from "../ui/comunes.jsx";
-import { analizarInversiones, candidatosAportacion, fusionarPosiciones, normalizarPosiciones, posicionesDeCapturas, rentabilidadTWR, serieEUR, simbolosDe, dia, sumarDias, divisaDe } from "../inversiones.js";
+import { actualizarCampos, analizarInversiones, candidatosAportacion, fusionarPosiciones, normalizarPosiciones, posicionesDeCapturas, rentabilidadTWR, serieEUR, simbolosDe, dia, sumarDias, divisaDe } from "../inversiones.js";
 import { AlertTriangle, Camera, ChevronDown, ChevronRight, Pencil, Plus, RefreshCw, Repeat, Search, Trash2, Upload, Wallet } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, Line, ComposedChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -120,11 +120,18 @@ function Evolucion({ a, inv, nivel, setNivel, onAbrirProducto }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nivel, a.porEntidad]);
 
-  const desde = useMemo(() => (a.serie.length ? (rango ? sumarDias(a.serie[a.serie.length - 1].d, -rango) : a.serie[0].d) : null), [a.serie, rango]);
   const leerValor = (p, x) => (x.pos ? p.porPos?.[x.pos] : x.entidad ? p.porEntidad?.[x.entidad] : p.valor) ?? 0;
   const leerInv = (p, x) => (x.pos ? p.invPos?.[x.pos] : x.entidad ? p.invEntidad?.[x.entidad] : p.invertido);
   const actual = nivel.id ? { pos: nivel.id } : nivel.e ? { entidad: nivel.e } : {};
-  const twr = (x) => rentabilidadTWR(a.serie, { desde, entidad: x.entidad || null, pos: x.pos || null });
+  // «Mi %»: lo que ganas o pierdes desde que entraste (valor ÷ invertido − 1), como tu entidad; solo
+  // existe desde tu compra. «Producto»: cómo ha ido el precio de lo que tienes en el periodo, aunque
+  // entonces no lo tuvieras (para ver su historia).
+  const valorCC = (p, x) => (x.pos ? p.porPos?.[x.pos] : x.entidad ? p.ccEntidad?.[x.entidad] : p.valorCC) ?? 0;
+  const miPct = (p, x) => { const iv = leerInv(p, x); return iv > 0 ? (valorCC(p, x) / iv - 1) * 100 : null; };
+  const base = (p, x) => (x.pos ? p.porPosBase?.[x.pos] : x.entidad ? p.porEntidadBase?.[x.entidad] : Object.values(p.porPosBase || {}).reduce((t, v) => t + v, 0)) ?? null;
+  const filasNivel = nivel.id ? a.filas.filter((f) => f.p.id === nivel.id) : nivel.e ? a.filas.filter((f) => (f.p.entidad || "Sin entidad") === nivel.e) : a.filas;
+  const entradaNivel = filasNivel.reduce((mn, f) => (f.entrada && f.entrada < mn ? f.entrada : mn), "9999-12-31");
+  const sinFecha = filasNivel.filter((f) => !f.compraConocida);
 
   const datos = useMemo(() => {
     const s = recortar(a.serie, rango);
@@ -134,16 +141,23 @@ function Evolucion({ a, inv, nivel, setNivel, onAbrirProducto }) {
       else o.valor = leerValor(p, actual);
       return o;
     });
-    const indices = [actual, ...partes].map((x) => new Map(twr(x).indice));
+    if (unidad === "pos") return s.map((p) => {
+      const o = { d: p.d, et: p.et, _total: miPct(p, actual) };
+      for (const x of partes) o[x.k] = miPct(p, x);
+      return o;
+    });
+    const b0 = {};
+    for (const x of [actual, ...partes]) b0[x.k || "_total"] = s.map((p) => base(p, x)).find((v) => v > 0) ?? null;
     return s.map((p) => {
       const o = { d: p.d, et: p.et };
-      [actual, ...partes].forEach((x, i) => { const v = indices[i].get(p.d); o[i ? x.k : "_total"] = v == null ? null : (v - 1) * 100; });
+      for (const x of [actual, ...partes]) { const k = x.k || "_total"; const v = base(p, x); o[k] = b0[k] && v > 0 ? (v / b0[k] - 1) * 100 : null; }
       return o;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [a.serie, rango, unidad, partes, nivel]);
 
-  const rNivel = twr(actual).r;
+  const ultimoDato = (k) => { for (let i = datos.length - 1; i >= 0; i--) if (datos[i][k] != null) return datos[i][k] / 100; return null; };
+  const rNivel = unidad === "eur" ? null : ultimoDato("_total");
   const ultimo = a.serie[a.serie.length - 1];
   const nombreRango = RANGOS.find((r) => r.v === rango)?.l;
 
@@ -156,6 +170,7 @@ function Evolucion({ a, inv, nivel, setNivel, onAbrirProducto }) {
       <div className="max-w-[16rem] rounded-xl border bg-white px-3 py-2 text-xs shadow-lg" style={{ borderColor: C.line }}>
         <div className="mb-1 font-medium">{fechaLarga(p.d)}</div>
         {unidad === "eur" && partes.length > 0 && <div className="flex justify-between gap-3 font-semibold" style={tnum}><span>Total</span><span>{fmtE0(partes.reduce((t, x) => t + (p[x.k] || 0), 0))}</span></div>}
+        {unidad === "pos" && <div className="mb-0.5 text-slate-500">Ganas/pierdes desde que entraste</div>}
         {filas.map((x) => <div key={x.dataKey} className="flex justify-between gap-3" style={tnum}><span className="truncate" style={{ color: x.color }}>{nombre(x.dataKey)}</span><span>{unidad === "eur" ? fmtE0(x.value) : pct(x.value / 100)}</span></div>)}
         {unidad === "eur" && p.inv != null && <div className="mt-0.5 flex justify-between gap-3 text-slate-500" style={tnum}><span>Invertido</span><span>{fmtE0(p.inv)}</span></div>}
       </div>
@@ -169,9 +184,15 @@ function Evolucion({ a, inv, nivel, setNivel, onAbrirProducto }) {
     <Card className="p-4">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-sm font-semibold">Evolución</h3>
-        <Seg ariaLabel="Euros o porcentaje" value={unidad} onChange={setUnidad} options={[{ v: "eur", l: "€" }, { v: "pct", l: "%" }]} />
+        <Seg ariaLabel="Qué ver" value={unidad} onChange={setUnidad} options={[{ v: "eur", l: "€" }, { v: "pos", l: "Mi %" }, { v: "prod", l: "Producto" }]} />
       </div>
-      {unidad === "pct" && <p className="mt-1 text-xs" style={tnum}><span className="text-slate-500">Rentabilidad en {nombreRango === "Todo" ? "todo el periodo" : nombreRango}: </span><span className="font-semibold" style={{ color }}>{pct(rNivel)}</span></p>}
+      {unidad === "pos" && (
+        <p className="mt-1 text-xs" style={tnum}>
+          <span className="text-slate-500">Ganas/pierdes desde que entraste{entradaNivel < "9999" ? ` (${fechaCorta(entradaNivel)})` : ""}: </span><span className="font-semibold" style={{ color }}>{pct(rNivel)}</span>
+          {sinFecha.length > 0 && <span className="block text-[11px] text-slate-400">{sinFecha.length === 1 ? `«${sinFecha[0].p.nombre}» no tiene fecha de compra` : `${sinFecha.length} productos no tienen fecha de compra`}: cuenta{sinFecha.length === 1 ? "" : "n"} desde la fecha de tus datos. Añádela en su ficha.</span>}
+        </p>
+      )}
+      {unidad === "prod" && <p className="mt-1 text-xs" style={tnum}><span className="text-slate-500">Precio de lo que tienes en {nombreRango === "Todo" ? "todo el periodo" : nombreRango} (aunque entonces no lo tuvieras): </span><span className="font-semibold" style={{ color }}>{pct(rNivel)}</span></p>}
 
       <div className="mt-3" style={{ height: 210 }}>
         {datos.length < 2 ? <p className="pt-16 text-center text-sm text-slate-400">Aún no hay precios suficientes.</p> : (
@@ -181,12 +202,12 @@ function Evolucion({ a, inv, nivel, setNivel, onAbrirProducto }) {
               <XAxis dataKey="et" tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={{ stroke: C.line }} interval="preserveStartEnd" minTickGap={48} />
               <YAxis tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={false} width={unidad === "eur" ? 52 : 40} domain={["auto", "auto"]} tickFormatter={unidad === "eur" ? ejeY : (v) => `${Math.round(v)}%`} />
               <Tooltip content={<TT />} cursor={{ stroke: C.lineStrong }} />
-              {unidad === "pct" && <ReferenceLine y={0} stroke={C.lineStrong} />}
+              {unidad !== "eur" && <ReferenceLine y={0} stroke={C.lineStrong} />}
               {unidad === "eur" && partes.map((x) => <Area key={x.k} type="monotone" dataKey={x.k} stackId="1" stroke={x.color} fill={x.color} fillOpacity={0.3} isAnimationActive={false} />)}
               {unidad === "eur" && !partes.length && <Area type="monotone" dataKey="valor" stroke={color} fill={color} fillOpacity={0.15} strokeWidth={2} isAnimationActive={false} />}
               {unidad === "eur" && <Line type="stepAfter" dataKey="inv" stroke={C.ink2} strokeDasharray="4 3" strokeWidth={1.25} dot={false} isAnimationActive={false} />}
-              {unidad === "pct" && partes.map((x) => <Line key={x.k} type="monotone" dataKey={x.k} stroke={x.color} strokeWidth={1.5} dot={false} connectNulls isAnimationActive={false} />)}
-              {unidad === "pct" && <Line type="monotone" dataKey="_total" stroke={C.ink} strokeWidth={2.5} dot={false} connectNulls isAnimationActive={false} />}
+              {unidad !== "eur" && partes.map((x) => <Line key={x.k} type="monotone" dataKey={x.k} stroke={x.color} strokeWidth={1.5} dot={false} connectNulls isAnimationActive={false} />)}
+              {unidad !== "eur" && <Line type="monotone" dataKey="_total" stroke={C.ink} strokeWidth={2.5} dot={false} connectNulls isAnimationActive={false} />}
             </ComposedChart>
           </ResponsiveContainer>
         )}
@@ -198,11 +219,11 @@ function Evolucion({ a, inv, nivel, setNivel, onAbrirProducto }) {
 
       {partes.length > 0 ? (
         <div className="mt-3 divide-y border-t" style={{ borderColor: C.line }}>
-          <div className="flex justify-end gap-2 pt-2 text-[10px] uppercase tracking-wide text-slate-400"><span>Valor</span><span className="w-16 text-right">{unidad === "pct" ? `En ${nombreRango}` : "Ganancia"}</span><span className="w-3.5" /></div>
+          <div className="flex justify-end gap-2 pt-2 text-[10px] uppercase tracking-wide text-slate-400"><span>Valor</span><span className="w-16 text-right">{unidad === "prod" ? `Precio ${nombreRango}` : "Ganas"}</span><span className="w-3.5" /></div>
           {partes.map((x) => {
             const v = ultimo ? leerValor(ultimo, x) : 0;
             // En «€», la ganancia desde que compraste (como en tu entidad); en «%», la del periodo.
-            const r = unidad === "pct" ? twr(x).r : ganancia(x);
+            const r = unidad === "prod" ? ultimoDato(x.k) : ganancia(x);
             return (
               <button key={x.k} type="button" onClick={() => setNivel(x.pos ? { e: nivel.e, id: x.pos } : { e: x.entidad, id: null })}
                 className="flex w-full items-center gap-2 py-2.5 text-left text-sm hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500">
@@ -296,7 +317,7 @@ function Grupo({ g, datos, onAbrir, nota }) {
   );
 }
 
-function Detalle({ f, datos, onClose, onEditar, onBorrar }) {
+function Detalle({ f, datos, onClose, onEditar, onBorrar, onFecha }) {
   const serie = useMemo(() => serieEUR(f.p, datos).map(([d, v]) => ({ d, valor: v })), [f, datos]);
   const div = divisaDe(f.p, datos);
   return (
@@ -318,6 +339,9 @@ function Detalle({ f, datos, onClose, onEditar, onBorrar }) {
         ))}
       </div>
       <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+        <dt className="text-slate-500"><label htmlFor="inv-compra">En cartera desde</label></dt>
+        <dd className="text-right"><input id="inv-compra" type="date" value={f.p.compra || ""} max={dia(new Date())} onChange={(e) => onFecha(f.p.id, e.target.value || null)}
+          className="rounded-md border px-1.5 py-0.5 text-sm" style={{ borderColor: f.p.compra ? C.line : C.expense }} />{!f.p.compra && <span className="block text-[11px]" style={{ color: C.expense }}>Pon la fecha de tu primera compra</span>}</dd>
         <dt className="text-slate-500">Participaciones</dt><dd className="text-right" style={tnum}>{nfNum.format(Math.round(f.unidades * 10000) / 10000)}</dd>
         <dt className="text-slate-500">Precio ({fechaLarga(f.fechaPrecio) || "sin datos"})</dt><dd className="text-right" style={tnum}>{f.precio == null ? "–" : fmtE(f.precio)}{div !== "EUR" ? ` (en ${div})` : ""}</dd>
         <dt className="text-slate-500">Coste medio por participación</dt><dd className="text-right" style={tnum}>{f.precioMedio == null ? "–" : fmtE(f.precioMedio)}</dd>
@@ -426,6 +450,11 @@ function Editor({ inicial, entidades, servidor, onGuardar, onClose }) {
               : <input inputMode="decimal" value={p.coste ?? ""} onChange={(e) => set("coste", e.target.value)} aria-label="Total invertido en euros" placeholder="Total invertido (€)" className={campo} style={{ borderColor: C.line }} />}
             <p className="mt-1 text-[11px] text-slate-400">Está en la ficha del producto en tu entidad («coste medio», «BEP», «invertido»). Opcional: sin él no se calcula lo que ganas.</p>
           </div>
+
+          <label className="block text-sm font-medium">¿Desde cuándo lo tienes?
+            <input type="date" value={p.compra || ""} max={dia(new Date())} onChange={(e) => set("compra", e.target.value || undefined)} className={campo + " font-normal"} style={{ borderColor: C.line }} />
+            <span className="mt-1 block text-[11px] font-normal text-slate-400">Fecha de tu primera compra. Tu rentabilidad se cuenta desde ese día. Opcional.</span>
+          </label>
 
           <div>
             <span className="text-sm font-medium">Plataforma</span>
@@ -547,8 +576,12 @@ function Importar({ onImportar, onClose }) {
   const ir = (reemplazar) => {
     try {
       const j = JSON.parse(txt);
-      const lista = normalizarPosiciones(Array.isArray(j) ? j : j.posiciones, dia(new Date()));
-      onImportar(lista, reemplazar, Array.isArray(j) ? null : j.aportacion || null);
+      const todos = Array.isArray(j) ? j : j.posiciones;
+      if (!Array.isArray(todos)) throw new Error("Se esperaba una lista.");
+      // Sin participaciones ni valor: solo cambia algunos datos (p. ej. la fecha de compra) de lo que ya tienes.
+      const tieneCantidad = (x) => x && (x.participaciones != null || x.valorAlta != null);
+      const lista = normalizarPosiciones(todos.filter(tieneCantidad), dia(new Date()));
+      onImportar(lista, reemplazar, Array.isArray(j) ? null : j.aportacion || null, reemplazar ? [] : todos.filter((x) => !tieneCantidad(x)));
     } catch (e) { setErr(e instanceof SyntaxError ? "El texto no es un JSON válido." : e.message); }
   };
   return (
@@ -693,13 +726,22 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
   const nombreSel = nivel.id ? selFilas[0]?.p.nombre : nivel.e || "Todas tus inversiones";
   const fechaFondos = selFilas.filter((f) => f.p.tipo !== "accion" && f.fechaPrecio).reduce((mx, f) => (f.fechaPrecio > mx ? f.fechaPrecio : mx), "");
   const horaAcc = selFilas.reduce((mx, f) => (f.p.tipo === "accion" && f.mercado > mx ? f.mercado : mx), 0);
+  const ultimaFecha = selFilas.reduce((mx, f) => (f.fechaPrecio && f.fechaPrecio > mx ? f.fechaPrecio : mx), "");
   const guardarPos = (p) => { setInversiones((x) => ({ ...x, posiciones: x.posiciones.some((q) => q.id === p.id) ? x.posiciones.map((q) => (q.id === p.id ? p : q)) : [...x.posiciones, p] })); setEditando(null); };
   const borrar = (id) => { if (window.confirm("¿Quitar esta posición de tus inversiones?")) { setInversiones((x) => ({ ...x, posiciones: x.posiciones.filter((p) => p.id !== id) })); setAbierta(null); } };
-  const importar = (lista, reemplazar, aportacion) => {
+  const importar = (lista, reemplazar, aportacion, parciales = []) => {
     const r = reemplazar ? null : fusionarPosiciones(inv.posiciones, lista);
-    setInversiones((x) => ({ posiciones: reemplazar ? lista : fusionarPosiciones(x.posiciones, lista).posiciones, aportacion: aportacion || x.aportacion || null }));
+    const rp = parciales.length ? actualizarCampos(reemplazar ? lista : r.posiciones, parciales) : null;
+    setInversiones((x) => {
+      const base = reemplazar ? lista : fusionarPosiciones(x.posiciones, lista).posiciones;
+      return { posiciones: parciales.length ? actualizarCampos(base, parciales).posiciones : base, aportacion: aportacion || x.aportacion || null };
+    });
     setAviso(null);
-    setNota(reemplazar ? `Lista sustituida: ${lista.length} productos.` : `${r.actualizadas} ${r.actualizadas === 1 ? "producto actualizado" : "productos actualizados"} y ${r.añadidas} ${r.añadidas === 1 ? "añadido" : "añadidos"}.`);
+    const partes = [];
+    if (reemplazar) partes.push(`Lista sustituida: ${lista.length} productos.`);
+    else if (lista.length) partes.push(`${r.actualizadas} ${r.actualizadas === 1 ? "producto actualizado" : "productos actualizados"} y ${r.añadidas} ${r.añadidas === 1 ? "añadido" : "añadidos"}.`);
+    if (rp) partes.push(`${rp.actualizadas} con datos cambiados${rp.sinEncontrar.length ? `; no encontrados: ${rp.sinEncontrar.join(", ")}` : ""}.`);
+    setNota(partes.join(" "));
     setImportando(false);
   };
 
@@ -777,11 +819,11 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
             <div className="mt-3 grid grid-cols-3 gap-3">
               <Cifra label="Invertido">{sel.invertido ? fmtE0(sel.invertido) : "–"}</Cifra>
               <Cifra label="Ganas / pierdes" color={colorDe(sel.ganancia)} sub={sel.ganancia == null ? "falta el coste" : pct(sel.gananciaPct)}>{sel.ganancia == null ? "–" : eur(Math.round(sel.ganancia), true).replace(/,00(?=\s?€)/, "")}</Cifra>
-              <Cifra label="Hoy" color={colorDe(sel.hoy)} sub={pct(sel.hoyPct)}>{eur(Math.round(sel.hoy), true).replace(/,00(?=\s?€)/, "")}</Cifra>
+              <Cifra label="Último cambio" color={colorDe(sel.hoy)} sub={`${pct(sel.hoyPct)}${ultimaFecha ? ` · ${fechaCorta(ultimaFecha)}` : ""}`}>{eur(Math.round(sel.hoy), true).replace(/,00(?=\s?€)/, "")}</Cifra>
             </div>
             <p className="mt-2 text-[11px] leading-snug text-slate-400">
               <strong className="font-medium">Ganas / pierdes</strong>: valor hoy − invertido, desde que compraste (como en tu entidad){sel.sinCoste ? `; ${sel.sinCoste} sin coste no cuenta${sel.sinCoste === 1 ? "" : "n"}` : ""}.{" "}
-              <strong className="font-medium">Hoy</strong>: lo que se ha movido con el último precio{horaAcc ? ` (acciones a las ${new Date(horaAcc).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}` : ""}{fechaFondos ? `${horaAcc ? "; " : " ("}fondos al ${fechaCorta(fechaFondos)}` : ""}{horaAcc || fechaFondos ? ")" : ""}.
+              <strong className="font-medium">Último cambio</strong>: lo que se movió el último precio publicado de cada producto{horaAcc ? ` (acciones a las ${new Date(horaAcc).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}` : ""}{fechaFondos ? `${horaAcc ? "; " : " ("}fondos al ${fechaCorta(fechaFondos)}` : ""}{horaAcc || fechaFondos ? ")" : ""}.
             </p>
             {!nivel.e && <div className="mt-3"><Reparto grupos={a.porEntidad} total={a.total} /></div>}
           </Card>
@@ -843,7 +885,7 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
         </>
       )}
 
-      {filaAbierta && <Detalle f={filaAbierta} datos={datos} onClose={() => setAbierta(null)} onEditar={() => { setEditando(filaAbierta.p); setAbierta(null); }} onBorrar={() => borrar(filaAbierta.p.id)} />}
+      {filaAbierta && <Detalle f={filaAbierta} datos={datos} onFecha={(id, fecha) => setInversiones((x) => ({ ...x, posiciones: x.posiciones.map((q) => (q.id === id ? (fecha ? { ...q, compra: fecha } : (({ compra, ...r }) => r)(q)) : q)) }))} onClose={() => setAbierta(null)} onEditar={() => { setEditando(filaAbierta.p); setAbierta(null); }} onBorrar={() => borrar(filaAbierta.p.id)} />}
       {editando && <Editor inicial={editando} entidades={entidades} servidor={servidor} onGuardar={guardarPos} onClose={() => setEditando(null)} />}
       {importando && <Importar onImportar={importar} onClose={() => setImportando(false)} />}
       {capturas && <DesdeCapturas ai={ai} aiOn={aiOn} entidades={entidades} onClose={() => setCapturas(false)} onGuardar={(lista) => { importar(lista, false, null); setCapturas(false); }} />}

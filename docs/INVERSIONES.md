@@ -36,6 +36,7 @@ Cada producto (posición) se describe con estos campos. Los dos que más importa
 | `costeMedio` | Recomendado | Coste medio por participación, en euros | Ficha («Coste medio», «Precio de compra medio», «BEP») |
 | `coste` | — | Alternativa a `costeMedio`: total invertido en euros | Valor − plusvalía que muestra tu entidad |
 | `valorAlta` | Sí* | Si no sabes las participaciones: valor actual en euros | Posición en tu entidad |
+| `compra` | Recomendado | Fecha de tu primera compra (`2026-03-09` o `09/03/2026`). Tu evolución empieza ese día | Movimientos u órdenes de tu entidad |
 | `simbolo` | No | Cotización en Yahoo (si no, se busca sola por ISIN o nombre) | — |
 | `robo` y `pesoObjetivo` | No | Fondo de una cartera automatizada y su peso objetivo (%) | Composición de la cartera |
 
@@ -64,13 +65,15 @@ nombre y añade lo nuevo, sin duplicar):
 | **Valor** | participaciones × último precio (en euros, al cambio del día) | Cuánto vale hoy |
 | **Invertido** | participaciones × coste medio, más las aportaciones de la cartera automatizada | Lo que has puesto |
 | **Plusvalía** | valor − invertido; en % = valor ÷ invertido − 1 | Lo mismo que «Plusvalía/Minusvalía» o «G/P» de tu entidad |
-| **Último cambio** | participaciones × (último precio − precio anterior) | Cuánto se ha movido desde el último precio |
-| **Rentabilidad de un periodo** (gráfico, «en lo que va de año», «Comparar») | Ponderada por tiempo: Π (Vₜ − Fₜ) ÷ Vₜ₋₁ − 1, donde F son las aportaciones de ese día | Comparar periodos y productos sin que el dinero nuevo parezca ganancia |
+| **Último cambio** | participaciones × (último precio publicado − el anterior), con su fecha | Cuánto se movió el último precio (en fondos, el de hace 1–2 días) |
+| **Mi %** (gráfico) | valor ÷ invertido − 1 en cada día, desde tu fecha de compra | Lo que ganas o pierdes con tu dinero a lo largo del tiempo; el último punto es tu plusvalía |
+| **Producto** (gráfico) | precio en el periodo, con lo que tienes hoy, aunque entonces no lo tuvieras | La historia del producto, no la tuya |
 | **Variación 1 semana / 1 mes / este año / 1 año** de un producto | precio final ÷ precio inicial − 1 | Cómo ha ido el producto en sí |
 
-La **plusvalía** mide desde que compraste; la **rentabilidad de un periodo**, solo ese periodo y
-sin contar las aportaciones (es el método estándar de gestoras y robo-advisors, *time-weighted
-return*). Por eso pueden no coincidir entre sí, y es lo esperado.
+Tu posición **nunca se calcula hacia atrás**: cuenta desde tu fecha de compra (`compra`) o, si no
+la pones, desde la fecha de tus datos. En una cartera automatizada con aportaciones periódicas, lo
+que tenías se reparte en tus transferencias de aportación anteriores (que la app ve en tus
+movimientos), ajustado para que coincida con tus participaciones e invertido de hoy.
 
 Los totales y los grupos (por plataforma, por tipo) suman valores e invertido, y el % se calcula
 sobre esas sumas, como hacen las entidades en su cabecera. Los productos sin coste no entran en la
