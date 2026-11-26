@@ -218,10 +218,11 @@ describe("desde que entraste", () => {
     expect(r.serie.map((p) => p.invertido)).toEqual([35, 35]);
     expect(r.filas[0]).toMatchObject({ entrada: "2026-11-23", compraConocida: true });
   });
-  it("sin fecha de compra, empieza en la fecha de tus datos (nunca hacia atrás)", () => {
+  it("sin fecha de compra, se da por hecho que lo tenías desde antes, con lo de hoy", () => {
     const inv = { posiciones: [{ id: "x", nombre: "Acción", entidad: "Uno", tipo: "accion", simbolo: "TEF.MC", participaciones: 10, coste: 35, alta: "2026-11-24" }] };
     const r = analizarInversiones(inv, datos, []);
-    expect(r.serie.map((p) => p.d)).toEqual(["2026-11-24"]);
+    expect(r.serie.map((p) => p.d)).toEqual(["2026-11-20", "2026-11-23", "2026-11-24"]);
+    expect(r.serie[0].porPos.x).toBeCloseTo(35, 6);
     expect(r.filas[0].compraConocida).toBe(false);
   });
   it("la cartera automatizada se reconstruye con las transferencias anteriores y cuadra con tus datos", () => {
@@ -339,12 +340,13 @@ describe("resultado de un periodo, qué lo explica y frente al mercado (datos in
   });
 });
 
-describe("sin fecha de compra, un periodo no se apunta la ganancia de antes del alta", () => {
+describe("sin fecha de compra: en «Todo» la plusvalía; en un periodo, lo que se movió el precio", () => {
   const d = { series: { A: [["2026-01-02", 10], ["2026-02-02", 12], ["2026-03-02", 12]] }, meta: { A: { divisa: "EUR" } } };
   const inv = { posiciones: [{ id: "a", nombre: "A", entidad: "X", tipo: "fondo", simbolo: "A", participaciones: 100, coste: 900, alta: "2026-02-02" }] };
   const r = analizarInversiones(inv, d, []);
-  it("en «Todo» es la plusvalía; en un periodo cuenta desde el alta con lo que valía", () => {
+  it("en «Todo» es la plusvalía; en un periodo, participaciones × lo que se movió el precio", () => {
     expect(resultadoPeriodo(curvaDe(r.serie, ["a"], true), -1).ganancia).toBeCloseTo(300, 6);
-    expect(resultadoPeriodo(curvaDe(r.serie, ["a"], false), indiceEn(r.serie, "2026-01-31")).ganancia).toBeCloseTo(0, 6);
+    expect(resultadoPeriodo(curvaDe(r.serie, ["a"], false), indiceEn(r.serie, "2026-01-31")).ganancia).toBeCloseTo(200, 6);
+    expect(resultadoPeriodo(curvaDe(r.serie, ["a"], false), indiceEn(r.serie, "2026-02-02")).ganancia).toBeCloseTo(0, 6);
   });
 });

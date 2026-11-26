@@ -72,10 +72,11 @@ export function calcularLotes(inv, datos, aportes, previas = []) {
   const lotes = {};
   const robo = inv.posiciones.filter((p) => p.robo);
   const pesosObj = robo.map((p) => (p.pesoObjetivo > 0 ? p.pesoObjetivo : 0));
-  // Lo que tienes cuenta desde que lo compraste (`compra`) o, si no se sabe, desde la fecha de tus
-  // datos (`alta`): antes no estaba en tu cartera. Nunca hacia atrás.
+  // Con fecha de compra (`compra`), lo que tienes cuenta desde ese día: antes no estaba en tu
+  // cartera. Sin ella, se da por hecho que lo tienes desde antes (lo normal en lo que llevas años)
+  // con lo que tienes hoy; si lo compraste hace poco, pon la fecha y empieza ahí.
   for (const p of inv.posiciones) {
-    const desde = p.compra && (!p.alta || p.compra <= p.alta) ? p.compra : p.alta || "0000-00-00";
+    const desde = p.compra ? (!p.alta || p.compra <= p.alta ? p.compra : p.alta) : "0000-00-00";
     lotes[p.id] = [{ fecha: desde, unidades: unidadesBase(p, datos) ?? 0, coste: p.coste ?? 0, base: true }];
   }
   // Cartera automatizada: lo que tenías en la fecha de tus datos se compró con las aportaciones

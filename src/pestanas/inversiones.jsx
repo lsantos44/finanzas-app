@@ -142,8 +142,9 @@ function FilaPosicion({ f, datos, onAbrir }) {
   );
 }
 
-function Grupo({ g, datos, onAbrir, nota }) {
-  const [abierto, setAbierto] = useState(true);
+function Grupo({ g, datos, onAbrir, nota, solo }) {
+  // Plegado: se ve el total de la plataforma; el detalle, al tocar (abierto si es la única).
+  const [abierto, setAbierto] = useState(Boolean(solo));
   return (
     <Card className="overflow-hidden">
       <button type="button" onClick={() => setAbierto((x) => !x)} aria-expanded={abierto}
@@ -703,7 +704,7 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
           </div>
           {(vista === "entidad" ? a.porEntidad : a.porTipo)
             .map((g) => (nivel.e ? { ...g, filas: g.filas.filter((f) => selFilas.includes(f)) } : g)).filter((g) => g.filas.length)
-            .map((g) => <Grupo key={g.nombre} g={g} datos={datos} onAbrir={setAbierta} nota={vista === "entidad" && g.nombre === entidadRobo ? notaRobo : null} />)}
+            .map((g, _i, todos) => <Grupo key={g.nombre} g={g} solo={todos.length === 1} datos={datos} onAbrir={setAbierta} nota={vista === "entidad" && g.nombre === entidadRobo ? notaRobo : null} />)}
 
           {(avisosCartera.length > 0 || sinPrecio.length > 0) && (
             <Card className="p-4">

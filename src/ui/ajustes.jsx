@@ -175,13 +175,14 @@ function SettingsModal({ onClose, storeKind, saveState, theme, setTheme, upcomin
             {sync.conflict && (
               <div className="rounded-lg border border-amber-300 bg-amber-50 p-2.5">
                 <p className="text-[11px] font-medium leading-relaxed text-amber-800">
-                  El servidor tiene la versión {sync.conflict.version}, más nueva que la de este dispositivo. No se ha sobrescrito nada. Elige:
+                  El servidor tiene la versión {sync.conflict.version}, más nueva que la de este dispositivo{sync.conflict.quien ? `; la guardó otra copia de la app: ${sync.conflict.quien}` : ""}. No se ha sobrescrito nada. Elige:
                 </p>
                 <div className="mt-2 flex flex-wrap gap-2">
                   <Btn size="sm" onClick={() => sync.onPull({ confirmReplace: true })} disabled={sync.busy}><Download size={13} /> Traer la del servidor</Btn>
                   <Btn size="sm" kind="primary" onClick={() => sync.onPush({ force: true })} disabled={sync.busy}><Upload size={13} /> Subir la de aquí</Btn>
                 </div>
                 <p className="mt-1.5 text-[10px] text-amber-700">«Traer» descarta tus cambios locales; «Subir» pisa la del servidor. Las dos se pueden deshacer desde «Versiones anteriores».</p>
+                <p className="mt-1 text-[10px] text-amber-700">En el iPhone, la app de la pantalla de inicio y la web abierta en Safari guardan cada una sus datos: usa solo una de las dos para que no choquen.</p>
               </div>
             )}
             <VersionesServidor sync={sync} />

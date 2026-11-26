@@ -23,7 +23,7 @@ export const PERIODOS = [
   { v: "3m", l: "3M", largo: "los últimos 3 meses", dias: 91 },
   { v: "ytd", l: "Año", largo: "lo que va de año" },
   { v: "1a", l: "1A", largo: "el último año", dias: 365 },
-  { v: "max", l: "Todo", largo: "desde que entraste" },
+  { v: "max", l: "Total", largo: "en total" },
 ];
 const REF_KEY = "finz:inv-referencia";
 const leerRef = () => { try { const v = localStorage.getItem(REF_KEY); return v === "" ? "" : v || REFERENCIAS[0].simbolo; } catch { return REFERENCIAS[0].simbolo; } };
@@ -69,7 +69,8 @@ export function usePeriodo(a, ids, periodo) {
 
 export const textoPeriodo = (per, periodo) => {
   const p = PERIODOS.find((x) => x.v === periodo);
-  if (periodo === "max" || per.entraDespues) return `desde que entraste (${fechaCorta(per.desde)})`;
+  if (periodo === "max") return "en total (valor hoy − lo invertido)";
+  if (per.entraDespues) return `desde que entraste (${fechaCorta(per.desde)})`;
   return `en ${p.largo}`;
 };
 
@@ -164,44 +165,47 @@ export function QueHaMovido({ a, partes, periodo, onElegir, ai, aiOn, filasPorId
   const per = usePeriodo(a, partes.flatMap((x) => x.ids), periodo);
   const filas = useMemo(() => partes.map((x) => {
     const idsG = idsConCoste(a, x.ids, per.i0);
-    const r = resultadoPeriodo(curvaDe(a.serie, idsG, per.i0 < 0), per.i0);
-    return { ...x, g: r.ganancia ?? 0, r: idsG.length ? r.pct : null, sinCoste: !idsG.length };
-  }).sort((x, y) => y.g - x.g), [partes, a.serie, per.i0]);
+    const c = curvaDe(a.serie, idsG, per.i0 < 0);
+    const r = resultadoPeriodo(c, per.i0);
+    // Si esta parte entró después de que empiece el periodo, cuenta desde ese día: se dice en la fila.
+    let iE = Math.max(0, per.i0);
+    while (iE < a.serie.length - 1 && !(c.V[iE] > 0)) iE++;
+    const desde = per.i0 >= 0 && !(c.V[per.i0] > 0) ? a.serie[iE]?.d : null;
+    return { ...x, g: r.ganancia ?? 0, r: idsG.length ? r.pct : null, sinCoste: !idsG.length, desde };
+  }).sort((x, y) => y.g - x.g), [partes, a.serie, per.i0]); // eslint-disable-line react-hooks/exhaustive-deps
   if (filas.length < 2) return null;
   const max = Math.max(...filas.map((x) => Math.abs(x.g)), 1);
-  const suman = filas.filter((x) => x.g > 0.5), restan = filas.filter((x) => x.g < -0.5);
-  const top = suman[0], peor = restan[restan.length - 1];
+  const total = per.res.ganancia;
+  const p = PERIODOS.find((x) => x.v === periodo);
 
   return (
     <Card className="p-4">
       <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold">Qué explica tu resultado</h3>{control}</div>
-      <p className="mt-0.5 text-xs text-slate-500" style={tnum}>
-        {textoPeriodo(per, periodo).replace(/^./, (c) => c.toUpperCase())}, del {fechaCorta(per.desde)} al {fechaCorta(per.hasta)}: <strong style={{ color: colorDe(per.res.ganancia) }}>{eur0(per.res.ganancia)}</strong>.
-        {top && <> Lo que más sumó: <strong className="text-slate-700">{top.nombre}</strong> ({eur0(top.g)}).</>}
-        {peor && <> Lo que más restó: <strong className="text-slate-700">{peor.nombre}</strong> ({eur0(peor.g)}).</>}
+      <p className="mt-1 text-sm text-slate-600" style={tnum}>
+        {periodo === "max" ? "En total" : p.largo.replace(/^./, (c) => c.toUpperCase())} {total >= 0 ? "has ganado" : "has perdido"} <strong style={{ color: colorDe(total) }}>{fmtE0(Math.abs(total || 0))}</strong>. Así se reparte:
       </p>
-      <div className="mt-3 space-y-1">
-        {filas.map((x) => {
-          const w = (Math.abs(x.g) / max) * 50;
-          return (
-            <button key={x.k} type="button" onClick={() => onElegir(x)} className="grid w-full grid-cols-[minmax(0,1fr)_7rem_4.5rem] items-center gap-2 rounded-lg py-1.5 text-left text-sm hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+      <div className="mt-3 space-y-3">
+        {filas.map((x) => (
+          <button key={x.k} type="button" onClick={() => onElegir(x)} className="block w-full rounded-lg text-left hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+            <span className="flex items-baseline justify-between gap-2 text-sm">
               <span className="flex min-w-0 items-center gap-1.5">
                 {x.color && <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: x.color }} />}
                 <span className="truncate">{x.nombre}</span>
               </span>
-              <span className="relative h-3" aria-hidden="true">
-                <span className="absolute inset-y-0 left-1/2 w-px" style={{ background: C.lineStrong }} />
-                <span className="absolute inset-y-0.5 rounded-sm" style={{ background: x.g >= 0 ? C.income : C.expense, opacity: 0.85, width: `${w}%`, left: x.g >= 0 ? "50%" : `${50 - w}%` }} />
+              <span className="shrink-0 font-semibold" style={{ ...tnum, color: colorDe(x.g) }}>{eur0(x.g)}</span>
+            </span>
+            <span className="mt-1 flex items-center gap-2">
+              <span className="h-1.5 flex-1 overflow-hidden rounded-full" style={{ background: C.line }} aria-hidden="true">
+                <span className="block h-full rounded-full" style={{ width: `${Math.max(2, (Math.abs(x.g) / max) * 100)}%`, background: x.g >= 0 ? C.income : C.expense }} />
               </span>
-              <span className="text-right" style={tnum}>
-                <span className="block text-xs font-semibold" style={{ color: colorDe(x.g) }}>{eur0(x.g)}</span>
-                <span className="block text-[10px] text-slate-500">{x.sinCoste ? "sin coste" : pct(x.r, true, 1)}</span>
+              <span className="w-32 shrink-0 text-right text-[11px] text-slate-500" style={tnum}>
+                {x.sinCoste ? "sin coste" : `${pct(x.r, true, 1)}${x.desde ? ` · desde ${fechaCorta(x.desde)}` : ""}`}
               </span>
-            </button>
-          );
-        })}
+            </span>
+          </button>
+        ))}
       </div>
-      <p className="mt-2 text-[11px] text-slate-400">€: lo que ha sumado o restado a tu resultado. %: lo que ha ganado o perdido ese dinero en el periodo. Toca una fila para verla en detalle.</p>
+      <p className="mt-3 text-[11px] text-slate-400">Verde: lo que te ha hecho ganar; rojo: lo que te ha hecho perder. Sumado da {fmtE0(Math.abs(total || 0))}. El % es lo que ha ganado o perdido ese dinero. Si algo lo compraste dentro del periodo, cuenta desde ese día. Toca una fila para verla.</p>
       {aiOn && <PorQue a={a} periodo={periodo} per={per} ai={ai} filasPorId={filasPorId} ids={partes.flatMap((x) => x.ids)} />}
     </Card>
   );
@@ -328,7 +332,7 @@ export function Destacados({ a, ids, periodo, filas, datos, onFecha }) {
     if (peso > 0.6) items.push({ icon: PieChart, color: C.accent, t: <>Tus 3 productos más grandes son el <strong>{pct(peso, false, 0)}</strong> de esto ({top.map((f) => f.p.nombre).join(", ")}).</> });
   }
   const sinFecha = filas.filter((f) => !f.compraConocida && !f.sinPrecio);
-  if (sinFecha.length) items.push({ icon: AlertTriangle, color: C.expense, t: <>{sinFecha.length === 1 ? `«${sinFecha[0].p.nombre}» no tiene` : `${sinFecha.length} productos no tienen`} fecha de compra: su historia empieza el día que los diste de alta. <button type="button" className="underline" onClick={() => onFecha(sinFecha[0].p.id)}>Ponla en su ficha</button>.</> });
+  if (sinFecha.length) items.push({ icon: AlertTriangle, color: C.muted, t: <>{sinFecha.length === 1 ? `«${sinFecha[0].p.nombre}» no tiene` : `${sinFecha.length} productos no tienen`} fecha de compra: se da por hecho que {sinFecha.length === 1 ? "lo tienes" : "los tienes"} desde antes, con lo de hoy. Si {sinFecha.length === 1 ? "lo compraste" : "alguno lo compraste"} hace poco, <button type="button" className="underline" onClick={() => onFecha(sinFecha[0].p.id)}>pon la fecha en su ficha</button>.</> });
   if (!items.length) return null;
   return (
     <Card className="p-4">
