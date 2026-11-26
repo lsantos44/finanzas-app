@@ -350,3 +350,18 @@ describe("sin fecha de compra: en «Todo» la plusvalía; en un periodo, lo que 
     expect(resultadoPeriodo(curvaDe(r.serie, ["a"], false), indiceEn(r.serie, "2026-02-02")).ganancia).toBeCloseTo(0, 6);
   });
 });
+
+describe("precio de compra y de hoy en la divisa de la acción", () => {
+  it("con fecha de compra, el precio medio se pasa a dólares con el cambio de ese día", () => {
+    const inv = { posiciones: [{ id: "c", nombre: "Coherent", entidad: "B", tipo: "accion", simbolo: "COHR", participaciones: 5, coste: 1000, alta: "2026-11-24", compra: "2026-11-20" }] };
+    const f = analizarInversiones(inv, datos, []).filas[0];
+    expect(f.divisa).toBe("USD");
+    expect(f.precioNativo).toBeCloseTo(196.24, 6);
+    expect(f.precioMedioNativo).toBeCloseTo((1000 * 1.1) / 5, 6); // 1.000 € al 1,10 del 20 nov
+    expect(f.precioMedio).toBeCloseTo(200, 6);
+  });
+  it("sin fecha de compra no se inventa el cambio: solo en euros", () => {
+    const inv = { posiciones: [{ id: "c", nombre: "Coherent", entidad: "B", tipo: "accion", simbolo: "COHR", participaciones: 5, coste: 1000, alta: "2026-11-24" }] };
+    expect(analizarInversiones(inv, datos, []).filas[0].precioMedioNativo).toBeNull();
+  });
+});
