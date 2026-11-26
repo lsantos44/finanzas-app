@@ -42,7 +42,7 @@ test("añadir un producto en dos pasos: buscarlo y decir cuántas tienes y a qu�
   await preparar(page);
   await page.goto("/");
   await page.getByRole("button", { name: /Invers/ }).first().click();
-  await page.getByRole("button", { name: "Añadir un producto" }).click();
+  await page.getByRole("button", { name: /Añadir a mano/ }).click();
   await page.getByLabel("Buscar producto").fill("apple");
   await page.getByRole("button", { name: "Buscar", exact: true }).click();
   await expect(page.getByText("sin precios")).toBeVisible();
@@ -63,7 +63,7 @@ test("cargar posiciones desde capturas: la IA las lee y tú confirmas", async ({
   const pedidas = await preparar(page);
   await page.goto("/");
   await page.getByRole("button", { name: /Invers/ }).first().click();
-  await page.getByRole("button", { name: "Desde capturas de tu banco" }).click();
+  await page.getByRole("button", { name: /Desde capturas/ }).click();
   await page.getByRole("dialog").locator('input[type="file"]').setInputFiles({ name: "cartera.png", mimeType: "image/png", buffer: PNG });
   await expect(page.getByText("1 captura · añadir más")).toBeVisible();
   await page.getByRole("button", { name: "Leer con IA" }).click();

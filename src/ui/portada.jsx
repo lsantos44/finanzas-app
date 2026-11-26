@@ -738,7 +738,7 @@ function EmptyState({ onFiles, onSample, error, parsing, onSettings, onAsistente
             <button type="button" onClick={onSample} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
               <Sparkles size={14} /> Ver una demo con datos de ejemplo
             </button>
-            <p className="mt-1 text-xs text-slate-400">14 meses ficticios de un banco español, para ver cómo funciona antes de traer los tuyos.</p>
+            <p className="mt-1 text-xs text-slate-400">14 meses ficticios de un banco español y una cartera de inversión, para ver cómo funciona antes de traer los tuyos.</p>
             <p className="mt-3 text-xs"><a href="/privacidad.html" className="text-slate-500 underline hover:text-slate-700">Privacidad: qué datos usa la app y dónde se guardan</a></p>
           </div>
         </>

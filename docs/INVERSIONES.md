@@ -6,20 +6,53 @@ cifras **coincidan con las suyas**, y qué significa cada cifra.
 
 ## Cómo cargar tus inversiones
 
-Tres formas, de más fácil a más técnica:
+Cuatro formas, de más completa a más técnica:
 
-1. **Desde capturas de tu banco o bróker** (Inversiones → *Capturas*). Haz capturas de la ficha
+1. **Importar el archivo de tu bróker** (Inversiones → *Importar*). El CSV o Excel de operaciones
+   que descargas de DEGIRO («Transacciones»), Revolut, Interactive Brokers, MyInvestor, Trade
+   Republic o tu banco. Se lee en tu dispositivo (no se envía a nadie): cada compra y venta con su
+   fecha, cantidad, importe y comisiones. Las columnas se reconocen por su nombre, en español o
+   inglés; lo que no es compraventa (dividendos, ingresos, comisiones de custodia) se salta y se
+   cuenta. Antes de guardar ves lo que se ha entendido. Con esto:
+   - participaciones y coste salen exactos aunque compraras en varias veces (el coste de lo que
+     queda, gastando primero lo más antiguo: FIFO, como Hacienda);
+   - la evolución empieza en tu primera compra, sin decir la fecha;
+   - las ventas alimentan **Impuestos (Renta)**.
+   Volver a importar el histórico completo actualiza sin duplicar.
+2. **Desde capturas de tu banco o bróker** (Inversiones → *Capturas*). Haz capturas de la ficha
    de cada producto, o de la cartera, donde se vean el nº de participaciones y el coste (o la
    ganancia). La IA que tengas configurada las lee —nombre, ISIN o ticker y bolsa, participaciones,
    coste en euros— y tú revisas la lista antes de guardar. Si un producto ya estaba (mismo ISIN o
    nombre), se actualiza; si no, se añade. Sirve igual para recalibrar más adelante.
-2. **Añadir un producto** (Inversiones → *Añadir*), en dos pasos: lo buscas por nombre, ISIN o
+3. **Añadir un producto** (Inversiones → *Añadir*), en dos pasos: lo buscas por nombre, ISIN o
    ticker (se marca cuál tiene precios), y dices cuántas tienes, a qué precio medio (o cuánto
    invertiste en total) y en qué plataforma.
-3. **Pegar una lista** en formato JSON, con los campos de abajo.
+4. **Pegar una lista** en formato JSON, con los campos de abajo.
 
 Tu servidor elige solo la cotización de cada producto: por ISIN; si no, por ticker y bolsa (como
 los muestran los brókeres: «SOI · Euronext Paris»); si no, por nombre.
+
+Para probar sin datos propios: **Ver una cartera de ejemplo** (productos y precios inventados,
+que no se piden a ningún servidor; se quita con un toque).
+
+## Impuestos (Renta)
+
+Con las operaciones importadas, la sección *Impuestos (Renta)* estima lo que tus ventas suman a la
+base del ahorro de cada año, con las reglas generales del IRPF:
+
+| Regla | Cómo se aplica |
+|---|---|
+| Ganancia o pérdida | lo que recibiste (con comisiones) − lo que te costó (con comisiones), en euros al cambio de cada día |
+| Orden de venta | lo más antiguo primero (FIFO) |
+| Traspasos entre fondos | no tributan; el fondo nuevo hereda el coste y la fecha del anterior |
+| Regla de los dos meses | una pérdida con recompra del mismo valor 2 meses antes o después (12 si es un fondo que no cotiza) se aplaza |
+| Compensación | ganancias y pérdidas del año; si sale negativo, en los 4 años siguientes |
+| Tipos del ahorro | 19 % hasta 6.000 €, 21 % hasta 50.000, 23 % hasta 200.000, 27 % hasta 300.000, 30 % a partir de ahí |
+
+Además: *Si vendieras hoy* (lo que ganarías o perderías con cada producto y lo que añadiría a tu
+impuesto) y *Puedes pagar menos este año* (pérdidas que compensarían lo que ya has ganado). Se
+puede descargar el detalle de ventas en CSV para tu gestor. Es una estimación: no incluye
+dividendos, intereses ni otras ganancias de la base del ahorro, ni normas forales.
 
 ## Los datos de cada producto
 

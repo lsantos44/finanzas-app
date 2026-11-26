@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback, lazy, Suspense } from "react";
 
 import { Plus, X, AlertTriangle, Search, Wallet, Settings, ClipboardList, Sun, Moon } from "lucide-react";
+import { carteraEjemplo } from "./inversiones-ejemplo.js";
 import { aiEjemplos, firmaSync, ALL_TABS, ASSET_EMOJI, BANK_KEY, BUILD_STAMP, C, CATEGORIES, CHATS_KEY, DEFAULT_AI_CFG, DEFAULT_MATERIALIDAD, DEFAULT_REDUCIBLE, DEFAULT_RULES, ENTITY_STOP, GROUP_COLORS, INGRESO_SET, INTERNAL_SET, LLEGA_CON_ENLACE, PRIO, SAMPLE_GROUPS, SNAP_PREFIX, STORE, STORE_KEYS, SYNC_KEY, THEME, THEME_KEY, TOKENS, TRANSFER_SET, VIVIENDA, abrirAcceso, aiProviderLabel, ambKey, ambiguousPatterns, analyzeReceiptTrends, analyzeRows, applyCfg, auditRules, b64u, bankErrDetail, bankIsEmpty, buildAlerts, buildMonthClose, buildMovements, calcImputacion, calcRentaInmueble, classifyForImport, computeBankSaldo, computeOutliers, conciliar, daysBetween, decodeBuffer, dedupeAgainst, describePeriod, deserializeMovs, detectDelimiter, detectRecurring, expandParts, fmtAgo, fmtDate, fmtDateShort, genSampleCSV, identifiesMerchant, isConditional, isProcessorPattern, isRefundPart, isSpreadsheetFile, isoDay, learnedRule, leerAccesoGuardado, listSnapshots, loadBank, loadSync, makeAccessLink, matchRule, merchantEntity, mergeBank, missingIncome, monthKey, monthLabel, monthsCoveredOf, movInGroup, movKey, needsAmount, newConv, nfEUR, nfNum, normalizePattern, parseAccessLink, parseDateAny, parseEsNumber, r2c, rebuildRules, recordarAcceso, recoverBackupFromStore, refundFromHistory, refundIndex, ruleConditionsHold, ruleId, runQuery, saveBank, saveSync, serializeCfg, serializeMovs, setItemSeguro, setTema, shouldSnapshot, sortedRules, spreadsheetToRows, stripAccents, tipoActivo, tnum, tokenizeCSV, totalsOf, upcomingCharges, upcomingIncome, viviendaPorDefecto, writeSnapshot } from "./core.js";
 import { Card, Seg, Spinner, useBackClose } from "./ui/comunes.jsx";
 import { INV_VACIO } from "./inversiones.js";
@@ -1538,7 +1539,11 @@ function AppMain() {
     }
   };
 
-  const loadSample = () => startImport(genSampleCSV(), "ejemplo-banco.csv", true);
+  // La demo trae también una cartera de inversión de ejemplo (si no tienes inversiones).
+  const loadSample = () => {
+    setInversiones((x) => (x?.posiciones?.length ? x : { posiciones: carteraEjemplo(), aportacion: null }));
+    return startImport(genSampleCSV(), "ejemplo-banco.csv", true);
+  };
 
   // Importar SIN muro: clasifica todo y lleva directo al dashboard.
   // Lo de alta confianza queda confirmado; lo dudoso entra como "por revisar"
