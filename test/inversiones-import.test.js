@@ -153,3 +153,27 @@ describe("Renta: tramos, compensación, regla de los dos meses y simulador", () 
 it("FIFO con ventas de más no inventa coste", () => {
   expect(fifo([{ u: 1, importe: 10 }, { u: -2, importe: 30 }]).vendidoSinCompra).toBeCloseTo(1);
 });
+
+describe("legislación española: FIFO por contribuyente, retención de fondos y Modelo 720", () => {
+  it("el mismo ISIN en dos brókers es una sola cola FIFO", () => {
+    const a = { id: "a", nombre: "Acme", isin: "US0000000001", entidad: "DEGIRO", tipo: "accion", ops: [{ fecha: "2025-01-10", u: 10, importe: 1000 }] };
+    const b = { id: "b", nombre: "Acme", isin: "US0000000001", entidad: "Otro", tipo: "accion", ops: [{ fecha: "2025-06-10", u: 10, importe: 2000 }, { fecha: "2026-03-01", u: -10, importe: 2500 }] };
+    const v = ventasFIFO([a, b], { series: {}, meta: {} });
+    // Vende en «Otro», pero lo más antiguo es lo de DEGIRO (1.000 €): +1.500, no +500.
+    expect(v[0].adquisicion).toBeCloseTo(1000);
+    expect(v[0].ganancia).toBeCloseTo(1500);
+  });
+  it("reembolso de un fondo con ganancia: retención del 19 %", () => {
+    const f = { id: "f", nombre: "Fondo", isin: "ES0000000003", entidad: "Banco", tipo: "fondo", ops: [{ fecha: "2025-01-10", u: 10, importe: 1000 }, { fecha: "2026-01-10", u: -10, importe: 1500 }] };
+    const r = resumenAnual(ventasFIFO([f], { series: {}, meta: {} }), 2026);
+    expect(r.retenciones).toBeCloseTo(95);
+  });
+  it("Modelo 720: solo entidades extranjeras y por encima de 50.000 €", async () => {
+    const { modelo720, esExtranjera } = await import("../src/fiscal-inversiones.js");
+    expect(esExtranjera("DEGIRO")).toBe(true);
+    expect(esExtranjera("MyInvestor")).toBe(false);
+    const m = modelo720([{ p: { entidad: "DEGIRO" }, valor: 30000 }, { p: { entidad: "Revolut" }, valor: 25000 }, { p: { entidad: "Banco español" }, valor: 90000 }]);
+    expect(m.total).toBe(55000);
+    expect(m.supera).toBe(true);
+  });
+});

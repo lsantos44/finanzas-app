@@ -663,12 +663,6 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
     setImportando(false);
   };
 
-  const avisosCartera = [];
-  for (const g of a.porEntidad) if (g.peso > 0.5 && a.porEntidad.length > 1) avisosCartera.push(`El ${pct(g.peso, false)} de lo invertido está en ${g.nombre}.`);
-  // Un producto que ya es toda su entidad no repite el aviso.
-  const solos = new Set(a.porEntidad.filter((g) => g.filas.length === 1 && g.peso > 0.5 && a.porEntidad.length > 1).map((g) => g.filas[0].p.id));
-  for (const f of a.filas) if (f.peso > 0.25 && !solos.has(f.p.id)) avisosCartera.push(`«${f.p.nombre}» pesa el ${pct(f.peso, false)} de tu cartera.`);
-  const sinPrecio = a.filas.filter((f) => f.sinPrecio);
   const robo = inv.posiciones.filter((p) => p.robo);
   const entidadRobo = robo[0]?.entidad || null;
   const candidato = useMemo(() => (robo.length && !inv.aportacion ? candidatosAportacion(movs)[0] || null : null), [robo.length, inv.aportacion, movs]);
@@ -738,11 +732,11 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
             control={!nivel.e && a.porEntidad.length > 1 && <Seg ariaLabel="Desglosar por" value={desglose} onChange={setDesglose} options={[{ v: "entidad", l: "Plataformas" }, { v: "producto", l: "Productos" }]} />}
             onElegir={(x) => (x.pos ? (nivel.id === x.pos ? setAbierta(x.pos) : setNivel({ e: entidadDe(filasPorId[x.pos].p), id: x.pos })) : setNivel({ e: x.entidad, id: null }))} />
           <FrenteMercado a={a} ids={selIds} periodo={periodo} referencia={referencia} setReferencia={setReferencia} />
-          <Destacados a={a} ids={selIds} periodo={periodo} filas={selFilas} datos={datosA} onFecha={setAbierta} />
+          <Destacados a={a} ids={selIds} periodo={periodo} filas={selFilas} datos={datosA} onFecha={setAbierta} onBuscar={setEditando} />
 
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <Seg ariaLabel="Agrupar por" value={vista} onChange={setVista} options={[{ v: "entidad", l: "Por plataforma" }, { v: "tipo", l: "Por tipo" }]} />
-            <div className="flex gap-1.5">
+            <div className="ml-auto flex gap-1.5">
               <Btn size="sm" onClick={() => setSubiendo(true)} title="Importar el archivo de operaciones de tu bróker"><FileSpreadsheet size={14} /> Importar</Btn>
               <Btn size="sm" onClick={() => setCapturas(true)} title="Cargar o actualizar desde capturas de tu banco"><Camera size={14} /></Btn>
               <Btn size="sm" kind="primary" onClick={() => setEditando({})}><Plus size={14} /> Añadir</Btn>
@@ -752,41 +746,22 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
             .map((g) => (nivel.e ? { ...g, filas: g.filas.filter((f) => selFilas.includes(f)) } : g)).filter((g) => g.filas.length)
             .map((g, _i, todos) => <Grupo key={g.nombre} g={g} solo={todos.length === 1} datos={datosA} onAbrir={setAbierta} nota={vista === "entidad" && g.nombre === entidadRobo ? notaRobo : null} />)}
 
-          {(avisosCartera.length > 0 || sinPrecio.length > 0) && (
-            <Card className="p-4">
-              <h3 className="text-sm font-semibold">A tener en cuenta</h3>
-              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-600">
-                {avisosCartera.map((t) => <li key={t}>{t}</li>)}
-                {sinPrecio.map((f) => <li key={f.p.id}>«{f.p.nombre}» no tiene precio automático: se cuenta con el valor que pusiste.{" "}
-                  <button type="button" className="underline" onClick={() => setEditando(f.p)}>Buscar su cotización</button>{f.p.isin ? "" : " (con el ISIN es más fácil de encontrar)"}.</li>)}
-              </ul>
-            </Card>
-          )}
-
           <details className="rounded-2xl border bg-white px-4 py-3 text-sm" style={{ borderColor: C.line }}>
-            <summary className="cursor-pointer font-semibold">¿Cómo se calcula y cómo cuadrarlo con tu entidad?</summary>
-            <div className="mt-2 space-y-2 text-slate-600">
-              <p><strong>Plusvalía</strong> = valor actual − lo invertido, y en % = valor ÷ invertido − 1. Es lo que muestran los bancos y brókeres («Plusvalía/Minusvalía», «G/P»). Coincide con tu entidad si pones las mismas <em>participaciones</em> y el mismo <em>coste medio</em> de su ficha.</p>
-              <p><strong>Valor actual</strong> = participaciones × último precio (cierre o valor liquidativo; en dólares, al cambio del día). Puede diferir unos céntimos de tu entidad si su precio o su cambio son de otra hora.</p>
-              <p><strong>Resultado de un periodo</strong> (1S, 1M, 3M, Año, 1A) = valor al final − valor al principio − lo que pusiste entre medias. En % se divide entre lo que había al principio más lo que pusiste. Si entraste después de que empiece el periodo, cuenta desde que entraste: nunca hacia atrás. Con «Todo» es exactamente «Ganas en total».</p>
-              <p><strong>Qué explica tu resultado</strong> reparte ese mismo resultado entre plataformas o productos: sumados dan el total.</p>
-              <p><strong>Tú frente al mercado</strong>: cada euro que pusiste, el mismo día, en un fondo indexado al índice elegido (en euros). Así se compara lo que has hecho con «haberlo puesto todo en el índice», con tus mismas aportaciones.</p>
-              <p><strong>Tu posición y el producto</strong> (en la ficha): tu posición es lo que ganas con tu precio medio desde que entraste; el producto, cómo ha ido su precio en cualquier periodo, aunque entonces no lo tuvieras.</p>
-              <p><strong>Última sesión</strong> = variación desde el precio anterior. Las acciones se actualizan cada media hora en horario de bolsa; los fondos, una vez al día, con 1–2 días de retraso.</p>
-              <p><strong>Para que cuadre:</strong> en la ficha de cada producto de tu entidad busca el nº de participaciones (o acciones) y el coste medio, e impórtalos con «Importar → Actualizar y añadir»: <code className="text-xs">{'{"nombre":"…","isin":"…","participaciones":"1.250,5","costeMedio":"12.3456"}'}</code></p>
-            </div>
+            <summary className="cursor-pointer font-semibold">¿Cómo se calcula?</summary>
+            <ul className="mt-2 list-disc space-y-1.5 pl-5 text-slate-600">
+              <li><strong>Ganas en total</strong> = valor hoy − lo invertido. Coincide con tu entidad si tienes las mismas participaciones y el mismo coste (importa su archivo o captura su ficha).</li>
+              <li><strong>Resultado de un periodo</strong> = valor al final − al principio − lo que pusiste entre medias. Lo que compraste dentro del periodo cuenta desde ese día.</li>
+              <li><strong>Precios</strong>: acciones cada media hora en horario de bolsa; fondos una vez al día, con 1–2 días de retraso (por eso a veces no cuadra al céntimo con tu banco).</li>
+              <li>Todo el detalle, en <a className="underline" href="https://github.com/lsantos44/finanzas-app/blob/main/docs/INVERSIONES.md" target="_blank" rel="noopener noreferrer">la guía de Inversiones</a>.</li>
+            </ul>
           </details>
 
-          <div className="flex flex-wrap gap-2">
-            {robo.length > 0 && <Btn size="sm" onClick={() => setAportando(true)}><Repeat size={13} /> Aportación mensual{inv.aportacion ? ` · ${fmtE0(inv.aportacion.importe)}` : ""}</Btn>}
-            <Btn size="sm" onClick={() => setSubiendo(true)}><FileSpreadsheet size={13} /> Importar de tu bróker</Btn>
-            <Btn size="sm" onClick={() => setImportando(true)}><Upload size={13} /> Pegar lista</Btn>
-          </div>
+          {robo.length > 0 && <div><Btn size="sm" onClick={() => setAportando(true)}><Repeat size={13} /> Aportación mensual{inv.aportacion ? ` · ${fmtE0(inv.aportacion.importe)}` : ""}</Btn></div>}
           </>)}
         </>
       )}
 
-      {subiendo && <ImportarArchivo entidades={entidades} onImportar={importarArchivo} onClose={() => setSubiendo(false)} onCapturas={() => { setSubiendo(false); setCapturas(true); }} />}
+      {subiendo && <ImportarArchivo entidades={entidades} onImportar={importarArchivo} onClose={() => setSubiendo(false)} onCapturas={() => { setSubiendo(false); setCapturas(true); }} onPegar={() => { setSubiendo(false); setImportando(true); }} />}
       {filaAbierta && <Detalle f={filaAbierta} datos={datosA} onFecha={(id, fecha) => setInversiones((x) => ({ ...x, posiciones: x.posiciones.map((q) => (q.id === id ? (fecha ? { ...q, compra: fecha } : (({ compra, ...r }) => r)(q)) : q)) }))} onClose={() => setAbierta(null)} onEditar={() => { setEditando(filaAbierta.p); setAbierta(null); }} onBorrar={() => borrar(filaAbierta.p.id)} />}
       {editando && <Editor inicial={editando} entidades={entidades} servidor={servidor} onGuardar={guardarPos} onClose={() => setEditando(null)} />}
       {importando && <Importar onImportar={importar} onClose={() => setImportando(false)} />}

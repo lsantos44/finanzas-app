@@ -3,7 +3,12 @@
    ============================================================
    Estimación de lo que tus ventas suman a la declaración de la Renta, con las reglas de Hacienda:
    - Ganancia o pérdida = lo que recibiste al vender (menos comisiones) − lo que te costó (con
-     comisiones). Se vende primero lo más antiguo (FIFO, art. 37.2 LIRPF).
+     comisiones). Se vende primero lo más antiguo (FIFO, art. 37.2 LIRPF), contando el mismo
+     valor (mismo ISIN) en TODAS tus plataformas juntas: Hacienda lo aplica por contribuyente,
+     no por bróker. Clases distintas de un fondo son valores distintos (DGT V0796-26).
+   - Reembolsos de fondos españoles o comercializados en España: la entidad retiene el 19 % de
+     la ganancia (ya pagado, se descuenta). Las ventas de acciones y ETF no llevan retención, y si
+     son en un bróker extranjero (DEGIRO, Revolut…) no salen en el borrador: hay que añadirlas.
    - Importes en euros al cambio del día de cada operación.
    - Traspasos entre fondos: no tributan; el fondo nuevo hereda el coste y la antigüedad (art. 94).
    - Regla de los dos meses (art. 33.5.f): una pérdida no cuenta si recompraste el mismo valor dos
@@ -40,18 +45,26 @@ const sumarMeses = (f, n) => { const d = new Date(f + "T12:00:00Z"); d.setUTCMon
    cercano en fecha, de la misma plataforma). */
 export function ventasFIFO(posiciones, datos) {
   const conOps = (posiciones || []).filter((p) => p.ops?.length);
-  // Traspasos: los lotes que salen esperan a la entrada correspondiente.
-  const pendientes = []; // { entidad, fecha, lotes:[{fecha, u?, c}] }
-  const todas = conOps.flatMap((p) => p.ops.map((o) => ({ p, o }))).sort((a, b) => (a.o.fecha < b.o.fecha ? -1 : a.o.fecha > b.o.fecha ? 1 : a.o.u - b.o.u));
+  // El mismo valor en varias plataformas es una sola cola FIFO (por ISIN; sin ISIN, por posición).
+  const claveDe = (p) => (p.isin ? "I:" + p.isin : "P:" + p.id);
+  const pendientes = []; // traspasos de salida esperando su entrada: { entidad, fecha, lotes }
+  const todas = conOps.flatMap((p) => p.ops.map((o) => ({ p, o }))).sort((a, b) => (a.o.fecha < b.o.fecha ? -1 : a.o.fecha > b.o.fecha ? 1 : b.o.u - a.o.u));
   const colas = new Map();
   const ventas = [];
   for (const { p, o } of todas) {
-    if (!colas.has(p)) colas.set(p, []);
-    const cola = colas.get(p);
+    const k = claveDe(p);
+    if (!colas.has(k)) colas.set(k, []);
+    const cola = colas.get(k);
     const imp = enEuros(o, datos);
     if (o.u > 0) {
-      // Entrada por traspaso: hereda los lotes del fondo de origen (coste y fecha originales).
-      const ix = o.traspaso ? pendientes.findIndex((t) => t.entidad === p.entidad && Math.abs(new Date(t.fecha) - new Date(o.fecha)) <= 15 * 86400000) : -1;
+      // Entrada por traspaso: hereda coste y fecha del fondo de origen (de la misma entidad si la
+      // hay; si no, el traspaso más cercano en fecha, que también puede ser entre gestoras).
+      let ix = -1;
+      if (o.traspaso) {
+        const cerca = (t) => Math.abs(new Date(t.fecha) - new Date(o.fecha)) <= 15 * 86400000;
+        ix = pendientes.findIndex((t) => t.entidad === p.entidad && cerca(t));
+        if (ix < 0) ix = pendientes.findIndex(cerca);
+      }
       if (ix >= 0) {
         const t = pendientes.splice(ix, 1)[0];
         const totalC = t.lotes.reduce((x, l) => x + l.c, 0);
@@ -59,7 +72,7 @@ export function ventasFIFO(posiciones, datos) {
       } else cola.push({ fecha: o.fecha, u: o.u, c: imp });
       continue;
     }
-    // Salida: se consumen los lotes más antiguos.
+    // Salida: se consumen los lotes más antiguos de ese valor, estén en la plataforma que estén.
     let q = -o.u;
     const usados = [];
     while (q > 1e-9 && cola.length) {
@@ -70,22 +83,42 @@ export function ventasFIFO(posiciones, datos) {
     }
     if (o.traspaso) { pendientes.push({ entidad: p.entidad, fecha: o.fecha, lotes: usados }); continue; }
     const adquisicion = usados.reduce((x, l) => x + l.c, 0);
+    const ganancia = imp - adquisicion;
     ventas.push({
-      id: p.id, nombre: p.nombre, isin: p.isin || "", tipo: p.tipo, entidad: p.entidad, fecha: o.fecha,
-      unidades: -o.u, transmision: imp, adquisicion, ganancia: imp - adquisicion,
+      id: p.id, clave: k, nombre: p.nombre, isin: p.isin || "", tipo: p.tipo, entidad: p.entidad, fecha: o.fecha,
+      unidades: -o.u, transmision: imp, adquisicion, ganancia,
+      // Reembolso de un fondo: la entidad retiene el 19 % de la ganancia (si es española o
+      // comercializadora en España; en un bróker extranjero puede no haberla).
+      retencion: p.tipo === "fondo" && ganancia > 0 ? ganancia * 0.19 : 0,
       compras: usados.map((l) => l.fecha), sinCompra: q > 1e-6 ? q : 0,
     });
   }
-  // Regla de los dos meses: pérdida con recompra del mismo valor cerca de la venta.
+  // Regla de los dos meses: pérdida con recompra del mismo valor (en cualquier plataforma) cerca
+  // de la venta: 2 meses si cotiza (acciones, ETF), 1 año si no (fondos).
   for (const v of ventas) {
     if (!(v.ganancia < 0)) continue;
     const meses = v.tipo === "fondo" ? 12 : 2;
     const desde = sumarMeses(v.fecha, -meses), hasta = sumarMeses(v.fecha, meses);
-    const p = conOps.find((x) => x.id === v.id);
-    const recompra = (p?.ops || []).find((o) => o.u > 0 && !o.traspaso && o.fecha >= desde && o.fecha <= hasta && !v.compras.includes(o.fecha));
+    const recompra = conOps.filter((x) => claveDe(x) === v.clave).flatMap((x) => x.ops)
+      .find((o) => o.u > 0 && !o.traspaso && o.fecha >= desde && o.fecha <= hasta && !v.compras.includes(o.fecha));
     if (recompra) v.diferida = { fecha: recompra.fecha, meses };
   }
   return ventas;
+}
+
+// Brókers y bancos con sede fuera de España: sus ventas no salen en el borrador y lo que tienes
+// en ellos cuenta para el Modelo 720 (informativo, a partir de 50.000 € en valores).
+const EXTRANJEROS = /\b(degiro|revolut|interactive|ibkr|trade ?republic|etoro|scalable|lightyear|freedom ?24|saxo|trading ?212|flatex|n26|bux|traderepublic)\b/i;
+export const esExtranjera = (entidad) => EXTRANJEROS.test(String(entidad || ""));
+
+/* Modelo 720: valores (acciones, ETF, fondos) en entidades extranjeras por encima de 50.000 € a
+   31 de diciembre (o de media en el último trimestre). Solo informativo: no se paga nada. Si ya
+   lo presentaste, solo hay que repetirlo si sube más de 20.000 €. */
+export function modelo720(filas) {
+  const porEntidad = {};
+  for (const f of filas) if (esExtranjera(f.p.entidad)) porEntidad[f.p.entidad] = (porEntidad[f.p.entidad] || 0) + f.valor;
+  const total = Object.values(porEntidad).reduce((t, v) => t + v, 0);
+  return { porEntidad, total, supera: total > 50000 };
 }
 
 /* Resumen de un año: ganancias, pérdidas (sin las aplazadas por la regla de los dos meses),
@@ -115,6 +148,8 @@ export function resumenAnual(ventas, anio) {
       resultado = {
         anio, ventas: vs, ganancias, perdidas, aplazadas, saldo: ganancias + perdidas, compensado,
         base: Math.max(0, saldo), impuesto: impuestoAhorro(Math.max(0, saldo)),
+        retenciones: vs.reduce((t, v) => t + (v.retencion || 0), 0),
+        extranjeras: vs.filter((v) => esExtranjera(v.entidad)),
         aCompensar: pendientes.filter((pd) => pd.queda < 0 && anio - pd.anio < 4).map((pd) => ({ anio: pd.anio, queda: -pd.queda })),
       };
     }
@@ -146,7 +181,7 @@ export function simularVentas(filas, baseAnio) {
 // CSV de las ventas de un año, para tu gestor o para revisar el borrador.
 export function csvVentas(ventas) {
   const n = (x) => (Math.round(x * 100) / 100).toFixed(2).replace(".", ",");
-  const filas = [["Fecha de venta", "Producto", "ISIN", "Plataforma", "Participaciones", "Valor de transmisión (€)", "Valor de adquisición (€)", "Ganancia o pérdida (€)", "Fechas de compra", "Aviso"]];
-  for (const v of ventas) filas.push([v.fecha, v.nombre, v.isin, v.entidad, String(v.unidades).replace(".", ","), n(v.transmision), n(v.adquisicion), n(v.ganancia), [...new Set(v.compras)].join(" "), v.diferida ? `Regla de los ${v.diferida.meses === 2 ? "2 meses" : "12 meses"}: recompra el ${v.diferida.fecha}` : ""]);
+  const filas = [["Fecha de venta", "Producto", "ISIN", "Plataforma", "Participaciones", "Valor de transmisión (€)", "Valor de adquisición (€)", "Ganancia o pérdida (€)", "Fechas de compra", "Retención aprox. (€)", "Dónde declararla", "Aviso"]];
+  for (const v of ventas) filas.push([v.fecha, v.nombre, v.isin, v.entidad, String(v.unidades).replace(".", ","), n(v.transmision), n(v.adquisicion), n(v.ganancia), [...new Set(v.compras)].join(" "), n(v.retencion || 0), v.tipo === "fondo" ? "Reembolso de fondos (suele venir en el borrador)" : esExtranjera(v.entidad) ? "Transmisión de acciones negociadas: AÑADIR (no sale en el borrador)" : "Transmisión de acciones negociadas", v.diferida ? `Regla de los ${v.diferida.meses === 2 ? "2 meses" : "12 meses"}: recompra el ${v.diferida.fecha}` : ""]);
   return filas.map((r) => r.map((c) => (/[;"\n]/.test(c) ? `"${String(c).replace(/"/g, '""')}"` : c)).join(";")).join("\n");
 }

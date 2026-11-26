@@ -1,7 +1,7 @@
 import { C, aiExplicarInversiones, fmtE0, nfNum, tnum } from "../core.js";
 import { Btn, Card, Seg } from "../ui/comunes.jsx";
 import { REFERENCIAS, curvaDe, curvaReferencia, destacadosPeriodo, divisaDe, indiceEn, resultadoPeriodo, sumarDias } from "../inversiones.js";
-import { AlertTriangle, Coins, Flag, PieChart, RefreshCw, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
+import { AlertTriangle, Coins, Flag, PieChart, RefreshCw, Sparkles, TrendingUp } from "lucide-react";
 import { Area, CartesianGrid, ComposedChart, Line, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useMemo, useState } from "react";
 
@@ -149,11 +149,7 @@ export function Panel({ a, ids, nombre, periodo, setPeriodo, referencia, cifras,
         <Seg ariaLabel="Periodo" value={periodo} onChange={(v) => { setPeriodo(v); setSobre(null); }} options={PERIODOS} />
         {!corto && <Seg ariaLabel="Ver en" value={modo} onChange={setModo} options={[{ v: "eur", l: "€" }, { v: "pct", l: "%" }]} />}
       </div>
-      {!corto && (
-        <p className="mt-1.5 text-[11px] text-slate-400" style={tnum}>
-          {modo === "eur" ? "Lo que ganas o pierdes, día a día (el dinero que entra no cuenta como ganancia)" : `Tu resultado en % ${ref ? `· – – el mismo dinero en ${nomRef} (${pct(resRef?.pct)})` : ""}`}
-        </p>
-      )}
+      {!corto && modo === "pct" && ref && <p className="mt-1.5 text-[11px] text-slate-400" style={tnum}>– – {nomRef}: {pct(resRef?.pct)}</p>}
       {cifras}
       {reparto}
     </Card>
@@ -205,7 +201,6 @@ export function QueHaMovido({ a, partes, periodo, onElegir, ai, aiOn, filasPorId
           </button>
         ))}
       </div>
-      <p className="mt-3 text-[11px] text-slate-400">Verde: lo que te ha hecho ganar; rojo: lo que te ha hecho perder. Sumado da {fmtE0(Math.abs(total || 0))}. El % es lo que ha ganado o perdido ese dinero. Si algo lo compraste dentro del periodo, cuenta desde ese día. Toca una fila para verla.</p>
       {aiOn && <PorQue a={a} periodo={periodo} per={per} ai={ai} filasPorId={filasPorId} ids={partes.flatMap((x) => x.ids)} />}
     </Card>
   );
@@ -300,7 +295,7 @@ export function FrenteMercado({ a, ids, periodo, referencia, setReferencia }) {
             <p className="mt-2 text-sm" style={tnum}>
               {Math.abs(dif) < 1 ? "Vas igual que el índice." : <>Vas <strong style={{ color: colorDe(dif) }}>{fmtE0(Math.abs(dif))} {dif > 0 ? "por delante" : "por detrás"}</strong> de {info?.nombre} {textoPeriodo(per, periodo)}.</>}
             </p>
-            <p className="mt-1 text-[11px] text-slate-400">Como si cada euro que pusiste, el mismo día, lo hubieras puesto en un fondo indexado al {info?.nombre} ({info?.desc}). En la vista «%» del gráfico lo ves día a día.</p>
+            <p className="mt-1 text-[11px] text-slate-400">El mismo dinero, los mismos días, en un fondo indexado al {info?.nombre}.</p>
           </>
         )}
     </Card>
@@ -309,30 +304,31 @@ export function FrenteMercado({ a, ids, periodo, referencia, setReferencia }) {
 export const referenciaInicial = leerRef;
 
 /* ---------- Lo destacable: frases cortas con lo que importa del periodo y de tu cartera ---------- */
-export function Destacados({ a, ids, periodo, filas, datos, onFecha }) {
+export function Destacados({ a, ids, periodo, filas, datos, onFecha, onBuscar }) {
   const per = usePeriodo(a, ids, periodo);
   const items = [];
   const { max, mejor, peor } = per.dest;
   const hoy = per.res.ganancia;
   if (max && hoy != null && max.g - hoy > Math.max(50, Math.abs(per.res.inicio + per.res.puesto) * 0.01) && max.d !== per.hasta)
-    items.push({ icon: Flag, color: C.warn || C.muted, t: <>Tu mejor momento {textoPeriodo(per, periodo).replace(/^en /, "de ")} fue el {fechaLarga(max.d)}, con <strong>{eur0(max.g)}</strong>. Hoy estás en <strong style={{ color: colorDe(hoy) }}>{eur0(hoy)}</strong>: {fmtE0(max.g - hoy)} por debajo.</> });
-  if (mejor && mejor.g > 0.5) items.push({ icon: TrendingUp, color: C.income, t: <>Mejor día: el {fechaLarga(mejor.d)}, <strong style={{ color: C.income }}>{eur0(mejor.g)}</strong>.</> });
-  if (peor && peor.g < -0.5) items.push({ icon: TrendingDown, color: C.expense, t: <>Peor día: el {fechaLarga(peor.d)}, <strong style={{ color: C.expense }}>{eur0(peor.g)}</strong>.</> });
+    items.push({ icon: Flag, color: C.warn, t: <>Máximo del periodo: <strong>{eur0(max.g)}</strong> el {fechaCorta(max.d)} (hoy {eur0(hoy)}).</> });
+  if ((mejor && mejor.g > 0.5) || (peor && peor.g < -0.5))
+    items.push({ icon: TrendingUp, color: C.muted, t: <>{mejor && mejor.g > 0.5 && <>Mejor día <strong style={{ color: C.income }}>{eur0(mejor.g)}</strong> ({fechaCorta(mejor.d)})</>}{mejor && mejor.g > 0.5 && peor && peor.g < -0.5 && " · "}{peor && peor.g < -0.5 && <>peor <strong style={{ color: C.expense }}>{eur0(peor.g)}</strong> ({fechaCorta(peor.d)})</>}</> });
   // Divisas: lo que cotiza fuera del euro se mueve también con el tipo de cambio.
   const total = filas.reduce((t, f) => t + f.valor, 0);
   const porDiv = {};
   for (const f of filas) { const d = divisaDe(f.p, datos); if (d !== "EUR") porDiv[d] = (porDiv[d] || 0) + f.valor; }
   for (const [d, v] of Object.entries(porDiv).sort((x, y) => y[1] - x[1]).slice(0, 2)) {
-    if (total && v / total > 0.05) items.push({ icon: Coins, color: C.accent, t: <>El {pct(v / total, false, 0)} cotiza en {d === "USD" ? "dólares" : d}: si el {d === "USD" ? "dólar" : d} baja un 5 % frente al euro, pierdes unos <strong>{fmtE0(v * 0.05)}</strong> aunque las cotizaciones no se muevan.</> });
+    if (total && v / total > 0.05) items.push({ icon: Coins, color: C.accent, t: <>{pct(v / total, false, 0)} en {d === "USD" ? "dólares" : d}: si el {d === "USD" ? "dólar" : d} cae un 5 %, unos <strong>−{fmtE0(v * 0.05)}</strong>.</> });
   }
   // Concentración: cuánto pesan tus 3 productos más grandes.
   if (filas.length > 4 && total) {
     const top = [...filas].sort((x, y) => y.valor - x.valor).slice(0, 3);
     const peso = top.reduce((t, f) => t + f.valor, 0) / total;
-    if (peso > 0.6) items.push({ icon: PieChart, color: C.accent, t: <>Tus 3 productos más grandes son el <strong>{pct(peso, false, 0)}</strong> de esto ({top.map((f) => f.p.nombre).join(", ")}).</> });
+    if (peso > 0.6) items.push({ icon: PieChart, color: C.accent, t: <>3 productos son el <strong>{pct(peso, false, 0)}</strong>: {top.map((f) => f.p.nombre).join(", ")}.</> });
   }
   const sinFecha = filas.filter((f) => !f.compraConocida && !f.sinPrecio);
-  if (sinFecha.length) items.push({ icon: AlertTriangle, color: C.muted, t: <>{sinFecha.length === 1 ? `«${sinFecha[0].p.nombre}» no tiene` : `${sinFecha.length} productos no tienen`} fecha de compra: se da por hecho que {sinFecha.length === 1 ? "lo tienes" : "los tienes"} desde antes, con lo de hoy. Si {sinFecha.length === 1 ? "lo compraste" : "alguno lo compraste"} hace poco, <button type="button" className="underline" onClick={() => onFecha(sinFecha[0].p.id)}>pon la fecha en su ficha</button>.</> });
+  if (sinFecha.length) items.push({ icon: AlertTriangle, color: C.muted, t: <>{sinFecha.length === 1 ? `«${sinFecha[0].p.nombre}»` : `${sinFecha.length} productos`} sin fecha de compra: cuentan como si los tuvieras desde antes. <button type="button" className="underline" onClick={() => onFecha(sinFecha[0].p.id)}>Poner fecha</button></> });
+  for (const f of filas.filter((x) => x.sinPrecio)) items.push({ icon: AlertTriangle, color: C.expense, t: <>«{f.p.nombre}» sin precio automático: vale lo que pusiste. <button type="button" className="underline" onClick={() => onBuscar(f.p)}>Buscar su cotización</button></> });
   if (!items.length) return null;
   return (
     <Card className="p-4">

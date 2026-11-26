@@ -43,11 +43,19 @@ base del ahorro de cada año, con las reglas generales del IRPF:
 | Regla | Cómo se aplica |
 |---|---|
 | Ganancia o pérdida | lo que recibiste (con comisiones) − lo que te costó (con comisiones), en euros al cambio de cada día |
-| Orden de venta | lo más antiguo primero (FIFO) |
+| Orden de venta | lo más antiguo primero (FIFO), por ISIN y contando todas tus plataformas juntas (Hacienda lo aplica por contribuyente, no por bróker); clases distintas de un fondo son valores distintos |
+| Retención | los reembolsos de fondos con ganancia llevan un 19 % de retención, ya pagado: se descuenta de lo que quedaría por pagar |
+| Brókers extranjeros | sus ventas no salen en el borrador: se marcan para añadirlas a mano |
 | Traspasos entre fondos | no tributan; el fondo nuevo hereda el coste y la fecha del anterior |
 | Regla de los dos meses | una pérdida con recompra del mismo valor 2 meses antes o después (12 si es un fondo que no cotiza) se aplaza |
 | Compensación | ganancias y pérdidas del año; si sale negativo, en los 4 años siguientes |
 | Tipos del ahorro | 19 % hasta 6.000 €, 21 % hasta 50.000, 23 % hasta 200.000, 27 % hasta 300.000, 30 % a partir de ahí |
+
+Arriba, **¿Tengo que declararlo?**: lo que tienes no se declara, lo que vendes sí (en la Renta del
+año siguiente); cuándo no se está obligado a presentar la Renta (1.000 € de ingresos totales y
+pérdidas de menos de 500 €; 1.600 € si son reembolsos de fondos con retención) y que los 50.000 €
+son el **Modelo 720**, informativo, para lo que tienes en entidades extranjeras (con lo que tienes
+hoy en ellas).
 
 Además: *Si vendieras hoy* (lo que ganarías o perderías con cada producto y lo que añadiría a tu
 impuesto) y *Puedes pagar menos este año* (pérdidas que compensarían lo que ya has ganado). Se

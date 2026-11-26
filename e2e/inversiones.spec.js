@@ -71,7 +71,7 @@ test("la pestaña Inversiones valora, agrupa, resuelve ISIN y abre el detalle", 
   await page.getByLabel("Producto").selectOption("cohr");
   // En %, con la línea del índice; y «Tú frente al mercado» con el mismo dinero en MSCI World.
   await page.getByRole("button", { name: "%", exact: true }).click();
-  await expect(page.getByText(/el mismo dinero en MSCI World/)).toBeVisible();
+  await expect(page.getByText(/– – MSCI World:/)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Tú frente al mercado" })).toBeVisible();
   await expect(page.getByText(/por (delante|detrás) de MSCI World/)).toBeVisible();
   await page.getByRole("button", { name: "€", exact: true }).click();
@@ -92,9 +92,9 @@ test("la pestaña Inversiones valora, agrupa, resuelve ISIN y abre el detalle", 
   await expect(page.getByText("Diferencia por acción")).toBeVisible();
   await expect(page.getByText("Tu precio medio", { exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
-  // En Resumen, la tarjeta de inversiones con el valor y lo que ganas o pierdes.
+  // Resumen ya no repite las inversiones (tienen su pestaña).
   await page.getByRole("button", { name: "Resumen", exact: true }).click();
-  await expect(page.getByText(/Ganas\/pierdes/)).toBeVisible();
+  await expect(page.getByText("Ganas en total")).toHaveCount(0);
 });
 
 test("«¿Por qué se ha movido?»: la IA recibe nombres y %, nunca importes", async ({ page }) => {
