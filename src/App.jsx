@@ -51,6 +51,20 @@ export {
 
 let MOV_ID = 1;
 // Error de conexión (no una respuesta de error del servidor): fetch falla o no contesta a tiempo.
+// Quién guarda cada copia en el servidor: un identificador de este navegador y un nombre legible.
+// En el iPhone, la app instalada y Safari son DOS dispositivos (cada uno con sus propios datos):
+// saber cuál guardó explica el aviso de «otro dispositivo» y, si fue este mismo, se resuelve solo.
+const DISPOSITIVO = (() => {
+  let id = "";
+  try { id = localStorage.getItem("finz:dispositivo") || ""; if (!id) { id = Math.random().toString(36).slice(2, 12); localStorage.setItem("finz:dispositivo", id); } } catch { /* sin almacenamiento */ }
+  const ua = typeof navigator === "undefined" ? "" : navigator.userAgent || "";
+  const equipo = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Mac OS X/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : "Ordenador";
+  let instalada = false;
+  try { instalada = window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true; } catch { /* noop */ }
+  const nav = /CriOS|Chrome/.test(ua) ? "Chrome" : /FxiOS|Firefox/.test(ua) ? "Firefox" : /Edg/.test(ua) ? "Edge" : /Safari/.test(ua) ? "Safari" : "navegador";
+  return { id, nombre: `${equipo} · ${instalada ? "app instalada" : nav}` };
+})();
+const textoConflicto = (quien) => `Tienes cambios de este dispositivo que no llegaron a subirse, y ${quien ? `otra copia de la app (${quien})` : "otro dispositivo"} ha guardado después. No se ha perdido nada: decide qué conservar en Ajustes → Sincronizar con tu backend.`;
 const esDeRed = (e) => e?.name === "TypeError" || /no hubo respuesta|failed to fetch|load failed|network/i.test(e?.message || "");
 
 class ErrorBoundary extends React.Component {
@@ -520,12 +534,13 @@ function AppMain() {
         }
       }
       const envio = Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
-      const cuerpo = { ...(payload || syncPayload()), envio };
+      const cuerpo = { ...(payload || syncPayload()), envio, dispositivo: DISPOSITIVO };
       anotarEnvio(envio);
       const subir = (v) => fetch(url + "/store", {
         method: "PUT", headers: { ...bankHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({ baseVersion: v, payload: cuerpo }),
       });
+      let quien = null;
       let res = await subir(baseVersion);
       let data = await res.json().catch(() => ({}));
       if (res.status === 409) {
@@ -533,15 +548,17 @@ function AppMain() {
         const cur = await bankFetch("/store", 25000).catch(() => null);
         const curData = cur?.ok ? await cur.json().catch(() => null) : null;
         const marca = curData?.payload?.envio;
-        if (marca && (loadSync().enviados || []).includes(marca)) {
+        const mismo = DISPOSITIVO.id && curData?.payload?.dispositivo?.id === DISPOSITIVO.id;
+        quien = curData?.payload?.dispositivo?.nombre || null;
+        if (mismo || (marca && (loadSync().enviados || []).includes(marca))) {
           res = await subir(Number(curData.version) || 0);
           data = await res.json().catch(() => ({}));
         }
       }
       if (res.status === 409) {
-        setSyncConflict({ version: data.version, updatedAt: data.updatedAt });
-        setSyncMsg({ kind: "err", text: `Otro dispositivo guardó después que tú${data.updatedAt ? ` (${new Date(data.updatedAt).toLocaleString("es-ES")})` : ""}. No he subido nada: elige abajo qué conservar.` });
-        return { conflict: true };
+        setSyncConflict({ version: data.version, updatedAt: data.updatedAt, quien });
+        setSyncMsg({ kind: "err", text: `${quien ? `Otra copia de la app (${quien})` : "Otro dispositivo"} guardó después que tú${data.updatedAt ? ` (${new Date(data.updatedAt).toLocaleString("es-ES")})` : ""}. No he subido nada: elige abajo qué conservar.` });
+        return { conflict: true, quien };
       }
       if (!res.ok) throw new Error(data.error || "el backend devolvió " + res.status);
       // Lo pendiente queda subido, salvo que hayas cambiado algo mientras tanto.
@@ -646,7 +663,7 @@ function AppMain() {
     // suben primero; si otro dispositivo guardó entre medias, decides tú.
     if (loadSync().pendiente) {
       syncPush({ silent: true }).then((r) => {
-        if (r?.conflict) setError("Tienes cambios de este dispositivo que no llegaron a subirse, y otro dispositivo ha guardado después. No se ha perdido nada: decide qué conservar en Ajustes → Sincronizar con tu backend.");
+        if (r?.conflict) setError(textoConflicto(r.quien));
       });
       return;
     }
