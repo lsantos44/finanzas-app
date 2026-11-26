@@ -601,11 +601,11 @@ function Aportacion({ inv, movs, onGuardar, onClose }) {
   const robo = inv.posiciones.filter((p) => p.robo);
   const desde = robo.reduce((mx, p) => (p.alta > mx ? p.alta : mx), "0000-00-00");
   return (
-    <Modal title="Aportación periódica" subtitle="Para que la cartera automatizada crezca sola" onClose={onClose}
+    <Modal title="Aportación mensual" subtitle="Solo para carteras automatizadas (robo-advisor)" onClose={onClose}
       footer={<div className="flex gap-2">{inv.aportacion && <Btn onClick={() => onGuardar(null)}>Quitar</Btn>}<Btn onClick={onClose} className="ml-auto">Cerrar</Btn></div>}>
       {!robo.length ? <p className="text-sm text-slate-600">Primero marca como «cartera automatizada» los fondos que la forman (al editarlos).</p> : (
         <div className="space-y-3 text-sm">
-          <p className="text-slate-600">Elige la transferencia con la que aportas. Cada una posterior al {fechaLarga(desde)} se repartirá entre los {robo.length} fondos de la cartera según su peso objetivo.</p>
+          <p className="text-slate-600">Si cada mes transfieres dinero a tu cartera automatizada, elige aquí esa transferencia de tu banco. Así no tienes que actualizar participaciones: cada transferencia posterior al {fechaLarga(desde)} se suma sola a los {robo.length} fondos de la cartera, repartida según su peso. Si no aportas cada mes, no necesitas esto.</p>
           {candidatos.length ? candidatos.map((c) => {
             const activo = inv.aportacion?.patron === c.patron && inv.aportacion?.importe === c.importe;
             return (
@@ -768,7 +768,7 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
       <div className="mt-2 flex gap-2 pl-5"><Btn size="sm" kind="primary" onClick={() => usarAportacion(candidato)}>Sí, usarla</Btn><Btn size="sm" onClick={() => setAportando(true)}>Elegir otra</Btn></div>
     </div>
   ) : (
-    <p className="flex items-start gap-2 text-xs text-slate-500"><Repeat size={13} className="mt-0.5 shrink-0" />Si aportas cada mes, clasifica esas transferencias como «Ahorro e inversión» y elígela en <button type="button" className="underline" onClick={() => setAportando(true)}>Aportación periódica</button>: se sumarán solas.</p>
+    <p className="flex items-start gap-2 text-xs text-slate-500"><Repeat size={13} className="mt-0.5 shrink-0" />Si aportas cada mes, clasifica esas transferencias como «Ahorro e inversión» y elígela en <button type="button" className="underline" onClick={() => setAportando(true)}>Aportación mensual</button>: se sumarán solas.</p>
   ));
 
   return (
@@ -879,7 +879,7 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
           </details>
 
           <div className="flex flex-wrap gap-2">
-            <Btn size="sm" onClick={() => setAportando(true)}>Aportación periódica{inv.aportacion ? ` · ${fmtE0(inv.aportacion.importe)}` : ""}</Btn>
+            {robo.length > 0 && <Btn size="sm" onClick={() => setAportando(true)}><Repeat size={13} /> Aportación mensual{inv.aportacion ? ` · ${fmtE0(inv.aportacion.importe)}` : ""}</Btn>}
             <Btn size="sm" onClick={() => setImportando(true)}><Upload size={13} /> Pegar lista</Btn>
           </div>
         </>

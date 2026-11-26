@@ -47,6 +47,8 @@ self.addEventListener("fetch", (e) => {
   const url = new URL(req.url);
   // Tu servidor, el banco, la IA: siempre directo a la red.
   if (url.origin !== self.location.origin) return;
+  // ¿Hay una versión nueva publicada? Se pregunta siempre a la red, nunca a la copia.
+  if (url.pathname === "/version.txt") return;
 
   if (req.mode === "navigate") {
     // La app es una sola página: cualquier dirección (con ?bank_session=…, ?v=…) es la misma.

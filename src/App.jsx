@@ -453,6 +453,7 @@ function AppMain() {
   // Tu servidor no contesta (sin cobertura, o las operadoras bloqueando Cloudflare en jornada de
   // fútbol). La app sigue con lo que hay en el dispositivo y lo reintenta sola.
   const [sinServidor, setSinServidor] = useState(false);
+  const [nuevaVersion, setNuevaVersion] = useState(false);
   const persistSync = useCallback((patch) => setSyncCfg((c) => { const n = { ...c, ...patch }; saveSync(n); return n; }), []);
 
   // El cuerpo que se sube: mismo formato que la copia exportable, para poder restaurar entre ambas
@@ -698,6 +699,29 @@ function AppMain() {
     return () => { clearInterval(t); window.removeEventListener("online", intentar); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sinServidor, booted, syncCfg.auto]);
+
+  // ¿Versión nueva publicada? En el móvil la app instalada no se recarga al volver a ella: puede
+  // seguir días con el programa de antes. Se mira al volver a la app y cada media hora; no se
+  // recarga sola (podrías estar a mitad de algo, p. ej. pegando un texto), se ofrece.
+  useEffect(() => {
+    if (!import.meta.env.PROD || BUILD_STAMP === "dev") return;
+    const mirar = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const r = await fetch("/version.txt", { cache: "no-store" });
+        const v = r.ok ? (await r.text()).trim() : "";
+        if (/^\d{2}\/\d{2}\/\d{4}/.test(v) && v.length < 40 && v !== BUILD_STAMP) setNuevaVersion(true);
+      } catch { /* sin red: ya se mirará */ }
+    };
+    mirar();
+    const t = setInterval(mirar, 30 * 60000);
+    document.addEventListener("visibilitychange", mirar);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", mirar); };
+  }, []);
+  const actualizarApp = async () => {
+    try { await (await navigator.serviceWorker?.getRegistration())?.update(); } catch { /* sigue */ }
+    window.location.reload();
+  };
 
   /* ---------- Conexión bancaria (Enable Banking, vía el Worker) — MULTI-BANCO ---------- */
   const [bankCfg, setBankCfg] = useState(loadBank);
@@ -2190,6 +2214,14 @@ function AppMain() {
     <div className="min-h-screen overflow-x-clip" style={{ background: C.bg, color: C.ink }}>
       {!booted && (
         <div className="flex min-h-screen items-center justify-center"><Spinner label="Abriendo tus finanzas…" /></div>
+      )}
+      {booted && nuevaVersion && (
+        <div className="fixed inset-x-0 z-50 mx-auto max-w-md px-4" style={{ top: "calc(env(safe-area-inset-top) + 8px)" }}>
+          <div role="status" className="flex items-center justify-between gap-2 rounded-xl border p-3 text-sm shadow-lg" style={{ borderColor: C.accent, background: C.surface, color: C.ink }}>
+            <span>Hay una versión nueva de la app.</span>
+            <button type="button" onClick={actualizarApp} className="rounded-lg px-3 py-1 text-sm font-medium text-white" style={{ background: C.accent }}>Actualizar</button>
+          </div>
+        </div>
       )}
       {booted && (<>
       <style>{`
