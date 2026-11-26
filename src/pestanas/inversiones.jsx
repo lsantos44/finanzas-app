@@ -2,10 +2,10 @@ import { C, aiLeerCapturas, fmtE, fmtE0, nfNum, tnum } from "../core.js";
 import { Btn, Card, Modal, Seg } from "../ui/comunes.jsx";
 import { Bienvenida, ImportarArchivo, ListaOperaciones, Renta } from "./inversiones-extra.jsx";
 import { carteraEjemplo, conEjemplo, esEjemplo } from "../inversiones-ejemplo.js";
-import { Destacados, FrenteMercado, Panel, QueHaMovido, SinHistoria, referenciaInicial } from "./inversiones-panel.jsx";
+import { Destacados, Panel, QueHaMovido, Reparto, SinHistoria, referenciaInicial } from "./inversiones-panel.jsx";
 import { REFERENCIAS, actualizarCampos, analizarInversiones, candidatosAportacion, fusionarPosiciones, normalizarPosiciones, posicionesDeCapturas, serieEUR, simbolosDe, dia, sumarDias, divisaDe } from "../inversiones.js";
 import { AlertTriangle, Camera, FileSpreadsheet, ChevronDown, ChevronRight, Pencil, Plus, RefreshCw, Repeat, Search, Trash2, Upload } from "lucide-react";
-import { Area, AreaChart, CartesianGrid, Line, ComposedChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Area, CartesianGrid, Line, ComposedChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 /* ============================================================
@@ -94,32 +94,12 @@ function GraficoEvolucion({ serie, conInvertido, referencia, marca, alto = 200 }
   );
 }
 
-function Reparto({ grupos, total }) {
-  if (!total) return null;
+// Cuánto ganas o pierdes con cada producto, de un vistazo: barra verde o roja (llena al ±50 %).
+function BarraPct({ v }) {
+  if (v == null || !isFinite(v)) return null;
   return (
-    <div>
-      <div className="flex h-2.5 w-full overflow-hidden rounded-full" style={{ background: C.line }} role="img" aria-label={grupos.map((g) => `${g.nombre} ${pct(g.peso, false)}`).join(", ")}>
-        {grupos.map((g, i) => <div key={g.nombre} style={{ width: `${g.peso * 100}%`, background: PALETA[i % PALETA.length] }} />)}
-      </div>
-      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-600">
-        {grupos.map((g, i) => <span key={g.nombre} className="inline-flex items-center gap-1" style={tnum}><span className="inline-block h-2 w-2 rounded-sm" style={{ background: PALETA[i % PALETA.length] }} />{g.nombre} {pct(g.peso, false)}</span>)}
-      </div>
-    </div>
-  );
-}
-
-function Mini({ serie }) {
-  if (!serie || serie.length < 2) return null;
-  const s = serie.slice(-60).map(([d, v]) => ({ d, v }));
-  const color = s[s.length - 1].v >= s[0].v ? C.income : C.expense;
-  return (
-    <div style={{ height: 28, width: 52 }} aria-hidden="true">
-      <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={s} margin={{ top: 2, right: 0, left: 0, bottom: 2 }}>
-          <YAxis hide domain={["dataMin", "dataMax"]} />
-          <Area type="monotone" dataKey="v" stroke={color} strokeWidth={1.5} fill="none" isAnimationActive={false} />
-        </AreaChart>
-      </ResponsiveContainer>
+    <div className="h-1.5 w-12 shrink-0 overflow-hidden rounded-full" style={{ background: C.line }} aria-hidden="true">
+      <div className="h-full rounded-full" style={{ width: `${Math.max(6, Math.min(1, Math.abs(v) / 0.5) * 100)}%`, background: v >= 0 ? C.income : C.expense }} />
     </div>
   );
 }
@@ -154,7 +134,7 @@ function FilaPosicion({ f, datos, onAbrir }) {
           </div>
         )}
       </div>
-      <div className="hidden min-[380px]:block"><Mini serie={serieEUR(f.p, datos)} /></div>
+      <BarraPct v={f.resultadoPct} />
       <div className="shrink-0 text-right">
         <div className="text-sm font-semibold" style={tnum}>{fmtE0(f.valor)}</div>
         {/* Lo que ganas o pierdes desde que lo compraste (como el total del grupo); sin coste, el último cambio. */}
@@ -716,7 +696,7 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
             </select>
           </div>
 
-          <Panel a={a} ids={selIds} nombre={nombreSel} periodo={periodo} setPeriodo={setPeriodo} referencia={referencia}
+          <Panel a={a} ids={selIds} nombre={nombreSel} periodo={periodo} setPeriodo={setPeriodo} referencia={referencia} setReferencia={setReferencia}
             accion={<Btn size="sm" onClick={actualizar} disabled={cargando || !servidor.listo || !servidor.rasgo} title="Pedir los últimos precios ahora"><RefreshCw size={13} className={cargando ? "animate-spin" : ""} /> {cargando ? "Actualizando" : "Actualizar"}</Btn>}
             vacio={<SinHistoria a={a} ids={selIds} desde={entradaSel} robo={selFilas.some((f) => f.p.robo) && !inv.aportacion} candidato={candidato} onUsarAportacion={() => candidato && usarAportacion(candidato)} onFecha={setAbierta} primerId={selFilas.find((f) => !f.compraConocida)?.p.id || selIds[0]} />}
             cifras={
@@ -725,14 +705,8 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
                 <Cifra label="Ganas en total" color={colorDe(sel.ganancia)} sub={sel.ganancia == null ? "falta el coste" : pct(sel.gananciaPct)}>{sel.ganancia == null ? "–" : eur(Math.round(sel.ganancia), true).replace(/,00(?=\s?€)/, "")}</Cifra>
                 <Cifra label="Últ. sesión" color={colorDe(sel.hoy)} sub={`${pct(sel.hoyPct)}${ultimaFecha ? ` · ${fechaCorta(ultimaFecha)}` : ""}`}>{eur(Math.round(sel.hoy), true).replace(/,00(?=\s?€)/, "")}</Cifra>
               </div>
-            }
-            reparto={!nivel.e && <div className="mt-3"><Reparto grupos={a.porEntidad} total={a.total} /></div>} />
-
-          <QueHaMovido a={a} periodo={periodo} partes={partesMov} filasPorId={filasPorId} ai={ai} aiOn={aiOn}
-            control={!nivel.e && a.porEntidad.length > 1 && <Seg ariaLabel="Desglosar por" value={desglose} onChange={setDesglose} options={[{ v: "entidad", l: "Plataformas" }, { v: "producto", l: "Productos" }]} />}
-            onElegir={(x) => (x.pos ? (nivel.id === x.pos ? setAbierta(x.pos) : setNivel({ e: entidadDe(filasPorId[x.pos].p), id: x.pos })) : setNivel({ e: x.entidad, id: null }))} />
-          <FrenteMercado a={a} ids={selIds} periodo={periodo} referencia={referencia} setReferencia={setReferencia} />
-          <Destacados a={a} ids={selIds} periodo={periodo} filas={selFilas} datos={datosA} onFecha={setAbierta} onBuscar={setEditando} />
+            } />
+          {!nivel.id && <Reparto filas={selFilas} datos={datosA} />}
 
           <div className="flex flex-wrap items-center justify-between gap-2">
             <Seg ariaLabel="Agrupar por" value={vista} onChange={setVista} options={[{ v: "entidad", l: "Por plataforma" }, { v: "tipo", l: "Por tipo" }]} />
@@ -745,6 +719,12 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
           {(vista === "entidad" ? a.porEntidad : a.porTipo)
             .map((g) => (nivel.e ? { ...g, filas: g.filas.filter((f) => selFilas.includes(f)) } : g)).filter((g) => g.filas.length)
             .map((g, _i, todos) => <Grupo key={g.nombre} g={g} solo={todos.length === 1} datos={datosA} onAbrir={setAbierta} nota={vista === "entidad" && g.nombre === entidadRobo ? notaRobo : null} />)}
+
+          <QueHaMovido a={a} periodo={periodo} partes={partesMov} filasPorId={filasPorId} ai={ai} aiOn={aiOn}
+            control={!nivel.e && a.porEntidad.length > 1 && <Seg ariaLabel="Desglosar por" value={desglose} onChange={setDesglose} options={[{ v: "entidad", l: "Plataformas" }, { v: "producto", l: "Productos" }]} />}
+            volver={nivel.e && !nivel.id ? { a: "todas las plataformas", aqui: nivel.e, onClick: () => setNivel({ e: null, id: null }) } : null}
+            onElegir={(x) => (x.pos ? setAbierta(x.pos) : setNivel({ e: x.entidad, id: null }))} />
+          <Destacados a={a} ids={selIds} periodo={periodo} filas={selFilas} datos={datosA} onFecha={setAbierta} onBuscar={setEditando} />
 
           <details className="rounded-2xl border bg-white px-4 py-3 text-sm" style={{ borderColor: C.line }}>
             <summary className="cursor-pointer font-semibold">¿Cómo se calcula?</summary>

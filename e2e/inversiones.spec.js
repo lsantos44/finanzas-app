@@ -58,9 +58,9 @@ test("la pestaña Inversiones valora, agrupa, resuelve ISIN y abre el detalle", 
   await expect(page.getByText("El gráfico aparecerá cuando lleguen los precios.")).toHaveCount(0);
   // La ganancia de una plataforma es desde que compraste (valor − invertido), no lo que han subido
   // sus acciones en el año: el bróker de prueba pierde aunque Coherent suba en el periodo.
-  const plataforma = page.getByLabel("Plataforma");
+  const plataforma = page.getByRole("combobox", { name: "Plataforma" });
   await plataforma.selectOption("Bróker");
-  await expect(page.getByRole("heading", { name: "Tú frente al mercado" })).toBeVisible();
+  await expect(page.getByLabel("Comparar con")).toBeVisible();
   await expect(page.getByText(/-105\s?€/).first()).toBeVisible();
   await expect(page.getByText(/-10,5\d\s?%/).first()).toBeVisible();
   // «Total» = la plusvalía (valor − invertido); un periodo cuenta desde que entraste si fue después.
@@ -69,22 +69,30 @@ test("la pestaña Inversiones valora, agrupa, resuelve ISIN y abre el detalle", 
   await page.getByRole("button", { name: "1A", exact: true }).click();
   await expect(page.getByText(/desde que entraste \(10 feb\)/).first()).toBeVisible();
   await page.getByLabel("Producto").selectOption("cohr");
-  // En %, con la línea del índice; y «Tú frente al mercado» con el mismo dinero en MSCI World.
-  await page.getByRole("button", { name: "%", exact: true }).click();
-  await expect(page.getByText(/– – MSCI World:/)).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Tú frente al mercado" })).toBeVisible();
-  await expect(page.getByText(/por (delante|detrás) de MSCI World/)).toBeVisible();
-  await page.getByRole("button", { name: "€", exact: true }).click();
+  // Frente al mercado, en la misma tarjeta: el mismo dinero en MSCI World.
+  await expect(page.getByLabel("Comparar con")).toHaveValue("IWDA.AS");
+  await expect(page.getByText(/vas .* por (delante|detrás)/).first()).toBeVisible();
   await plataforma.selectOption("");
   await expect(page.getByText("Lo destacable")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Dónde está tu dinero" })).toBeVisible();
+  // «Qué explica tu resultado»: bajar a una plataforma, volver; un producto abre su ficha.
+  const explica = page.getByRole("heading", { name: /Qué explica tu resultado/ }).locator("xpath=ancestor::div[contains(@class,'rounded-2xl')][1]");
+  await explica.getByRole("button", { name: /^Bróker/ }).click();
+  await expect(page.getByRole("combobox", { name: "Plataforma" })).toHaveValue("Bróker");
+  await expect(page.getByRole("heading", { name: /Qué explica tu resultado · Bróker/ })).toBeVisible();
+  await explica.getByRole("button", { name: /^Coherent/ }).click();
+  await expect(page.getByText("Precio medio de compra")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Volver a todas las plataformas" }).click();
+  await expect(page.getByRole("combobox", { name: "Plataforma" })).toHaveValue("");
   // Las plataformas salen plegadas; al abrir una se ven sus productos.
   await expect(page.getByText(/Tu aportación mensual a esta cartera/)).toHaveCount(0);
-  await page.getByRole("button", { name: /^Roboadvisor/ }).last().click();
+  await page.getByRole("button", { name: /^Roboadvisor/ }).first().click();
   // Aportación periódica detectada y aplicada con un toque.
   await expect(page.getByText(/Tu aportación mensual a esta cartera/)).toBeVisible();
   await page.getByRole("button", { name: "Sí, usarla" }).click();
   await expect(page.getByText(/Aportación automática de/)).toBeVisible();
-  await page.getByRole("button", { name: /^Bróker/ }).last().click();
+  await page.getByRole("button", { name: /^Bróker/ }).first().click();
   await page.getByRole("button", { name: /^Coherent/ }).last().click();
   await expect(page.getByText("Precio medio de compra")).toBeVisible();
   // Coherent cotiza en dólares: precio de hoy en euros y en dólares, y lo que va por acción.
@@ -125,15 +133,12 @@ test("captura visual (solo con CAPTURAS)", async ({ page }) => {
   const dir = process.env.CAPTURAS;
   await page.screenshot({ path: `${dir}/tab-${test.info().project.name}.png`, fullPage: true });
   await page.getByRole("button", { name: "Total", exact: true }).click();
-  await page.getByRole("button", { name: "%", exact: true }).click();
   await page.waitForTimeout(300);
-  await page.getByRole("button", { name: "%", exact: true }).locator("xpath=ancestor::div[contains(@class,'rounded-2xl')][1]").screenshot({ path: `${dir}/pct-${test.info().project.name}.png` });
-  await page.getByRole("button", { name: "€", exact: true }).click();
-  await page.getByLabel("Plataforma").selectOption("Bróker");
+  await page.getByRole("combobox", { name: "Plataforma" }).selectOption("Bróker");
   await page.waitForTimeout(400);
   await page.screenshot({ path: `${dir}/filtro-broker-${test.info().project.name}.png` });
-  await page.getByLabel("Plataforma").selectOption("");
-  await page.getByRole("button", { name: /^Bróker/ }).last().click();
+  await page.getByRole("combobox", { name: "Plataforma" }).selectOption("");
+  await page.getByRole("button", { name: /^Bróker/ }).first().click();
   await page.getByRole("button", { name: /^Coherent/ }).last().click();
   await page.getByText("Precio medio de compra").waitFor();
   await page.waitForTimeout(500);

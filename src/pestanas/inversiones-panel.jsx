@@ -1,8 +1,8 @@
 import { C, aiExplicarInversiones, fmtE0, nfNum, tnum } from "../core.js";
 import { Btn, Card, Seg } from "../ui/comunes.jsx";
 import { REFERENCIAS, curvaDe, curvaReferencia, destacadosPeriodo, divisaDe, indiceEn, resultadoPeriodo, sumarDias } from "../inversiones.js";
-import { AlertTriangle, Coins, Flag, PieChart, RefreshCw, Sparkles, TrendingUp } from "lucide-react";
-import { Area, CartesianGrid, ComposedChart, Line, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { AlertTriangle, Coins, Flag, PieChart as IconoTarta, RefreshCw, Sparkles, TrendingUp } from "lucide-react";
+import { Area, CartesianGrid, Cell, ComposedChart, Line, Pie, PieChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useMemo, useState } from "react";
 
 /* ============================================================
@@ -34,6 +34,8 @@ export const eur0 = (v, signo = true) => (v == null || !isFinite(v) ? "–" : `$
 export const colorDe = (v) => (v == null || Math.abs(v) < 1e-9 ? C.muted : v > 0 ? C.income : C.expense);
 export const fechaCorta = (f) => (f ? new Date(f + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "short" }) : "");
 export const fechaLarga = (f) => (f ? new Date(f + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "long", year: "numeric" }) : "");
+// Colores de las series: distinguibles en claro y en oscuro (los mismos que el resto de la pestaña).
+const PALETA = ["#2F7DE1", "#16A34A", "#E0A100", "#8B5CF6", "#E5484D", "#0EA5A4", "#EA6A2A", "#64748B"];
 const ejeY = (v) => (Math.abs(v) >= 10000 ? nfNum.format(Math.round(v / 1000)) + "k" : nfNum.format(Math.round(v)));
 
 // Dónde empieza el periodo en la serie: el último cierre en o antes de su primer día (−1 = todo).
@@ -75,13 +77,11 @@ export const textoPeriodo = (per, periodo) => {
 };
 
 /* ---------- La tarjeta principal: valor, resultado del periodo y el gráfico ---------- */
-export function Panel({ a, ids, nombre, periodo, setPeriodo, referencia, cifras, reparto, accion, vacio }) {
-  const [modo, setModo] = useState("eur");
+export function Panel({ a, ids, nombre, periodo, setPeriodo, referencia, setReferencia, cifras, accion, vacio }) {
   const [sobre, setSobre] = useState(null); // índice del día que señalas en el gráfico
   const per = usePeriodo(a, ids, periodo);
   const ref = useMemo(() => (referencia ? curvaReferencia(per.serie, per.idsG, a.contribuciones, a.datos, referencia, per.i0 < 0) : null), [per.serie, per.i0, per.idsG.join(), referencia, a]); // eslint-disable-line react-hooks/exhaustive-deps
   const resRef = ref ? resultadoPeriodo(ref, per.i0) : null;
-  const nomRef = REFERENCIAS.find((r) => r.simbolo === referencia)?.nombre;
 
   const off = Math.max(0, per.i0);
   const datos = useMemo(() => {
@@ -90,12 +90,7 @@ export function Panel({ a, ids, nombre, periodo, setPeriodo, referencia, cifras,
     for (let i = per.iVer; i < per.serie.length; i++) {
       if ((i - per.iVer) % paso && i !== per.serie.length - 1) continue;
       const k = i - off;
-      out.push({
-        i, d: per.serie[i].d, et: fechaCorta(per.serie[i].d),
-        v: per.curva.V[i], g: per.res.g[k] ?? null,
-        r: per.res.r[k] == null ? null : per.res.r[k] * 100,
-        ref: resRef?.r[k] == null ? null : resRef.r[k] * 100,
-      });
+      out.push({ i, d: per.serie[i].d, et: fechaCorta(per.serie[i].d), v: per.curva.V[i], g: per.res.g[k] ?? null, ref: resRef?.g[k] ?? null });
     }
     return out;
   }, [per, resRef, off]);
@@ -103,10 +98,12 @@ export function Panel({ a, ids, nombre, periodo, setPeriodo, referencia, cifras,
   const h = sobre != null ? datos.find((x) => x.i === sobre) : null;
   const gan = h ? per.res.g[h.i - off] : per.res.ganancia;
   const ganPct = h ? per.res.r[h.i - off] : per.res.pct;
+  const gRef = h ? h.ref : resRef?.ganancia;
   const valor = h ? h.v : per.curva.V[per.curva.V.length - 1] || 0;
   const color = colorDe(per.res.ganancia);
   const corto = per.puntos < 4;
   const mover = (st) => setSobre(st?.activePayload?.[0]?.payload?.i ?? null);
+  const dif = gan != null && gRef != null ? gan - gRef : null;
 
   return (
     <Card className="p-4">
@@ -115,11 +112,27 @@ export function Panel({ a, ids, nombre, periodo, setPeriodo, referencia, cifras,
           <div className="truncate text-xs font-medium text-slate-500">{nombre}{h ? ` · ${fechaLarga(h.d)}` : ""}</div>
           <div className="text-3xl font-semibold tracking-tight" style={tnum}>{fmtE0(valor)}</div>
           <div className="mt-0.5 text-sm font-medium" style={{ ...tnum, color: colorDe(gan) }}>
-            {eur0(gan)} ({pct(ganPct)}) <span className="font-normal text-slate-500">{h ? `hasta ese día, ${textoPeriodo(per, periodo)}` : textoPeriodo(per, periodo)}</span>
+            {eur0(gan)} ({pct(ganPct)}) <span className="font-normal text-slate-500">{h ? "hasta ese día" : textoPeriodo(per, periodo)}</span>
           </div>
         </div>
         {accion}
       </div>
+
+      {/* Frente al mercado, en una línea: el mismo dinero, los mismos días, en un índice. */}
+      {!corto && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-slate-500" style={tnum}>
+          <span className="inline-block w-4 border-t-2 border-dashed" style={{ borderColor: C.muted }} aria-hidden="true" />
+          <select aria-label="Comparar con" value={referencia} onChange={(e) => { setReferencia(e.target.value); guardarRef(e.target.value); }}
+            className="w-auto max-w-[9.5rem] rounded border-0 bg-transparent py-0 pl-0 pr-6 text-xs font-medium text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+            {REFERENCIAS.map((x) => <option key={x.simbolo} value={x.simbolo}>{x.nombre}</option>)}
+            <option value="">Sin comparar</option>
+          </select>
+          {referencia && (gRef == null ? <span>cargando…</span> : <>
+            <span style={{ color: colorDe(gRef) }}>{eur0(gRef)}</span>
+            {dif != null && Math.abs(dif) >= 1 && <span>· vas <strong style={{ color: colorDe(dif) }}>{fmtE0(Math.abs(dif))} {dif > 0 ? "por delante" : "por detrás"}</strong></span>}
+          </>)}
+        </div>
+      )}
 
       <div className="mt-3" style={{ height: 200 }} onMouseLeave={() => setSobre(null)}>
         {corto ? vacio : (
@@ -133,31 +146,66 @@ export function Panel({ a, ids, nombre, periodo, setPeriodo, referencia, cifras,
               </defs>
               <CartesianGrid vertical={false} stroke={C.line} />
               <XAxis dataKey="et" tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={{ stroke: C.line }} interval="preserveStartEnd" minTickGap={44} />
-              <YAxis orientation="right" tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={false} width={modo === "eur" ? 44 : 38} domain={["auto", "auto"]} tickFormatter={modo === "eur" ? ejeY : (v) => `${Math.round(v)}%`} />
+              <YAxis orientation="right" tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={false} width={44} domain={["auto", "auto"]} tickFormatter={ejeY} />
               <Tooltip content={() => null} cursor={{ stroke: C.lineStrong, strokeDasharray: "3 3" }} />
-              {modo === "pct" && <ReferenceLine y={0} stroke={C.lineStrong} />}
-              {modo === "eur" && <ReferenceLine y={0} stroke={C.lineStrong} />}
-              {modo === "eur" && <Area type="monotone" dataKey="g" stroke={color} strokeWidth={2} fill="url(#gradPanel)" baseValue={0} isAnimationActive={false} />}
-              {modo === "pct" && ref && <Line type="monotone" dataKey="ref" stroke={C.muted} strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls isAnimationActive={false} />}
-              {modo === "pct" && <Line type="monotone" dataKey="r" stroke={color} strokeWidth={2.25} dot={false} connectNulls isAnimationActive={false} />}
+              <ReferenceLine y={0} stroke={C.lineStrong} />
+              <Area type="monotone" dataKey="g" stroke={color} strokeWidth={2} fill="url(#gradPanel)" baseValue={0} isAnimationActive={false} />
+              {ref && <Line type="monotone" dataKey="ref" stroke={C.muted} strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls isAnimationActive={false} />}
             </ComposedChart>
           </ResponsiveContainer>
         )}
       </div>
 
-      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-        <Seg ariaLabel="Periodo" value={periodo} onChange={(v) => { setPeriodo(v); setSobre(null); }} options={PERIODOS} />
-        {!corto && <Seg ariaLabel="Ver en" value={modo} onChange={setModo} options={[{ v: "eur", l: "€" }, { v: "pct", l: "%" }]} />}
-      </div>
-      {!corto && modo === "pct" && ref && <p className="mt-1.5 text-[11px] text-slate-400" style={tnum}>– – {nomRef}: {pct(resRef?.pct)}</p>}
+      <div className="mt-2"><Seg ariaLabel="Periodo" value={periodo} onChange={(v) => { setPeriodo(v); setSobre(null); }} options={PERIODOS} /></div>
       {cifras}
-      {reparto}
+    </Card>
+  );
+}
+
+/* ---------- Reparto: dónde está tu dinero (plataforma, tipo o divisa) ---------- */
+export function Reparto({ filas, datos }) {
+  const [por, setPor] = useState("entidad");
+  const grupos = useMemo(() => {
+    const m = new Map();
+    for (const f of filas) {
+      const k = por === "entidad" ? f.p.entidad || "Sin entidad" : por === "tipo" ? (f.p.tipo === "accion" ? "Acciones y ETF" : f.p.robo ? "Fondos indexados" : "Fondos") : divisaDe(f.p, datos);
+      m.set(k, (m.get(k) || 0) + f.valor);
+    }
+    const total = [...m.values()].reduce((t, v) => t + v, 0);
+    return [...m.entries()].map(([nombre, valor]) => ({ nombre, valor, peso: total ? valor / total : 0 })).sort((x, y) => y.valor - x.valor).map((g, i) => ({ ...g, color: PALETA[i % PALETA.length] }));
+  }, [filas, datos, por]);
+  if (!grupos.length) return null;
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold">Dónde está tu dinero</h3>
+        <Seg ariaLabel="Repartir por" value={por} onChange={setPor} options={[{ v: "entidad", l: "Plataforma" }, { v: "tipo", l: "Tipo" }, { v: "divisa", l: "Divisa" }]} />
+      </div>
+      <div className="mt-3 flex items-center gap-4">
+        <div className="shrink-0" style={{ width: 112, height: 112 }} aria-hidden="true">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie data={grupos} dataKey="valor" nameKey="nombre" innerRadius={34} outerRadius={54} paddingAngle={grupos.length > 1 ? 2 : 0} stroke="none" isAnimationActive={false}>
+                {grupos.map((g) => <Cell key={g.nombre} fill={g.color} />)}
+              </Pie>
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+        <ul className="min-w-0 flex-1 space-y-1.5 text-sm">
+          {grupos.map((g) => (
+            <li key={g.nombre} className="flex items-start gap-1.5" style={tnum}>
+              <span className="mt-1.5 inline-block h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: g.color }} />
+              <span className="min-w-0"><span className="block leading-snug">{g.nombre}</span><span className="block text-xs text-slate-500"><strong className="text-slate-700">{pct(g.peso, false, 0)}</strong> · {fmtE0(g.valor)}</span></span>
+            </li>
+          ))}
+        </ul>
+      </div>
     </Card>
   );
 }
 
 /* ---------- Qué ha movido tu cartera: lo que suma o resta cada parte en el periodo ---------- */
-export function QueHaMovido({ a, partes, periodo, onElegir, ai, aiOn, filasPorId, control }) {
+export function QueHaMovido({ a, partes, periodo, onElegir, ai, aiOn, filasPorId, control, volver }) {
   const per = usePeriodo(a, partes.flatMap((x) => x.ids), periodo);
   const filas = useMemo(() => partes.map((x) => {
     const idsG = idsConCoste(a, x.ids, per.i0);
@@ -169,14 +217,19 @@ export function QueHaMovido({ a, partes, periodo, onElegir, ai, aiOn, filasPorId
     const desde = per.i0 >= 0 && !(c.V[per.i0] > 0) ? a.serie[iE]?.d : null;
     return { ...x, g: r.ganancia ?? 0, r: idsG.length ? r.pct : null, sinCoste: !idsG.length, desde };
   }).sort((x, y) => y.g - x.g), [partes, a.serie, per.i0]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (filas.length < 2) return null;
+  if (!filas.length) return null;
   const max = Math.max(...filas.map((x) => Math.abs(x.g)), 1);
   const total = per.res.ganancia;
   const p = PERIODOS.find((x) => x.v === periodo);
 
   return (
     <Card className="p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold">Qué explica tu resultado</h3>{control}</div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="flex min-w-0 items-center gap-1 text-sm font-semibold">
+          {volver && <button type="button" onClick={volver.onClick} className="rounded-md px-1 text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" aria-label={`Volver a ${volver.a}`}>‹</button>}
+          <span className="truncate">Qué explica tu resultado{volver ? ` · ${volver.aqui}` : ""}</span>
+        </h3>{control}
+      </div>
       <p className="mt-1 text-sm text-slate-600" style={tnum}>
         {periodo === "max" ? "En total" : p.largo.replace(/^./, (c) => c.toUpperCase())} {total >= 0 ? "has ganado" : "has perdido"} <strong style={{ color: colorDe(total) }}>{fmtE0(Math.abs(total || 0))}</strong>. Así se reparte:
       </p>
@@ -188,7 +241,7 @@ export function QueHaMovido({ a, partes, periodo, onElegir, ai, aiOn, filasPorId
                 {x.color && <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: x.color }} />}
                 <span className="truncate">{x.nombre}</span>
               </span>
-              <span className="shrink-0 font-semibold" style={{ ...tnum, color: colorDe(x.g) }}>{eur0(x.g)}</span>
+              <span className="flex shrink-0 items-center gap-1 font-semibold" style={{ ...tnum, color: colorDe(x.g) }}>{eur0(x.g)}<span className="text-slate-400" aria-hidden="true">›</span></span>
             </span>
             <span className="mt-1 flex items-center gap-2">
               <span className="h-1.5 flex-1 overflow-hidden rounded-full" style={{ background: C.line }} aria-hidden="true">
@@ -260,47 +313,6 @@ function TextoIA({ texto }) {
   );
 }
 
-/* ---------- Tú frente al mercado: el mismo dinero, los mismos días, en un índice ---------- */
-export function FrenteMercado({ a, ids, periodo, referencia, setReferencia }) {
-  const per = usePeriodo(a, ids, periodo);
-  const ref = useMemo(() => (referencia ? curvaReferencia(a.serie, per.idsG, a.contribuciones, a.datos, referencia, per.i0 < 0) : null), [a, per.i0, per.idsG.join(), referencia]); // eslint-disable-line react-hooks/exhaustive-deps
-  const r = ref ? resultadoPeriodo(ref, per.i0) : null;
-  const info = REFERENCIAS.find((x) => x.simbolo === referencia);
-  const dif = r?.ganancia != null && per.res.ganancia != null ? per.res.ganancia - r.ganancia : null;
-  return (
-    <Card className="p-4">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold">Tú frente al mercado</h3>
-        <select aria-label="Comparar con" value={referencia} onChange={(e) => { setReferencia(e.target.value); guardarRef(e.target.value); }}
-          className="min-w-0 rounded-lg border bg-white px-2 py-1 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ borderColor: C.line }}>
-          {REFERENCIAS.map((x) => <option key={x.simbolo} value={x.simbolo}>{x.nombre}</option>)}
-          <option value="">No comparar</option>
-        </select>
-      </div>
-      {!referencia ? <p className="mt-2 text-sm text-slate-500">Elige un índice para ver si lo estás haciendo mejor o peor que el mercado.</p>
-        : !r || r.ganancia == null ? <p className="mt-2 text-sm text-slate-500">Trayendo los precios de {info?.nombre}… (tu servidor los descarga la primera vez).</p> : (
-          <>
-            <div className="mt-3 grid grid-cols-2 gap-3">
-              <div className="rounded-xl border p-3" style={{ borderColor: C.line }}>
-                <div className="text-[11px] uppercase tracking-wide text-slate-500">Tú</div>
-                <div className="text-lg font-semibold" style={{ ...tnum, color: colorDe(per.res.ganancia) }}>{eur0(per.res.ganancia)}</div>
-                <div className="text-xs" style={{ ...tnum, color: colorDe(per.res.pct) }}>{pct(per.res.pct)}</div>
-              </div>
-              <div className="rounded-xl border p-3" style={{ borderColor: C.line }}>
-                <div className="truncate text-[11px] uppercase tracking-wide text-slate-500">En {info?.nombre}</div>
-                <div className="text-lg font-semibold" style={{ ...tnum, color: colorDe(r.ganancia) }}>{eur0(r.ganancia)}</div>
-                <div className="text-xs" style={{ ...tnum, color: colorDe(r.pct) }}>{pct(r.pct)}</div>
-              </div>
-            </div>
-            <p className="mt-2 text-sm" style={tnum}>
-              {Math.abs(dif) < 1 ? "Vas igual que el índice." : <>Vas <strong style={{ color: colorDe(dif) }}>{fmtE0(Math.abs(dif))} {dif > 0 ? "por delante" : "por detrás"}</strong> de {info?.nombre} {textoPeriodo(per, periodo)}.</>}
-            </p>
-            <p className="mt-1 text-[11px] text-slate-400">El mismo dinero, los mismos días, en un fondo indexado al {info?.nombre}.</p>
-          </>
-        )}
-    </Card>
-  );
-}
 export const referenciaInicial = leerRef;
 
 /* ---------- Lo destacable: frases cortas con lo que importa del periodo y de tu cartera ---------- */
@@ -324,7 +336,7 @@ export function Destacados({ a, ids, periodo, filas, datos, onFecha, onBuscar })
   if (filas.length > 4 && total) {
     const top = [...filas].sort((x, y) => y.valor - x.valor).slice(0, 3);
     const peso = top.reduce((t, f) => t + f.valor, 0) / total;
-    if (peso > 0.6) items.push({ icon: PieChart, color: C.accent, t: <>3 productos son el <strong>{pct(peso, false, 0)}</strong>: {top.map((f) => f.p.nombre).join(", ")}.</> });
+    if (peso > 0.6) items.push({ icon: IconoTarta, color: C.accent, t: <>3 productos son el <strong>{pct(peso, false, 0)}</strong>: {top.map((f) => f.p.nombre).join(", ")}.</> });
   }
   const sinFecha = filas.filter((f) => !f.compraConocida && !f.sinPrecio);
   if (sinFecha.length) items.push({ icon: AlertTriangle, color: C.muted, t: <>{sinFecha.length === 1 ? `«${sinFecha[0].p.nombre}»` : `${sinFecha.length} productos`} sin fecha de compra: cuentan como si los tuvieras desde antes. <button type="button" className="underline" onClick={() => onFecha(sinFecha[0].p.id)}>Poner fecha</button></> });
