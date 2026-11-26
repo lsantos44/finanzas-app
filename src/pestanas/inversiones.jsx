@@ -124,6 +124,17 @@ function Mini({ serie }) {
   );
 }
 
+// Importe en una divisa («89,50 US$»); los peniques británicos, como «p».
+const enDivisa = (v, div) => {
+  if (v == null) return "–";
+  if (div === "GBp" || div === "GBX") return `${v.toLocaleString("es-ES", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} p`;
+  try { return v.toLocaleString("es-ES", { style: "currency", currency: div, maximumFractionDigits: 2, minimumFractionDigits: 2 }); } catch { return `${v.toLocaleString("es-ES", { maximumFractionDigits: 2 })} ${div}`; }
+};
+// Precio de compra (medio) o de hoy: en la divisa de la acción si se saben los dos; si no, en euros
+// los dos (para que se puedan comparar).
+const nativos = (f) => f.precioMedioNativo != null && f.precioNativo != null;
+const precioEn = (f, compra) => (nativos(f) ? enDivisa(compra ? f.precioMedioNativo : f.precioNativo, f.divisa) : fmtE(compra ? f.precioMedio : f.precio));
+
 function FilaPosicion({ f, datos, onAbrir }) {
   return (
     <button type="button" onClick={() => onAbrir(f.p.id)} className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500">
@@ -133,6 +144,13 @@ function FilaPosicion({ f, datos, onAbrir }) {
           {f.sinPrecio ? <span style={{ color: C.expense }}>Sin precio automático</span>
             : <>{nfNum.format(Math.round(f.unidades * 1000) / 1000)} × {fmtE(f.precio)}{f.fechaPrecio ? ` · ${fechaCorta(f.fechaPrecio)}` : ""}</>}
         </div>
+        {/* Acciones: a cuánto compraste (precio medio) y a cuánto está, en su divisa si no es el euro. */}
+        {f.p.tipo === "accion" && !f.sinPrecio && f.precioMedio != null && (
+          <div className="truncate text-xs" style={tnum}>
+            <span className="text-slate-500">Compra </span>{precioEn(f, true)}<span className="text-slate-500"> → hoy </span>
+            <span style={{ color: colorDe(f.resultadoPct) }}>{precioEn(f, false)}</span>
+          </div>
+        )}
       </div>
       <Mini serie={serieEUR(f.p, datos)} />
       <div className="shrink-0 text-right">
@@ -180,6 +198,13 @@ function Detalle({ f, datos, onClose, onEditar, onBorrar, onFecha }) {
         <Cifra label="Ganas desde tu compra" color={colorDe(f.resultado)} sub={f.resultado == null ? "falta el coste" : pct(f.resultadoPct)}>{f.resultado == null ? "–" : eur(f.resultado, true)}</Cifra>
         <Cifra label="Peso en tu cartera">{pct(f.peso, false)}</Cifra>
       </div>
+      {f.precio != null && f.precioMedio != null && (
+        <div className="mt-4 flex items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-sm" style={{ borderColor: C.line, ...tnum }}>
+          <span><span className="block text-[11px] uppercase tracking-wide text-slate-500">Compraste a</span><span className="font-semibold">{precioEn(f, true)}</span></span>
+          <span className="text-slate-400" aria-hidden="true">→</span>
+          <span className="text-right"><span className="block text-[11px] uppercase tracking-wide text-slate-500">Hoy está a</span><span className="font-semibold" style={{ color: colorDe(f.resultadoPct) }}>{precioEn(f, false)}</span></span>
+        </div>
+      )}
       {/* Dos preguntas distintas: cómo te ha ido a ti (desde tu compra, con tu precio medio) y cómo
           ha ido el producto (su precio en cualquier periodo, lo tuvieras o no). */}
       <div className="mt-4 grid grid-cols-2 gap-3">
@@ -210,8 +235,9 @@ function Detalle({ f, datos, onClose, onEditar, onBorrar, onFecha }) {
         <dd className="text-right"><input id="inv-compra" type="date" value={f.p.compra || ""} max={dia(new Date())} onChange={(e) => onFecha(f.p.id, e.target.value || null)}
           className="rounded-md border px-1.5 py-0.5 text-sm" style={{ borderColor: f.p.compra ? C.line : C.expense }} />{!f.p.compra && <span className="block text-[11px]" style={{ color: C.expense }}>Pon la fecha de tu primera compra</span>}</dd>
         <dt className="text-slate-500">Participaciones</dt><dd className="text-right" style={tnum}>{nfNum.format(Math.round(f.unidades * 10000) / 10000)}</dd>
-        <dt className="text-slate-500">Precio ({fechaLarga(f.fechaPrecio) || "sin datos"})</dt><dd className="text-right" style={tnum}>{f.precio == null ? "–" : fmtE(f.precio)}{div !== "EUR" ? ` (en ${div})` : ""}</dd>
-        <dt className="text-slate-500">Coste medio por participación</dt><dd className="text-right" style={tnum}>{f.precioMedio == null ? "–" : fmtE(f.precioMedio)}</dd>
+        <dt className="text-slate-500">Precio hoy ({fechaLarga(f.fechaPrecio) || "sin datos"})</dt><dd className="text-right" style={tnum}>{f.precio == null ? "–" : fmtE(f.precio)}{div !== "EUR" && f.precioNativo != null ? ` · ${enDivisa(f.precioNativo, div)}` : ""}</dd>
+        <dt className="text-slate-500">Precio medio de compra</dt><dd className="text-right" style={tnum}>{f.precioMedio == null ? "–" : fmtE(f.precioMedio)}{div !== "EUR" && f.precioMedioNativo != null ? ` · ${enDivisa(f.precioMedioNativo, div)}` : ""}</dd>
+        {f.precio != null && f.precioMedio != null && <><dt className="text-slate-500">Diferencia por {f.p.tipo === "accion" ? "acción" : "participación"}</dt><dd className="text-right" style={{ ...tnum, color: colorDe(f.precio - f.precioMedio) }}>{eur(f.precio - f.precioMedio, true)} ({pct(f.precio / f.precioMedio - 1)})</dd></>}
         <dt className="text-slate-500">Invertido</dt><dd className="text-right" style={tnum}>{f.coste == null ? "–" : fmtE(f.coste)}{f.aportado ? ` (${fmtE0(f.aportado)} en aportaciones)` : ""}</dd>
       </dl>
       {f.error && <p className="mt-3 text-xs" style={{ color: C.expense }}>No se pudo actualizar el precio: {f.error}. Edita la posición para elegir otra cotización.</p>}

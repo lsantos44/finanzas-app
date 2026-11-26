@@ -86,7 +86,10 @@ test("la pestaña Inversiones valora, agrupa, resuelve ISIN y abre el detalle", 
   await expect(page.getByText(/Aportación automática de/)).toBeVisible();
   await page.getByRole("button", { name: /^Bróker/ }).last().click();
   await page.getByRole("button", { name: /^Coherent/ }).last().click();
-  await expect(page.getByText("Coste medio por participación")).toBeVisible();
+  await expect(page.getByText("Precio medio de compra")).toBeVisible();
+  // Coherent cotiza en dólares: precio de hoy en euros y en dólares, y lo que va por acción.
+  await expect(page.getByText(/196,24\s?US\$/).first()).toBeVisible();
+  await expect(page.getByText("Diferencia por acción")).toBeVisible();
   await expect(page.getByText("Tu precio medio", { exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   // En Resumen, la tarjeta de inversiones con el valor y lo que ganas o pierdes.
@@ -132,7 +135,7 @@ test("captura visual (solo con CAPTURAS)", async ({ page }) => {
   await page.getByLabel("Plataforma").selectOption("");
   await page.getByRole("button", { name: /^Bróker/ }).last().click();
   await page.getByRole("button", { name: /^Coherent/ }).last().click();
-  await page.getByText("Coste medio por participación").waitFor();
+  await page.getByText("Precio medio de compra").waitFor();
   await page.waitForTimeout(500);
   await page.screenshot({ path: `${dir}/detalle-${test.info().project.name}.png` });
 });

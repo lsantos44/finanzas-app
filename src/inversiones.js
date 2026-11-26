@@ -39,6 +39,16 @@ export function aEuros(precio, divisa, fecha, datos) {
   return fx ? precio / f / fx : null;
 }
 
+// Al revés: de euros a la divisa en que cotiza, con el cambio de ese día.
+export function deEuros(eur, divisa, fecha, datos) {
+  if (eur == null) return null;
+  if (!divisa || divisa === "EUR") return eur;
+  let d = divisa, f = 1;
+  if (divisa === "GBp" || divisa === "GBX") { d = "GBP"; f = 100; }
+  const fx = cierreEn(datos?.series?.[`EUR${d}=X`], fecha);
+  return fx ? eur * fx * f : null;
+}
+
 export function precioEUR(p, fecha, datos) {
   if (!p.simbolo) return null;
   return aEuros(cierreEn(datos?.series?.[p.simbolo], fecha), divisaDe(p, datos), fecha, datos);
@@ -193,7 +203,21 @@ export function analizarInversiones(inv, datos, movs) {
     const precioAnt = s.length > 1 ? s[s.length - 2][1] : null;
     const valor = sinPrecio ? (p.valorAlta || 0) : unidades * precio;
     const hoy = precio != null && precioAnt != null ? unidades * (precio - precioAnt) : null;
+    // En su divisa (dólares de una acción de EE. UU.), como lo enseña tu bróker: el precio de hoy
+    // tal cual, y el de compra pasando cada compra a esa divisa con el cambio de su día. Solo si se
+    // sabe cuándo compraste (con lo de hoy «desde antes» no hay cambio con el que pasarlo).
+    const div = divisaDe(p, datos);
+    let precioNativo = null, precioMedioNativo = null;
+    if (div !== "EUR" && !sinPrecio) {
+      precioNativo = cierreEn(datos?.series?.[p.simbolo], "9999-12-31");
+      const compras = ls.filter((l) => l.unidades > 0 && l.coste > 0);
+      if (coste != null && unidades > 0 && compras.length && compras.every((l) => l.fecha > "0000-00-00") && !ls.some((l) => l.venta)) {
+        const nat = compras.map((l) => deEuros(l.coste, div, l.fecha, datos));
+        if (nat.every((x) => x != null)) precioMedioNativo = nat.reduce((t, x) => t + x, 0) / unidades;
+      }
+    }
     return {
+      divisa: div, precioNativo, precioMedioNativo,
       p, unidades, precio, valor, coste, aportado, sinPrecio, entrada, compraConocida: Boolean(p.compra || opsValidas(p) || (p.robo && ls.length > 1 && ls[0].fecha < (p.alta || ""))),
       fechaPrecio: sinPrecio ? null : s[s.length - 1][0],
       hoy, hoyPct: precioAnt ? precio / precioAnt - 1 : null,
