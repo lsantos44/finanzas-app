@@ -113,7 +113,7 @@ function Mini({ serie }) {
   const s = serie.slice(-60).map(([d, v]) => ({ d, v }));
   const color = s[s.length - 1].v >= s[0].v ? C.income : C.expense;
   return (
-    <div style={{ height: 28, width: 72 }} aria-hidden="true">
+    <div style={{ height: 28, width: 52 }} aria-hidden="true">
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={s} margin={{ top: 2, right: 0, left: 0, bottom: 2 }}>
           <YAxis hide domain={["dataMin", "dataMax"]} />
@@ -140,19 +140,21 @@ function FilaPosicion({ f, datos, onAbrir }) {
     <button type="button" onClick={() => onAbrir(f.p.id)} className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500">
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm font-medium">{f.p.nombre}</div>
-        <div className="truncate text-xs text-slate-500" style={tnum}>
-          {f.sinPrecio ? <span style={{ color: C.expense }}>Sin precio automático</span>
-            : <>{nfNum.format(Math.round(f.unidades * 1000) / 1000)} × {fmtE(f.precio)}{f.fechaPrecio ? ` · ${fechaCorta(f.fechaPrecio)}` : ""}</>}
-        </div>
-        {/* Acciones: a cuánto compraste (precio medio) y a cuánto está, en su divisa si no es el euro. */}
-        {f.p.tipo === "accion" && !f.sinPrecio && f.precioMedio != null && (
-          <div className="truncate text-xs" style={tnum}>
-            <span className="text-slate-500">Compra </span>{precioEn(f, true)}<span className="text-slate-500"> → hoy </span>
-            <span style={{ color: colorDe(f.resultadoPct) }}>{precioEn(f, false)}</span>
+        {/* A cuánto compraste (precio medio por acción o participación; en fondos, el valor
+            liquidativo) y a cuánto está, en su divisa si no es el euro. Debajo, cuántas tienes. */}
+        {f.sinPrecio ? <div className="truncate text-xs" style={{ color: C.expense }}>Sin precio automático</div>
+          : f.precioMedio != null ? (
+            <div className="truncate text-xs" style={tnum}>
+              {precioEn(f, true)}<span className="text-slate-400"> → </span><span className="font-medium" style={{ color: colorDe(f.resultadoPct) }}>{precioEn(f, false)}</span>
+            </div>
+          ) : <div className="truncate text-xs" style={tnum}>{precioEn(f, false)}</div>}
+        {!f.sinPrecio && (
+          <div className="truncate text-[11px] text-slate-500" style={tnum}>
+            {nfNum.format(Math.round(f.unidades * 1000) / 1000)} {f.p.tipo === "accion" ? "acc." : "part."}{f.fechaPrecio ? ` · ${fechaCorta(f.fechaPrecio)}` : ""}
           </div>
         )}
       </div>
-      <Mini serie={serieEUR(f.p, datos)} />
+      <div className="hidden min-[380px]:block"><Mini serie={serieEUR(f.p, datos)} /></div>
       <div className="shrink-0 text-right">
         <div className="text-sm font-semibold" style={tnum}>{fmtE0(f.valor)}</div>
         {/* Lo que ganas o pierdes desde que lo compraste (como el total del grupo); sin coste, el último cambio. */}
