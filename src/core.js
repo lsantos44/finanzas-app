@@ -3166,6 +3166,30 @@ async function aiLeerCapturas(aiCfg, imagenes, nota = "") {
   return { entidad: (!Array.isArray(obj) && obj.entidad) || "", posiciones: lista.filter((x) => x && x.nombre) };
 }
 
+/* «¿Por qué se ha movido?»: la IA busca en la web las noticias que explican lo que han hecho tus
+   productos en un periodo. Solo se le envían nombres, identificadores y porcentajes; nunca
+   cuánto tienes ni cuánto ganas. Devuelve texto breve con viñetas (markdown sencillo). */
+const EXPLICAR_INV_PROMPT = [
+  "Eres un analista que explica a un inversor particular, en español claro y sin jerga, por qué se han movido sus inversiones.",
+  "Recibes un periodo y una lista de productos (acciones o fondos) con su variación de precio en ese periodo.",
+  "Busca en la web las noticias o hechos de ESE periodo que lo expliquen (resultados, guías, contratos, tipos de interés, sector, mercado en general).",
+  "Responde con: una frase de contexto de mercado y luego una viñeta por producto (\"- **Nombre** (+x %): motivo concreto\"), máximo 2 frases cada una.",
+  "Si no encuentras un motivo claro, dilo (\"sin noticias concretas; se movió con el sector/mercado\"). No inventes cifras ni des recomendaciones de compra o venta.",
+  "Máximo 180 palabras. Sin introducciones ni despedidas.",
+].join(" ");
+
+async function aiExplicarInversiones(aiCfg, { desde, hasta, items }) {
+  if (!items?.length) throw new Error("No hay productos que explicar.");
+  const lista = items.slice(0, 8).map((x) => `- ${x.nombre}${x.ticker ? ` [${x.ticker}]` : ""}${x.isin ? ` (ISIN ${x.isin})` : ""}, ${x.tipo === "accion" ? "acción" : "fondo"}: ${x.pct > 0 ? "+" : ""}${(x.pct * 100).toFixed(1).replace(".", ",")} %`).join("\n");
+  const user = `Periodo: del ${desde} al ${hasta}.\nProductos:\n${lista}`;
+  const web = aiSupportsWeb(aiCfg);
+  const webTools = web && (!aiCfg || aiCfg.provider === "claude") ? [{ type: "web_search_20250305", name: "web_search", max_uses: 4 }] : null;
+  const extra = web && esOpenRouter(aiCfg) ? { plugins: [{ id: "web", max_results: 5 }] } : null;
+  const { text } = await aiText(aiCfg, { system: EXPLICAR_INV_PROMPT, user, maxTokens: 2500, webTools, model: AI_MODEL.chat, extra });
+  if (!text) throw new Error("La IA no ha devuelto ninguna explicación.");
+  return { texto: text, conWeb: web };
+}
+
 // Chat con herramientas de datos: la IA decide qué consultar y la app lo ejecuta EN LOCAL.
 async function aiChatWithTools(aiCfg, { system, history, tools, runTool, onTrace, maxIter = 6, maxTokens = 3000 }) {
   const LIMIT_MSG = "He hecho demasiadas consultas seguidas sin llegar a una conclusión. Prueba a acotar la pregunta (periodo, categoría…).";
@@ -3782,6 +3806,7 @@ export {
   aiChatWithTools,
   aiProviderLabel,
   aiSupportsWeb,
+  aiExplicarInversiones,
   aiText,
   ambKey,
   ambiguousPatterns,

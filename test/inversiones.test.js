@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { analizarInversiones, aportacionesDe, cierreEn, precioEUR, unidadesBase, normalizarPosiciones, simbolosDe } from "../src/inversiones.js";
+import { analizarInversiones, curvaDe, curvaReferencia, destacadosPeriodo, indiceEn, resultadoPeriodo, aportacionesDe, cierreEn, precioEUR, unidadesBase, normalizarPosiciones, simbolosDe } from "../src/inversiones.js";
 
 const datos = {
   series: {
@@ -283,5 +283,68 @@ describe("ganas/pierdes en el tiempo", () => {
     const u = r.serie[r.serie.length - 1];
     expect(u.valorCC / u.invertido - 1).toBeCloseTo(r.resultadoPct, 10);
     expect(u.ccEntidad.Uno / u.invEntidad.Uno - 1).toBeCloseTo(r.porEntidad[0].resultadoPct, 10);
+  });
+});
+
+describe("resultado de un periodo, qué lo explica y frente al mercado (datos inventados)", () => {
+  const d = {
+    series: {
+      A: [["2026-01-02", 10], ["2026-02-02", 10], ["2026-03-02", 12], ["2026-04-01", 11]],
+      B: [["2026-01-02", 50], ["2026-02-02", 50], ["2026-03-02", 45], ["2026-04-01", 55]],
+      IDX: [["2026-01-02", 100], ["2026-02-02", 100], ["2026-03-02", 110], ["2026-04-01", 120]],
+    },
+    meta: { A: { divisa: "EUR" }, B: { divisa: "EUR" }, IDX: { divisa: "EUR" } },
+  };
+  const inv = { posiciones: [
+    { id: "a", nombre: "Fondo A", entidad: "X", tipo: "fondo", simbolo: "A", participaciones: 100, coste: 1000, alta: "2026-04-01", compra: "2026-01-02" },
+    { id: "b", nombre: "Acción B", entidad: "Y", tipo: "accion", simbolo: "B", participaciones: 20, coste: 1000, alta: "2026-04-01", compra: "2026-02-02" },
+  ] };
+  const r = analizarInversiones(inv, d, []);
+  const curva = curvaDe(r.serie, ["a", "b"]);
+
+  it("con «Todo» es la plusvalía: valor − invertido", () => {
+    const t = resultadoPeriodo(curva, -1);
+    expect(t.ganancia).toBeCloseTo(100 * 11 + 20 * 55 - 2000, 6);
+    expect(t.pct).toBeCloseTo((1100 + 1100) / 2000 - 1, 6);
+  });
+  it("en un periodo descuenta el dinero que entró (la compra de B no es ganancia)", () => {
+    const i0 = indiceEn(r.serie, "2026-01-31"); // empieza el 2 de enero
+    const t = resultadoPeriodo(curva, i0);
+    // A: de 1000 a 1100 (+100). B: compró 1000 € y vale 1100 (+100).
+    expect(t.ganancia).toBeCloseTo(200, 6);
+    const i1 = indiceEn(r.serie, "2026-03-02");
+    const u = resultadoPeriodo(curva, i1); // del 2 mar al 1 abr: A −100, B +200
+    expect(u.ganancia).toBeCloseTo(100, 6);
+    expect(u.pct).toBeCloseTo(100 / (1200 + 900), 6);
+  });
+  it("lo de cada producto suma el total", () => {
+    const i0 = indiceEn(r.serie, "2026-03-02");
+    const ga = resultadoPeriodo(curvaDe(r.serie, ["a"]), i0).ganancia, gb = resultadoPeriodo(curvaDe(r.serie, ["b"]), i0).ganancia;
+    expect(ga).toBeCloseTo(-100, 6); expect(gb).toBeCloseTo(200, 6);
+    expect(ga + gb).toBeCloseTo(resultadoPeriodo(curva, i0).ganancia, 6);
+  });
+  it("frente al índice: el mismo dinero, los mismos días", () => {
+    const ref = curvaReferencia(r.serie, ["a", "b"], r.contribuciones, d, "IDX");
+    const t = resultadoPeriodo(ref, -1);
+    // 1000 € el 2 ene a 100 (10 u) y 1000 € el 2 feb a 100 (10 u): 20 u × 120 = 2400.
+    expect(t.ganancia).toBeCloseTo(400, 6);
+    expect(curvaReferencia(r.serie, ["a"], r.contribuciones, d, "NO")).toBeNull();
+  });
+  it("lo destacable: el máximo alcanzado y el mejor y peor día", () => {
+    const res = resultadoPeriodo(curva, -1);
+    const x = destacadosPeriodo(r.serie, -1, res);
+    expect(x.max.d).toBe("2026-04-01");
+    expect(x.mejor.g).toBeCloseTo(100, 6); // +100 el 2 mar y +100 el 1 abr
+    expect(x.peor.g).toBeCloseTo(0, 6); // el día que entró B no se ganó ni perdió
+  });
+});
+
+describe("sin fecha de compra, un periodo no se apunta la ganancia de antes del alta", () => {
+  const d = { series: { A: [["2026-01-02", 10], ["2026-02-02", 12], ["2026-03-02", 12]] }, meta: { A: { divisa: "EUR" } } };
+  const inv = { posiciones: [{ id: "a", nombre: "A", entidad: "X", tipo: "fondo", simbolo: "A", participaciones: 100, coste: 900, alta: "2026-02-02" }] };
+  const r = analizarInversiones(inv, d, []);
+  it("en «Todo» es la plusvalía; en un periodo cuenta desde el alta con lo que valía", () => {
+    expect(resultadoPeriodo(curvaDe(r.serie, ["a"], true), -1).ganancia).toBeCloseTo(300, 6);
+    expect(resultadoPeriodo(curvaDe(r.serie, ["a"], false), indiceEn(r.serie, "2026-01-31")).ganancia).toBeCloseTo(0, 6);
   });
 });

@@ -221,7 +221,29 @@ export function analizarInversiones(inv, datos, movs) {
       flujos.set(f, o);
     }
   }
+  // Lo que pusiste en cada producto y cuándo (para el resultado de un periodo y para comparar con
+  // un índice): cada lote con su coste; sin coste conocido, con lo que valía al entrar.
+  const contribuciones = {};
+  const fechaConocida = (p, ls) => Boolean(p.compra || (p.robo && ls.length > 1 && ls[0].fecha < (p.alta || "")));
+  for (const p of posiciones) {
+    contribuciones[p.id] = [];
+    for (const l of lotes[p.id]) {
+      const f = fechas.find((x) => x >= l.fecha);
+      if (!f) continue;
+      const pr = precioEUR(p, f, datos) ?? primero[p.id];
+      const importe = p.coste != null ? l.coste : conAlgo.includes(p) ? l.unidades * (pr ?? 0) : l.base ? p.valorAlta || 0 : 0;
+      // Sin fecha de compra no se sabe cuándo se ganó lo ganado: en un periodo cuenta desde el alta,
+      // con lo que valía entonces (no con el coste); solo «Todo» usa el coste (la plusvalía).
+      const mercado = conAlgo.includes(p) ? l.unidades * (pr ?? 0) : l.base ? p.valorAlta || 0 : 0;
+      contribuciones[p.id].push({ f, fecha: l.fecha, importe, periodo: fechaConocida(p, lotes[p.id]) ? importe : mercado });
+    }
+  }
   const serie = fechas.map((f) => {
+    const cumPos = {}, cumPer = {};
+    for (const p of posiciones) {
+      cumPos[p.id] = contribuciones[p.id].reduce((t, c) => (c.f <= f ? t + c.importe : t), 0);
+      cumPer[p.id] = contribuciones[p.id].reduce((t, c) => (c.f <= f ? t + c.periodo : t), 0);
+    }
     const porPos = {}, porEntidad = {}, porEntidadBase = {}, porPosBase = {}, invPos = {}, invEntidad = {}, ccEntidad = {};
     let v = 0, inv2 = 0, vcc = 0;
     for (const p of posiciones) {
@@ -242,7 +264,7 @@ export function analizarInversiones(inv, datos, movs) {
         inv2 += ip; invPos[p.id] = ip; invEntidad[e] = (invEntidad[e] || 0) + ip;
       }
     }
-    return { d: f, valor: v, invertido: inv2, valorCC: vcc, ccEntidad, porPos, porEntidad, porEntidadBase, porPosBase, invPos, invEntidad, flujo: flujos.get(f)?.total || 0, flujoEntidad: flujos.get(f)?.porEntidad || {}, flujoPos: flujos.get(f)?.porPos || {} };
+    return { d: f, cumPos, cumPer, valor: v, invertido: inv2, valorCC: vcc, ccEntidad, porPos, porEntidad, porEntidadBase, porPosBase, invPos, invEntidad, flujo: flujos.get(f)?.total || 0, flujoEntidad: flujos.get(f)?.porEntidad || {}, flujoPos: flujos.get(f)?.porPos || {} };
   });
 
   // Lo que más se ha movido en su último cambio.
@@ -255,11 +277,90 @@ export function analizarInversiones(inv, datos, movs) {
     sinCoste: filas.filter((f) => f.coste == null).length,
     porEntidad: agrupar((f) => f.p.entidad || "Sin entidad"),
     porTipo: agrupar((f) => (f.p.tipo === "accion" ? "Acciones" : f.p.robo ? "Fondos indexados" : "Fondos")),
-    aportes, serie, movidos,
+    aportes, serie, movidos, contribuciones, datos,
     ytd: serie.length > 1 ? rentabilidadTWR(serie, { desde: `${serie[serie.length - 1].d.slice(0, 4) - 1}-12-31` }).r : null,
     horaAcciones: filas.reduce((mx, f) => (f.p.tipo === "accion" && f.mercado > mx ? f.mercado : mx), 0),
     fechaPrecios: filas.reduce((mx, f) => (f.fechaPrecio && f.fechaPrecio > mx ? f.fechaPrecio : mx), ""),
   };
+}
+
+/* ---------- Resultado de un periodo, por producto, y comparación con un índice ----------
+   Ganancia de un periodo = valor al final − valor al principio − lo que pusiste entre medias.
+   En % se divide entre (valor al principio + lo que pusiste): sin aportaciones es la variación
+   simple; desde el principio («Todo») es valor ÷ invertido − 1, como tu entidad. */
+
+// Índices para comparar: fondos cotizados en euros que replican cada índice, con historial en Yahoo.
+export const REFERENCIAS = [
+  { simbolo: "IWDA.AS", nombre: "MSCI World", desc: "bolsa mundial" },
+  { simbolo: "SXR8.DE", nombre: "S&P 500", desc: "grandes empresas de EE. UU." },
+  { simbolo: "SXRV.DE", nombre: "Nasdaq 100", desc: "tecnológicas de EE. UU." },
+  { simbolo: "EXSA.DE", nombre: "STOXX Europe 600", desc: "bolsa europea" },
+];
+
+// Índice del último punto de la serie en esa fecha o antes (−1 si es anterior a todo).
+export function indiceEn(serie, fecha) {
+  let r = -1;
+  for (let i = 0; i < serie.length; i++) { if (serie[i].d <= fecha) r = i; else break; }
+  return r;
+}
+
+// Valor (V) y lo puesto hasta cada día (P) de un conjunto de productos. `todo`: desde el principio
+// (lo puesto es el coste, para que el resultado sea la plusvalía); si no, para un periodo.
+export function curvaDe(serie, ids, todo = true) {
+  const k = todo ? "cumPos" : "cumPer";
+  return {
+    V: serie.map((pt) => ids.reduce((t, id) => t + (pt.porPos?.[id] || 0), 0)),
+    P: serie.map((pt) => ids.reduce((t, id) => t + (pt[k]?.[id] || 0), 0)),
+  };
+}
+
+/* Lo mismo para una cartera imaginaria: el mismo dinero, los mismos días, en el índice. Así se
+   compara de verdad lo que has hecho con «haberlo puesto todo en el índice». */
+export function curvaReferencia(serie, ids, contribuciones, datos, simbolo, todo = true) {
+  const idx = { simbolo, divisa: datos?.meta?.[simbolo]?.divisa || "EUR" };
+  if (!(datos?.series?.[simbolo] || []).length) return null;
+  const compras = [];
+  for (const id of ids) for (const c of contribuciones?.[id] || []) {
+    const pr = precioEUR(idx, c.f, datos);
+    const imp = todo ? c.importe : c.periodo;
+    if (pr && imp) compras.push({ f: c.f, u: imp / pr, importe: imp });
+  }
+  const V = [], P = [];
+  for (const pt of serie) {
+    let u = 0, pu = 0;
+    for (const c of compras) if (c.f <= pt.d) { u += c.u; pu += c.importe; }
+    const pr = precioEUR(idx, pt.d, datos);
+    V.push(pr ? u * pr : null); P.push(pu);
+  }
+  return { V, P };
+}
+
+// Ganancia y % del periodo que empieza en i0 (−1: desde el principio), día a día y al final.
+export function resultadoPeriodo({ V, P }, i0) {
+  const V0 = i0 >= 0 ? V[i0] ?? 0 : 0, P0 = i0 >= 0 ? P[i0] ?? 0 : 0;
+  const g = [], r = [];
+  for (let i = Math.max(0, i0); i < V.length; i++) {
+    if (V[i] == null) { g.push(null); r.push(null); continue; }
+    const gi = V[i] - V0 - (P[i] - P0), base = V0 + (P[i] - P0);
+    g.push(gi); r.push(base > 0 ? gi / base : null);
+  }
+  return { g, r, ganancia: g.length ? g[g.length - 1] : null, pct: r.length ? r[r.length - 1] : null, puesto: (P[P.length - 1] ?? 0) - P0, inicio: V0 };
+}
+
+// Lo destacable de un periodo: mejor y peor día, el máximo alcanzado y dónde estás respecto a él.
+export function destacadosPeriodo(serie, i0, res) {
+  const off = Math.max(0, i0);
+  let mejor = null, peor = null, max = null;
+  for (let k = 0; k < res.g.length; k++) {
+    if (res.g[k] == null) continue;
+    if (!max || res.g[k] > max.g) max = { d: serie[off + k].d, g: res.g[k] };
+    if (k > 0 && res.g[k - 1] != null) {
+      const dg = res.g[k] - res.g[k - 1];
+      if (!mejor || dg > mejor.g) mejor = { d: serie[off + k].d, g: dg };
+      if (!peor || dg < peor.g) peor = { d: serie[off + k].d, g: dg };
+    }
+  }
+  return { mejor, peor, max };
 }
 
 // Símbolos que el servidor tiene que seguir.
