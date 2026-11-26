@@ -38,7 +38,8 @@ test("importar el archivo del bróker: vista previa, cartera exacta y Renta", as
   expect(inv.posiciones.find((p) => p.isin === "US0000000001")).toMatchObject({ participaciones: 3, coste: 361.2, compra: "2026-03-03" });
   // Renta: la venta de 12 a 1.558 € que costaron 1.002 + 2/5 × 602 = 1.242,80 → +315,20 €
   await page.getByRole("button", { name: "Impuestos (Renta)" }).click();
-  await expect(page.getByText("Renta 2026: tus ventas")).toBeVisible();
+  await expect(page.getByText("¿Tengo que declararlo?")).toBeVisible();
+  await expect(page.getByText("Tus ventas de 2026")).toBeVisible();
   await expect(page.getByText("+315 €").first()).toBeVisible();
   await expect(page.getByRole("button", { name: /Descargar para tu gestor/ })).toBeVisible();
   await expect(page.getByText("Si vendieras hoy")).toBeVisible();
@@ -52,7 +53,7 @@ test("la cartera de ejemplo funciona sin servidor y se puede quitar", async ({ p
   await expect(page.getByRole("heading", { name: "Qué explica tu resultado" })).toBeVisible();
   await expect(page.getByText("Sin precio automático")).toHaveCount(0);
   await page.getByRole("button", { name: "Impuestos (Renta)" }).click();
-  await expect(page.getByText(/Renta \d{4}: tus ventas/)).toBeVisible();
+  await expect(page.getByText(/Tus ventas de \d{4}/)).toBeVisible();
   await page.getByRole("button", { name: "Tu cartera" }).click();
   await page.getByRole("button", { name: "Quitar", exact: true }).click();
   await expect(page.getByText("Todas tus inversiones, en un solo sitio")).toBeVisible();

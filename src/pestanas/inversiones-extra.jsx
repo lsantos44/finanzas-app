@@ -1,7 +1,7 @@
-import { C, decodeBuffer, detectDelimiter, fmtE, fmtE0, isSpreadsheetFile, nfNum, spreadsheetToRows, tnum, tokenizeCSV } from "../core.js";
+import { C, decodeBuffer, detectDelimiter, fmtE0, isSpreadsheetFile, nfNum, spreadsheetToRows, tnum, tokenizeCSV } from "../core.js";
 import { Btn, Card, Modal } from "../ui/comunes.jsx";
 import { leerOperaciones, posicionesDeOperaciones } from "../inversiones-import.js";
-import { csvVentas, impuestoAhorro, resumenAnual, simularVentas, ventasFIFO } from "../fiscal-inversiones.js";
+import { csvVentas, modelo720, resumenAnual, simularVentas, ventasFIFO } from "../fiscal-inversiones.js";
 import { AlertTriangle, Camera, Download, FileSpreadsheet, Lightbulb, Plus, Sparkles, Upload } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 
@@ -9,7 +9,6 @@ import { useMemo, useRef, useState } from "react";
    INVERSIONES · importar el archivo del bróker, Renta y primer uso
    ============================================================ */
 
-const pct = (v) => (v == null || !isFinite(v) ? "–" : `${v > 0 ? "+" : ""}${(v * 100).toLocaleString("es-ES", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} %`);
 const eur0 = (v) => (v == null || !isFinite(v) ? "–" : `${v > 0.5 ? "+" : ""}${fmtE0(v)}`);
 const colorDe = (v) => (v == null || Math.abs(v) < 0.5 ? C.muted : v > 0 ? C.income : C.expense);
 const fechaCorta = (f) => (f ? new Date(f + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "2-digit" }) : "");
@@ -31,7 +30,7 @@ async function filasDeArchivo(file) {
 }
 
 /* ---------- Importar el archivo de operaciones ---------- */
-export function ImportarArchivo({ entidades, onImportar, onClose, onCapturas }) {
+export function ImportarArchivo({ entidades, onImportar, onClose, onCapturas, onPegar }) {
   const [leido, setLeido] = useState(null);
   const [err, setErr] = useState(null);
   const [entidad, setEntidad] = useState("");
@@ -78,7 +77,8 @@ export function ImportarArchivo({ entidades, onImportar, onClose, onCapturas }) 
               {COMO_DESCARGAR.map((x) => <div key={x.b}><dt className="font-medium">{x.b}</dt><dd className="text-slate-600">{x.t}</dd></div>)}
             </dl>
             <p className="mt-3 text-xs text-slate-500">Mejor el histórico completo (desde tu primera compra): así salen bien lo que te costó cada cosa y las ganancias de cada venta. Si lo vuelves a importar más adelante, se actualiza sin duplicar.
-              {onCapturas && <> ¿Tu entidad no deja exportar? <button type="button" className="underline" onClick={onCapturas}>Usa capturas de pantalla</button>.</>}</p>
+              {onCapturas && <> ¿Tu entidad no deja exportar? <button type="button" className="underline" onClick={onCapturas}>Usa capturas de pantalla</button>.</>}
+              {onPegar && <> Si tienes una lista en JSON, <button type="button" className="underline" onClick={onPegar}>pégala</button>.</>}</p>
           </div>
         </div>
       ) : (
@@ -129,51 +129,72 @@ export function Renta({ inv, filas, datos, onImportar }) {
   const anios = [...new Set([hoyA, ...ventas.map((v) => Number(v.fecha.slice(0, 4)))])].sort((a, b) => b - a);
   const [anio, setAnio] = useState(hoyA);
   const r = useMemo(() => resumenAnual(ventas, anio), [ventas, anio]);
-  const sim = useMemo(() => simularVentas(filas, resumenAnual(ventas, hoyA)?.base || 0), [filas, ventas, hoyA]);
+  const baseHoy = useMemo(() => resumenAnual(ventas, hoyA)?.base || 0, [ventas, hoyA]);
+  const sim = useMemo(() => simularVentas(filas, baseHoy), [filas, baseHoy]);
+  const m720 = useMemo(() => modelo720(filas), [filas]);
   const conOps = inv.posiciones.some((p) => p.ops?.length);
   const descargar = () => {
-    const blob = new Blob(["﻿" + csvVentas(r.ventas)], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob(["\ufeff" + csvVentas(r.ventas)], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob); a.download = `ventas-inversiones-${anio}.csv`; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   };
+  const pagar = r ? Math.max(0, r.impuesto - r.retenciones) : 0;
 
   return (
     <div className="space-y-4">
-      {!conOps && (
+      {/* Lo primero que la gente pregunta: ¿tengo que declarar algo? */}
+      <Card className="p-4">
+        <h3 className="text-sm font-semibold">¿Tengo que declararlo?</h3>
+        <ul className="mt-2 space-y-2 text-sm text-slate-700">
+          <li><strong>Lo que tienes, no. Lo que vendes, sí</strong>: cada venta o reembolso va en la Renta del año siguiente (la de {hoyA}, en abril–junio de {hoyA + 1}). Un traspaso entre fondos no es una venta.</li>
+          <li><strong>Los 50.000 € son otra cosa: el Modelo 720</strong>, un aviso informativo (no se paga) si lo que tienes en entidades extranjeras, como DEGIRO, supera esa cifra a 31 de diciembre.
+            {m720.total > 0 && <span className="mt-0.5 block text-xs" style={{ ...tnum, color: m720.supera ? C.warn : C.muted }}>Hoy: {fmtE0(m720.total)} en {Object.keys(m720.porEntidad).join(", ")}. {m720.supera ? "Por encima: si sigue así el 31 de diciembre, preséntalo antes del 31 de marzo." : "Por debajo: no te toca."}</span>}
+          </li>
+        </ul>
+        <details className="mt-2 text-xs text-slate-600">
+          <summary className="cursor-pointer font-medium text-slate-700">¿Y si no presento la Renta?</summary>
+          <ul className="mt-1.5 list-disc space-y-1 pl-4">
+            <li>Si ya la presentas (por tu sueldo, por ejemplo), tus ventas van dentro, sea cual sea su importe.</li>
+            <li>Ventas de acciones y ETF (sin retención): obligan a declarar, salvo que todos tus ingresos del año no pasen de 1.000 € y las pérdidas no lleguen a 500 €.</li>
+            <li>Reembolsos de fondos en una entidad española (con retención): no obligan si, con tus intereses y dividendos, no pasan de 1.600 € y tu sueldo tampoco obliga.</li>
+            <li>Si pierdes dinero, declara aunque no estés obligado: la pérdida solo compensa ganancias futuras si la declaras.</li>
+            <li>El Modelo 720 se presenta de enero a marzo y solo se repite si sube más de 20.000 €.</li>
+          </ul>
+        </details>
+      </Card>
+
+      {!conOps ? (
         <Card className="p-4">
           <h3 className="text-sm font-semibold">Para calcular tu Renta necesito tus ventas</h3>
-          <p className="mt-1 text-sm text-slate-600">Importa el archivo de operaciones de tu bróker y verás las ganancias y pérdidas de cada año, como las calcula Hacienda. Mientras, abajo tienes lo que pasaría si vendieras hoy.</p>
+          <p className="mt-1 text-sm text-slate-600">Importa el archivo de operaciones de tu bróker y verás las ganancias y pérdidas de cada año, como las calcula Hacienda.</p>
           <Btn size="sm" kind="primary" className="mt-3" onClick={onImportar}><Upload size={13} /> Importar de tu bróker</Btn>
         </Card>
-      )}
-
-      {conOps && r && (
+      ) : r && (
         <Card className="p-4">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold">Renta {anio}: tus ventas</h3>
+            <h3 className="text-sm font-semibold">Tus ventas de {anio}</h3>
             <select aria-label="Año" value={anio} onChange={(e) => setAnio(Number(e.target.value))} className="rounded-lg border bg-white px-2 py-1 text-xs" style={{ borderColor: C.line }}>
               {anios.map((a) => <option key={a} value={a}>{a}</option>)}
             </select>
           </div>
-          {!r.ventas.length ? <p className="mt-2 text-sm text-slate-500">En {anio} no has vendido nada{anio === hoyA ? " todavía" : ""}: no hay ganancias ni pérdidas que declarar por tus inversiones.</p> : (
+          {!r.ventas.length ? <p className="mt-2 text-sm text-slate-500">En {anio} no has vendido nada{anio === hoyA ? " todavía" : ""}: tus inversiones no suman nada a esa Renta.</p> : (
             <>
               <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <Dato l="Ganancias" v={eur0(r.ganancias)} c={C.income} />
-                <Dato l="Pérdidas" v={eur0(r.perdidas)} c={r.perdidas ? C.expense : C.muted} />
-                <Dato l="Saldo" v={eur0(r.saldo)} c={colorDe(r.saldo)} />
-                <Dato l="Impuesto estimado" v={fmtE0(r.impuesto)} sub={r.base > 0 ? `${pct(r.impuesto / r.base).replace("+", "")} de media` : "nada que pagar"} />
+                <Dato l="Resultado" v={eur0(r.saldo)} c={colorDe(r.saldo)} sub={`${eur0(r.ganancias)} y ${eur0(r.perdidas)}`} />
+                <Dato l="Impuesto" v={fmtE0(r.impuesto)} sub={r.compensado > 0 ? `tras compensar ${fmtE0(r.compensado)} de años anteriores` : r.base > 0 ? "19–30 % según importe" : "nada que pagar"} />
+                <Dato l="Ya retenido" v={fmtE0(r.retenciones)} sub="19 % en reembolsos de fondos" />
+                <Dato l="Te quedaría" v={fmtE0(pagar)} c={pagar > 0.5 ? C.expense : C.muted} sub="a pagar en tu Renta" />
               </div>
-              {r.compensado > 0 && <p className="mt-2 text-xs text-slate-600">Se compensan {fmtE0(r.compensado)} de pérdidas de años anteriores.</p>}
-              {r.saldo < 0 && <p className="mt-2 text-xs text-slate-600">Saldo negativo: estos {fmtE0(-r.saldo)} se pueden compensar con ganancias de los próximos 4 años.</p>}
+              {r.saldo < 0 && <p className="mt-2 text-xs text-slate-600">Resultado negativo: esos {fmtE0(-r.saldo)} restarán de lo que ganes al vender en los próximos 4 años (y hasta un 25 % de tus dividendos e intereses).</p>}
               {r.aplazadas < 0 && <p className="mt-2 flex items-start gap-1.5 text-xs" style={{ color: C.warn }}><AlertTriangle size={13} className="mt-0.5 shrink-0" />{fmtE0(-r.aplazadas)} de pérdidas no cuentan aún: recompraste lo mismo poco antes o después de vender (regla de los dos meses). Contarán cuando vendas eso.</p>}
-              {r.aCompensar.length > 0 && <p className="mt-2 text-xs text-slate-500">Te quedan por compensar: {r.aCompensar.map((x) => `${fmtE0(x.queda)} de ${x.anio}`).join(", ")}.</p>}
+              {r.extranjeras.length > 0 && <p className="mt-2 flex items-start gap-1.5 text-xs" style={{ color: C.warn }}><AlertTriangle size={13} className="mt-0.5 shrink-0" />{r.extranjeras.length === 1 ? "1 venta es" : `${r.extranjeras.length} ventas son`} de un bróker extranjero ({[...new Set(r.extranjeras.map((v) => v.entidad))].join(", ")}): no salen en el borrador, añádelas tú en «ganancias por transmisión de acciones negociadas».</p>}
               <div className="mt-3 divide-y text-sm" style={{ borderColor: C.line }}>
                 {r.ventas.map((v, i) => (
                   <div key={i} className="flex items-center justify-between gap-3 py-2">
                     <div className="min-w-0">
                       <div className="truncate font-medium">{v.nombre}</div>
-                      <div className="text-xs text-slate-500" style={tnum}>{fechaCorta(v.fecha)} · vendiste por {fmtE(v.transmision)}, te costó {fmtE(v.adquisicion)}</div>
+                      <div className="text-xs text-slate-500" style={tnum}>{fechaCorta(v.fecha)} · {v.entidad} · vendido por {fmtE0(v.transmision)}, costó {fmtE0(v.adquisicion)}</div>
                       {v.diferida && <div className="text-[11px]" style={{ color: C.warn }}>Aplazada: recompra el {fechaCorta(v.diferida.fecha)}</div>}
                       {v.sinCompra > 0 && <div className="text-[11px]" style={{ color: C.expense }}>Faltan compras en el archivo: importa el histórico completo.</div>}
                     </div>
@@ -190,22 +211,21 @@ export function Renta({ inv, filas, datos, onImportar }) {
       {sim.cosecha.length > 0 && sim.ahorro >= 5 && (
         <Card className="p-4">
           <h3 className="flex items-center gap-1.5 text-sm font-semibold"><Lightbulb size={15} style={{ color: C.warn }} /> Puedes pagar menos este año</h3>
-          <p className="mt-1 text-sm text-slate-600" style={tnum}>Este año llevas <strong>{eur0(resumenAnual(ventas, hoyA)?.base || 0)}</strong> de ganancias. Si vendes antes del 31 de diciembre algo que va en pérdidas, esa pérdida las compensa:</p>
+          <p className="mt-1 text-sm text-slate-600" style={tnum}>Llevas {eur0(baseHoy)} de ganancias en {hoyA}. Vender antes del 31 de diciembre algo que va en pérdidas las compensa:</p>
           <ul className="mt-2 space-y-1.5 text-sm">
             {sim.cosecha.map((x) => <li key={x.f.p.id} className="flex justify-between gap-3" style={tnum}><span className="min-w-0 truncate">{x.f.p.nombre} <span className="text-slate-500">({eur0(x.latente)})</span></span><span className="shrink-0 font-medium" style={{ color: C.income }}>ahorras ~{fmtE0(x.ahorro)}</span></li>)}
           </ul>
-          <p className="mt-2 text-[11px] text-slate-500">Si vuelves a comprar lo mismo en los 2 meses siguientes (12 si es un fondo que no cotiza), la pérdida no cuenta. Entre fondos, un traspaso no tributa y no realiza ni ganancia ni pérdida.</p>
+          <p className="mt-2 text-[11px] text-slate-500">No vuelvas a comprarlo en 2 meses (1 año si es un fondo) o la pérdida no contará.</p>
         </Card>
       )}
 
       {sim.posiciones.length > 0 && (
         <Card className="p-4">
           <h3 className="text-sm font-semibold">Si vendieras hoy</h3>
-          <p className="mt-0.5 text-xs text-slate-500">Lo que ganarías o perderías con cada producto y lo que añadiría a tu impuesto de {hoyA}, sumado a lo que ya has vendido.</p>
           <div className="mt-2 divide-y text-sm" style={{ borderColor: C.line }}>
             {sim.posiciones.map((x) => (
               <div key={x.f.p.id} className="flex items-center justify-between gap-3 py-2">
-                <span className="min-w-0 truncate">{x.f.p.nombre}{x.fondo && <span className="block text-[11px] text-slate-400">Fondo: traspasándolo a otro fondo no pagas nada</span>}</span>
+                <span className="min-w-0 truncate">{x.f.p.nombre}{x.fondo && x.latente > 0 && <span className="block text-[11px] text-slate-400">Traspasándolo a otro fondo no pagas</span>}</span>
                 <span className="shrink-0 text-right" style={tnum}>
                   <span className="block font-semibold" style={{ color: colorDe(x.latente) }}>{eur0(x.latente)}</span>
                   <span className="block text-[11px] text-slate-500">{x.impuesto > 0.5 ? `pagarías ~${fmtE0(x.impuesto)}` : x.latente < 0 ? "compensa ganancias" : "sin impuesto"}</span>
@@ -215,7 +235,7 @@ export function Renta({ inv, filas, datos, onImportar }) {
           </div>
         </Card>
       )}
-      <p className="px-1 text-[11px] leading-snug text-slate-400">Estimación con las reglas generales del IRPF (tipos del ahorro {(impuestoAhorro(1) * 100).toFixed(0)}–30 %, FIFO, regla de los dos meses, traspasos entre fondos y compensación de 4 años). No incluye dividendos ni intereses ni otras ganancias de tu base del ahorro, ni normas forales. No es asesoramiento fiscal: compruébalo con tu borrador o con tu gestor.</p>
+      <p className="px-1 text-[11px] leading-snug text-slate-400">Estimación con las reglas generales del IRPF estatal (no forales). Sin dividendos ni intereses. No es asesoramiento fiscal: contrástalo con tu borrador o tu gestor.</p>
     </div>
   );
 }

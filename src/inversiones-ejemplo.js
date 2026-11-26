@@ -2,7 +2,7 @@
    ficticios con precios inventados (generados aquí, siempre iguales), compras mensuales, una venta
    con ganancia y otra con pérdida para ver también la parte de la Renta. Sus símbolos empiezan por
    «DEMO:», así que nunca se piden a ningún servidor. */
-import { sumarDias, dia } from "./inversiones.js";
+import { REFERENCIAS, sumarDias, dia } from "./inversiones.js";
 
 const PRODUCTOS = [
   { simbolo: "DEMO:MUNDO", nombre: "Fondo indexado mundial (ejemplo)", entidad: "Gestora de ejemplo", tipo: "fondo", p0: 20, deriva: 0.00035, vol: 0.008, semilla: 7 },
@@ -59,8 +59,16 @@ export function carteraEjemplo(hoy = dia(new Date())) {
 export const esEjemplo = (inv) => (inv?.posiciones || []).some((p) => p.ejemplo || p.simbolo?.startsWith("DEMO:"));
 
 // Precios del ejemplo añadidos a los de tu servidor (solo si hay productos de ejemplo).
+// Con la cartera de ejemplo también se inventan los índices de comparación si no hay servidor que
+// los traiga (si los hay, se usan los de verdad).
 export function conEjemplo(datos, inv) {
   if (!esEjemplo(inv)) return datos;
   const e = seriesEjemplo();
+  const hoy = dia(new Date());
+  REFERENCIAS.forEach((r, i) => {
+    if ((datos?.series?.[r.simbolo] || []).length) return;
+    e.series[r.simbolo] = serie({ p0: 100, deriva: 0.0004, vol: 0.009, semilla: 41 + i }, sumarDias(hoy, -760), hoy);
+    e.meta[r.simbolo] = { divisa: "EUR" };
+  });
   return { ...datos, series: { ...(datos?.series || {}), ...e.series }, meta: { ...(datos?.meta || {}), ...e.meta } };
 }
