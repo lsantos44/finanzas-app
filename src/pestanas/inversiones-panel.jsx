@@ -163,39 +163,60 @@ export function Panel({ a, ids, nombre, periodo, setPeriodo, referencia, setRefe
 }
 
 /* ---------- Reparto: dónde está tu dinero (plataforma, tipo o divisa) ---------- */
-export function Reparto({ filas, datos }) {
+export function Reparto({ filas, datos, onAbrir }) {
   const [por, setPor] = useState("entidad");
+  const [dentro, setDentro] = useState(null); // grupo abierto (drill down): sus productos
+  const grupoDe = (f) => (por === "entidad" ? f.p.entidad || "Sin entidad" : por === "tipo" ? (f.p.tipo === "accion" ? "Acciones y ETF" : f.p.robo ? "Fondos indexados" : "Fondos") : divisaDe(f.p, datos));
   const grupos = useMemo(() => {
     const m = new Map();
-    for (const f of filas) {
-      const k = por === "entidad" ? f.p.entidad || "Sin entidad" : por === "tipo" ? (f.p.tipo === "accion" ? "Acciones y ETF" : f.p.robo ? "Fondos indexados" : "Fondos") : divisaDe(f.p, datos);
-      m.set(k, (m.get(k) || 0) + f.valor);
-    }
+    for (const f of filas) m.set(grupoDe(f), (m.get(grupoDe(f)) || 0) + f.valor);
     const total = [...m.values()].reduce((t, v) => t + v, 0);
-    return [...m.entries()].map(([nombre, valor]) => ({ nombre, valor, peso: total ? valor / total : 0 })).sort((x, y) => y.valor - x.valor).map((g, i) => ({ ...g, color: PALETA[i % PALETA.length] }));
-  }, [filas, datos, por]);
+    return [...m.entries()].map(([nombre, valor]) => ({ k: nombre, nombre, valor, peso: total ? valor / total : 0 })).sort((x, y) => y.valor - x.valor).map((g, i) => ({ ...g, color: PALETA[i % PALETA.length] }));
+  }, [filas, datos, por]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Dentro de un grupo: sus productos, en tonos de su color.
+  const g0 = dentro ? grupos.find((g) => g.k === dentro) : null;
+  const items = useMemo(() => {
+    if (!g0) return grupos;
+    const fs = filas.filter((f) => grupoDe(f) === g0.k).sort((x, y) => y.valor - x.valor);
+    const total = fs.reduce((t, f) => t + f.valor, 0);
+    return fs.map((f, i) => ({ k: f.p.id, id: f.p.id, nombre: f.p.nombre, valor: f.valor, peso: total ? f.valor / total : 0, color: g0.color, opacidad: Math.max(0.35, 1 - i * (0.65 / Math.max(1, fs.length - 1))) }));
+  }, [g0, grupos, filas]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!grupos.length) return null;
+  const total = items.reduce((t, x) => t + x.valor, 0);
+  const elegir = (x) => (x.id ? onAbrir?.(x.id) : setDentro(x.k));
+
   return (
     <Card className="p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold">Dónde está tu dinero</h3>
-        <Seg ariaLabel="Repartir por" value={por} onChange={setPor} options={[{ v: "entidad", l: "Plataforma" }, { v: "tipo", l: "Tipo" }, { v: "divisa", l: "Divisa" }]} />
+        <h3 className="flex min-w-0 items-center gap-1 text-sm font-semibold">
+          {g0 && <button type="button" onClick={() => setDentro(null)} aria-label="Volver al reparto" className="rounded-md px-1 text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">‹</button>}
+          <span className="truncate">{g0 ? g0.nombre : "Dónde está tu dinero"}</span>
+        </h3>
+        {!g0 && <Seg ariaLabel="Repartir por" value={por} onChange={(v) => { setPor(v); setDentro(null); }} options={[{ v: "entidad", l: "Plataforma" }, { v: "tipo", l: "Tipo" }, { v: "divisa", l: "Divisa" }]} />}
       </div>
       <div className="mt-3 flex items-center gap-4">
-        <div className="shrink-0" style={{ width: 112, height: 112 }} aria-hidden="true">
+        <div className="relative shrink-0" style={{ width: 120, height: 120 }}>
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
-              <Pie data={grupos} dataKey="valor" nameKey="nombre" innerRadius={34} outerRadius={54} paddingAngle={grupos.length > 1 ? 2 : 0} stroke="none" isAnimationActive={false}>
-                {grupos.map((g) => <Cell key={g.nombre} fill={g.color} />)}
+              <Pie data={items} dataKey="valor" nameKey="nombre" innerRadius={38} outerRadius={58} paddingAngle={items.length > 1 ? 2 : 0} stroke="none" isAnimationActive={false}
+                onClick={(d) => d?.payload && elegir(d.payload)} style={{ cursor: "pointer" }}>
+                {items.map((x) => <Cell key={x.k} fill={x.color} fillOpacity={x.opacidad ?? 1} />)}
               </Pie>
             </PieChart>
           </ResponsiveContainer>
+          {/* En el centro, el total de lo que se ve. */}
+          <div className="pointer-events-none absolute inset-0 grid place-items-center text-center" style={tnum}>
+            <span className="text-xs font-semibold leading-tight">{fmtE0(total)}{g0 && <span className="block text-[10px] font-normal text-slate-500">{pct(g0.peso, false, 0)} del total</span>}</span>
+          </div>
         </div>
-        <ul className="min-w-0 flex-1 space-y-1.5 text-sm">
-          {grupos.map((g) => (
-            <li key={g.nombre} className="flex items-start gap-1.5" style={tnum}>
-              <span className="mt-1.5 inline-block h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: g.color }} />
-              <span className="min-w-0"><span className="block leading-snug">{g.nombre}</span><span className="block text-xs text-slate-500"><strong className="text-slate-700">{pct(g.peso, false, 0)}</strong> · {fmtE0(g.valor)}</span></span>
+        <ul className="min-w-0 flex-1 space-y-1 text-sm">
+          {items.map((x) => (
+            <li key={x.k}>
+              <button type="button" onClick={() => elegir(x)} className="flex w-full items-start gap-1.5 rounded-lg px-1 py-0.5 text-left hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={tnum}>
+                <span className="mt-1.5 inline-block h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: x.color, opacity: x.opacidad ?? 1 }} />
+                <span className="min-w-0 flex-1"><span className="block leading-snug">{x.nombre}</span><span className="block text-xs text-slate-500"><strong className="text-slate-700">{pct(x.peso, false, 0)}</strong> · {fmtE0(x.valor)}</span></span>
+                <span className="mt-0.5 text-slate-400" aria-hidden="true">›</span>
+              </button>
             </li>
           ))}
         </ul>

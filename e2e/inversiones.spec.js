@@ -50,7 +50,7 @@ test("la pestaña Inversiones valora, agrupa, resuelve ISIN y abre el detalle", 
   await expect.poll(() => peticiones.includes("GET /inversiones/resolver")).toBe(true);
   await expect.poll(() => peticiones.includes("POST /inversiones/seguir")).toBe(true);
   await expect(page.getByRole("button", { name: /^Plan de empleados/ }).first()).toBeVisible();
-  await expect(page.getByRole("button", { name: /^Bróker/ }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Bróker/, expanded: false })).toBeVisible();
   // 3.404 + 894,93 + 10.000 + 2.000 ≈ 16.299 €
   await expect(page.getByText(/16\.29[89]\s?€/).first()).toBeVisible();
   // El listado de bolsa con un solo dato se cambia por la cotización con historial.
@@ -75,6 +75,12 @@ test("la pestaña Inversiones valora, agrupa, resuelve ISIN y abre el detalle", 
   await plataforma.selectOption("");
   await expect(page.getByText("Lo destacable")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Dónde está tu dinero" })).toBeVisible();
+  // Drill down en la tarta: una plataforma muestra sus productos; volver; un producto abre su ficha.
+  const reparto = page.getByRole("heading", { name: "Dónde está tu dinero" }).locator("xpath=ancestor::div[contains(@class,'rounded-2xl')][1]");
+  await reparto.getByRole("button", { name: /^Banco privado/ }).click();
+  await expect(page.getByRole("heading", { name: "Banco privado" })).toBeVisible();
+  await page.getByRole("button", { name: "Volver al reparto" }).click();
+  await expect(page.getByRole("heading", { name: "Dónde está tu dinero" })).toBeVisible();
   // «Qué explica tu resultado»: bajar a una plataforma, volver; un producto abre su ficha.
   const explica = page.getByRole("heading", { name: /Qué explica tu resultado/ }).locator("xpath=ancestor::div[contains(@class,'rounded-2xl')][1]");
   await explica.getByRole("button", { name: /^Bróker/ }).click();
@@ -87,12 +93,12 @@ test("la pestaña Inversiones valora, agrupa, resuelve ISIN y abre el detalle", 
   await expect(page.getByRole("combobox", { name: "Plataforma" })).toHaveValue("");
   // Las plataformas salen plegadas; al abrir una se ven sus productos.
   await expect(page.getByText(/Tu aportación mensual a esta cartera/)).toHaveCount(0);
-  await page.getByRole("button", { name: /^Roboadvisor/ }).first().click();
+  await page.getByRole("button", { name: /^Roboadvisor/, expanded: false }).click();
   // Aportación periódica detectada y aplicada con un toque.
   await expect(page.getByText(/Tu aportación mensual a esta cartera/)).toBeVisible();
   await page.getByRole("button", { name: "Sí, usarla" }).click();
   await expect(page.getByText(/Aportación automática de/)).toBeVisible();
-  await page.getByRole("button", { name: /^Bróker/ }).first().click();
+  await page.getByRole("button", { name: /^Bróker/, expanded: false }).click();
   await page.getByRole("button", { name: /^Coherent/ }).last().click();
   await expect(page.getByText("Precio medio de compra")).toBeVisible();
   // Coherent cotiza en dólares: precio de hoy en euros y en dólares, y lo que va por acción.
@@ -138,7 +144,7 @@ test("captura visual (solo con CAPTURAS)", async ({ page }) => {
   await page.waitForTimeout(400);
   await page.screenshot({ path: `${dir}/filtro-broker-${test.info().project.name}.png` });
   await page.getByRole("combobox", { name: "Plataforma" }).selectOption("");
-  await page.getByRole("button", { name: /^Bróker/ }).first().click();
+  await page.getByRole("button", { name: /^Bróker/, expanded: false }).click();
   await page.getByRole("button", { name: /^Coherent/ }).last().click();
   await page.getByText("Precio medio de compra").waitFor();
   await page.waitForTimeout(500);

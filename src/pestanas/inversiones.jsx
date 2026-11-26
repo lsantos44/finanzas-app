@@ -706,7 +706,7 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
                 <Cifra label="Últ. sesión" color={colorDe(sel.hoy)} sub={`${pct(sel.hoyPct)}${ultimaFecha ? ` · ${fechaCorta(ultimaFecha)}` : ""}`}>{eur(Math.round(sel.hoy), true).replace(/,00(?=\s?€)/, "")}</Cifra>
               </div>
             } />
-          {!nivel.id && <Reparto filas={selFilas} datos={datosA} />}
+          {!nivel.id && <Reparto key={nivel.e || "todo"} filas={selFilas} datos={datosA} onAbrir={setAbierta} />}
 
           <div className="flex flex-wrap items-center justify-between gap-2">
             <Seg ariaLabel="Agrupar por" value={vista} onChange={setVista} options={[{ v: "entidad", l: "Por plataforma" }, { v: "tipo", l: "Por tipo" }]} />
