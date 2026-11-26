@@ -1,0 +1,373 @@
+import { C, aiExplicarInversiones, fmtE0, nfNum, tnum } from "../core.js";
+import { Btn, Card, Seg } from "../ui/comunes.jsx";
+import { REFERENCIAS, curvaDe, curvaReferencia, destacadosPeriodo, divisaDe, indiceEn, resultadoPeriodo, sumarDias } from "../inversiones.js";
+import { AlertTriangle, Coins, Flag, PieChart, RefreshCw, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
+import { Area, CartesianGrid, ComposedChart, Line, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { useMemo, useState } from "react";
+
+/* ============================================================
+   INVERSIONES · PANEL
+   ============================================================
+   Todo gira alrededor de UNA pregunta: «¿cuánto he ganado o perdido en este periodo, y por qué?».
+   - Periodo: 1S, 1M, 3M, este año, 1A o todo. Si entraste después del inicio, cuenta desde que
+     entraste (antes no tenías nada que ganar ni perder).
+   - Ganancia del periodo = valor al final − valor al principio − lo que pusiste entre medias.
+     Con «Todo» es exactamente la plusvalía de tu entidad (valor − invertido).
+   - Qué la explica: lo que ha sumado o restado cada plataforma o producto en ese mismo periodo.
+   - Frente al mercado: el mismo dinero, los mismos días, en un índice.
+   Las fórmulas están en src/inversiones.js (resultadoPeriodo, curvaReferencia). */
+
+export const PERIODOS = [
+  { v: "1s", l: "1S", largo: "esta semana", dias: 7 },
+  { v: "1m", l: "1M", largo: "el último mes", dias: 30 },
+  { v: "3m", l: "3M", largo: "los últimos 3 meses", dias: 91 },
+  { v: "ytd", l: "Año", largo: "lo que va de año" },
+  { v: "1a", l: "1A", largo: "el último año", dias: 365 },
+  { v: "max", l: "Todo", largo: "desde que entraste" },
+];
+const REF_KEY = "finz:inv-referencia";
+const leerRef = () => { try { const v = localStorage.getItem(REF_KEY); return v === "" ? "" : v || REFERENCIAS[0].simbolo; } catch { return REFERENCIAS[0].simbolo; } };
+const guardarRef = (v) => { try { localStorage.setItem(REF_KEY, v); } catch { /* solo es una preferencia */ } };
+
+export const pct = (v, signo = true, dec = 2) => (v == null || !isFinite(v) ? "–" : `${signo && v > 0 ? "+" : ""}${(v * 100).toLocaleString("es-ES", { maximumFractionDigits: dec, minimumFractionDigits: dec })} %`);
+export const eur0 = (v, signo = true) => (v == null || !isFinite(v) ? "–" : `${signo && v > 0.5 ? "+" : ""}${fmtE0(v)}`);
+export const colorDe = (v) => (v == null || Math.abs(v) < 1e-9 ? C.muted : v > 0 ? C.income : C.expense);
+export const fechaCorta = (f) => (f ? new Date(f + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "short" }) : "");
+export const fechaLarga = (f) => (f ? new Date(f + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "long", year: "numeric" }) : "");
+const ejeY = (v) => (Math.abs(v) >= 10000 ? nfNum.format(Math.round(v / 1000)) + "k" : nfNum.format(Math.round(v)));
+
+// Dónde empieza el periodo en la serie: el último cierre en o antes de su primer día (−1 = todo).
+export function inicioDe(serie, periodo) {
+  if (!serie.length || periodo === "max") return -1;
+  const fin = serie[serie.length - 1].d;
+  const p = PERIODOS.find((x) => x.v === periodo);
+  const desde = periodo === "ytd" ? `${Number(fin.slice(0, 4)) - 1}-12-31` : sumarDias(fin, -(p?.dias || 30));
+  return indiceEn(serie, desde);
+}
+
+/* Todo lo de un periodo para un conjunto de productos: resultado, desde cuándo cuenta de verdad
+   (si entraste después del inicio), la curva para el gráfico y lo destacable. */
+// Con «Todo», el resultado es la plusvalía: solo cuenta lo que tiene coste (sin coste no se sabe).
+export const idsConCoste = (a, ids, i0) => (i0 < 0 ? ids.filter((id) => a.filas.find((f) => f.p.id === id)?.coste != null) : ids);
+
+export function usePeriodo(a, ids, periodo) {
+  return useMemo(() => {
+    const serie = a.serie;
+    const i0 = inicioDe(serie, periodo);
+    const idsG = idsConCoste(a, ids, i0);
+    const cg = curvaDe(serie, idsG, i0 < 0);
+    const curva = { ...cg, V: curvaDe(serie, ids).V };
+    const res = resultadoPeriodo(cg, i0);
+    // Primer día con algo tuyo dentro del periodo: el gráfico empieza ahí, no con ceros.
+    let iVer = Math.max(0, i0);
+    while (iVer < serie.length - 1 && !((idsG.length ? cg.V : curva.V)[iVer] > 0)) iVer++;
+    const entraDespues = i0 < 0 || !(curva.V[i0] > 0);
+    return { serie, curva, i0, iVer, res, idsG, entraDespues, desde: serie[iVer]?.d || null, hasta: serie[serie.length - 1]?.d || null, dest: destacadosPeriodo(serie, i0, res), puntos: serie.length - iVer };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [a, ids.join(), periodo]);
+}
+
+export const textoPeriodo = (per, periodo) => {
+  const p = PERIODOS.find((x) => x.v === periodo);
+  if (periodo === "max" || per.entraDespues) return `desde que entraste (${fechaCorta(per.desde)})`;
+  return `en ${p.largo}`;
+};
+
+/* ---------- La tarjeta principal: valor, resultado del periodo y el gráfico ---------- */
+export function Panel({ a, ids, nombre, periodo, setPeriodo, referencia, cifras, reparto, accion, vacio }) {
+  const [modo, setModo] = useState("eur");
+  const [sobre, setSobre] = useState(null); // índice del día que señalas en el gráfico
+  const per = usePeriodo(a, ids, periodo);
+  const ref = useMemo(() => (referencia ? curvaReferencia(per.serie, per.idsG, a.contribuciones, a.datos, referencia, per.i0 < 0) : null), [per.serie, per.i0, per.idsG.join(), referencia, a]); // eslint-disable-line react-hooks/exhaustive-deps
+  const resRef = ref ? resultadoPeriodo(ref, per.i0) : null;
+  const nomRef = REFERENCIAS.find((r) => r.simbolo === referencia)?.nombre;
+
+  const off = Math.max(0, per.i0);
+  const datos = useMemo(() => {
+    const out = [];
+    const paso = Math.max(1, Math.ceil((per.serie.length - per.iVer) / 240));
+    for (let i = per.iVer; i < per.serie.length; i++) {
+      if ((i - per.iVer) % paso && i !== per.serie.length - 1) continue;
+      const k = i - off;
+      out.push({
+        i, d: per.serie[i].d, et: fechaCorta(per.serie[i].d),
+        v: per.curva.V[i], g: per.res.g[k] ?? null,
+        r: per.res.r[k] == null ? null : per.res.r[k] * 100,
+        ref: resRef?.r[k] == null ? null : resRef.r[k] * 100,
+      });
+    }
+    return out;
+  }, [per, resRef, off]);
+
+  const h = sobre != null ? datos.find((x) => x.i === sobre) : null;
+  const gan = h ? per.res.g[h.i - off] : per.res.ganancia;
+  const ganPct = h ? per.res.r[h.i - off] : per.res.pct;
+  const valor = h ? h.v : per.curva.V[per.curva.V.length - 1] || 0;
+  const color = colorDe(per.res.ganancia);
+  const corto = per.puntos < 4;
+  const mover = (st) => setSobre(st?.activePayload?.[0]?.payload?.i ?? null);
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate text-xs font-medium text-slate-500">{nombre}{h ? ` · ${fechaLarga(h.d)}` : ""}</div>
+          <div className="text-3xl font-semibold tracking-tight" style={tnum}>{fmtE0(valor)}</div>
+          <div className="mt-0.5 text-sm font-medium" style={{ ...tnum, color: colorDe(gan) }}>
+            {eur0(gan)} ({pct(ganPct)}) <span className="font-normal text-slate-500">{h ? `hasta ese día, ${textoPeriodo(per, periodo)}` : textoPeriodo(per, periodo)}</span>
+          </div>
+        </div>
+        {accion}
+      </div>
+
+      <div className="mt-3" style={{ height: 200 }} onMouseLeave={() => setSobre(null)}>
+        {corto ? vacio : (
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={datos} margin={{ top: 6, right: 4, left: 0, bottom: 0 }} onMouseMove={mover} onTouchMove={mover} onMouseLeave={() => setSobre(null)} onTouchEnd={() => setSobre(null)}>
+              <defs>
+                <linearGradient id="gradPanel" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={color} stopOpacity={0.22} />
+                  <stop offset="100%" stopColor={color} stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid vertical={false} stroke={C.line} />
+              <XAxis dataKey="et" tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={{ stroke: C.line }} interval="preserveStartEnd" minTickGap={44} />
+              <YAxis orientation="right" tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={false} width={modo === "eur" ? 44 : 38} domain={["auto", "auto"]} tickFormatter={modo === "eur" ? ejeY : (v) => `${Math.round(v)}%`} />
+              <Tooltip content={() => null} cursor={{ stroke: C.lineStrong, strokeDasharray: "3 3" }} />
+              {modo === "pct" && <ReferenceLine y={0} stroke={C.lineStrong} />}
+              {modo === "eur" && <ReferenceLine y={0} stroke={C.lineStrong} />}
+              {modo === "eur" && <Area type="monotone" dataKey="g" stroke={color} strokeWidth={2} fill="url(#gradPanel)" baseValue={0} isAnimationActive={false} />}
+              {modo === "pct" && ref && <Line type="monotone" dataKey="ref" stroke={C.muted} strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls isAnimationActive={false} />}
+              {modo === "pct" && <Line type="monotone" dataKey="r" stroke={color} strokeWidth={2.25} dot={false} connectNulls isAnimationActive={false} />}
+            </ComposedChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+        <Seg ariaLabel="Periodo" value={periodo} onChange={(v) => { setPeriodo(v); setSobre(null); }} options={PERIODOS} />
+        {!corto && <Seg ariaLabel="Ver en" value={modo} onChange={setModo} options={[{ v: "eur", l: "€" }, { v: "pct", l: "%" }]} />}
+      </div>
+      {!corto && (
+        <p className="mt-1.5 text-[11px] text-slate-400" style={tnum}>
+          {modo === "eur" ? "Lo que ganas o pierdes, día a día (el dinero que entra no cuenta como ganancia)" : `Tu resultado en % ${ref ? `· – – el mismo dinero en ${nomRef} (${pct(resRef?.pct)})` : ""}`}
+        </p>
+      )}
+      {cifras}
+      {reparto}
+    </Card>
+  );
+}
+
+/* ---------- Qué ha movido tu cartera: lo que suma o resta cada parte en el periodo ---------- */
+export function QueHaMovido({ a, partes, periodo, onElegir, ai, aiOn, filasPorId, control }) {
+  const per = usePeriodo(a, partes.flatMap((x) => x.ids), periodo);
+  const filas = useMemo(() => partes.map((x) => {
+    const idsG = idsConCoste(a, x.ids, per.i0);
+    const r = resultadoPeriodo(curvaDe(a.serie, idsG, per.i0 < 0), per.i0);
+    return { ...x, g: r.ganancia ?? 0, r: idsG.length ? r.pct : null, sinCoste: !idsG.length };
+  }).sort((x, y) => y.g - x.g), [partes, a.serie, per.i0]);
+  if (filas.length < 2) return null;
+  const max = Math.max(...filas.map((x) => Math.abs(x.g)), 1);
+  const suman = filas.filter((x) => x.g > 0.5), restan = filas.filter((x) => x.g < -0.5);
+  const top = suman[0], peor = restan[restan.length - 1];
+
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold">Qué explica tu resultado</h3>{control}</div>
+      <p className="mt-0.5 text-xs text-slate-500" style={tnum}>
+        {textoPeriodo(per, periodo).replace(/^./, (c) => c.toUpperCase())}, del {fechaCorta(per.desde)} al {fechaCorta(per.hasta)}: <strong style={{ color: colorDe(per.res.ganancia) }}>{eur0(per.res.ganancia)}</strong>.
+        {top && <> Lo que más sumó: <strong className="text-slate-700">{top.nombre}</strong> ({eur0(top.g)}).</>}
+        {peor && <> Lo que más restó: <strong className="text-slate-700">{peor.nombre}</strong> ({eur0(peor.g)}).</>}
+      </p>
+      <div className="mt-3 space-y-1">
+        {filas.map((x) => {
+          const w = (Math.abs(x.g) / max) * 50;
+          return (
+            <button key={x.k} type="button" onClick={() => onElegir(x)} className="grid w-full grid-cols-[minmax(0,1fr)_7rem_4.5rem] items-center gap-2 rounded-lg py-1.5 text-left text-sm hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+              <span className="flex min-w-0 items-center gap-1.5">
+                {x.color && <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: x.color }} />}
+                <span className="truncate">{x.nombre}</span>
+              </span>
+              <span className="relative h-3" aria-hidden="true">
+                <span className="absolute inset-y-0 left-1/2 w-px" style={{ background: C.lineStrong }} />
+                <span className="absolute inset-y-0.5 rounded-sm" style={{ background: x.g >= 0 ? C.income : C.expense, opacity: 0.85, width: `${w}%`, left: x.g >= 0 ? "50%" : `${50 - w}%` }} />
+              </span>
+              <span className="text-right" style={tnum}>
+                <span className="block text-xs font-semibold" style={{ color: colorDe(x.g) }}>{eur0(x.g)}</span>
+                <span className="block text-[10px] text-slate-500">{x.sinCoste ? "sin coste" : pct(x.r, true, 1)}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-[11px] text-slate-400">€: lo que ha sumado o restado a tu resultado. %: lo que ha ganado o perdido ese dinero en el periodo. Toca una fila para verla en detalle.</p>
+      {aiOn && <PorQue a={a} periodo={periodo} per={per} ai={ai} filasPorId={filasPorId} ids={partes.flatMap((x) => x.ids)} />}
+    </Card>
+  );
+}
+
+/* ---------- «¿Por qué?»: la IA busca las noticias que explican los movimientos ---------- */
+const IA_KEY = "finz:inv-ia:v1";
+function PorQue({ a, per, ai, filasPorId, ids }) {
+  const items = useMemo(() => ids.map((id) => {
+    const r = resultadoPeriodo(curvaDe(a.serie, [id], per.i0 < 0), per.i0);
+    const f = filasPorId[id];
+    return f && r.pct != null ? { nombre: f.p.nombre, ticker: f.p.simbolo, isin: f.p.isin, tipo: f.p.tipo, pct: r.pct, g: Math.abs(r.ganancia || 0) } : null;
+  }).filter(Boolean).sort((x, y) => y.g - x.g).slice(0, 6), [ids.join(), per, a.serie]); // eslint-disable-line react-hooks/exhaustive-deps
+  const clave = `${per.desde}|${per.hasta}|${items.map((x) => x.nombre).join(",")}`;
+  const [estado, setEstado] = useState(() => { try { const c = JSON.parse(localStorage.getItem(IA_KEY) || "null"); return c?.clave === clave ? { texto: c.texto } : null; } catch { return null; } });
+  const [cargando, setCargando] = useState(false);
+  const actual = estado && (estado.clave === undefined || estado.clave === clave) ? estado : null;
+  const pedir = async () => {
+    setCargando(true);
+    try {
+      const r = await aiExplicarInversiones(ai, { desde: fechaLarga(per.desde), hasta: fechaLarga(per.hasta), items });
+      setEstado({ texto: r.texto, clave });
+      try { localStorage.setItem(IA_KEY, JSON.stringify({ clave, texto: r.texto })); } catch { /* sin espacio */ }
+    } catch (e) { setEstado({ error: e.message, clave }); }
+    finally { setCargando(false); }
+  };
+  if (!items.length) return null;
+  return (
+    <div className="mt-3 border-t pt-3" style={{ borderColor: C.line }}>
+      {actual?.texto ? (
+        <div className="text-sm">
+          <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold" style={{ color: C.accent }}><Sparkles size={13} /> Por qué se ha movido</div>
+          <TextoIA texto={actual.texto} />
+          <p className="mt-1.5 text-[10px] text-slate-400">Resumen de la IA con búsqueda web: puede equivocarse. No es una recomendación. <button type="button" className="underline" onClick={pedir} disabled={cargando}>{cargando ? "Buscando…" : "Volver a preguntar"}</button></p>
+        </div>
+      ) : (
+        <>
+          <Btn size="sm" onClick={pedir} disabled={cargando}>{cargando ? <RefreshCw size={13} className="animate-spin" /> : <Sparkles size={13} />} {cargando ? "Buscando noticias…" : "¿Por qué se ha movido? Pregunta a la IA"}</Btn>
+          <p className="mt-1 text-[10px] text-slate-400">Busca en la web las noticias del periodo. Solo envía nombres y porcentajes, nunca tus importes. Gasta unos céntimos de tu proveedor de IA.</p>
+          {actual?.error && <p className="mt-1 text-xs" style={{ color: C.expense }}>{actual.error}</p>}
+        </>
+      )}
+    </div>
+  );
+}
+
+// Markdown mínimo de la IA: párrafos, viñetas y **negrita**. Sin HTML: todo es texto.
+function TextoIA({ texto }) {
+  const negrita = (t) => t.split(/(\*\*[^*]+\*\*)/g).map((x, i) => (/^\*\*[^*]+\*\*$/.test(x) ? <strong key={i}>{x.slice(2, -2)}</strong> : x));
+  const lineas = String(texto).split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  return (
+    <div className="space-y-1 text-slate-700">
+      {lineas.map((l, i) => (/^[-*•]\s+/.test(l)
+        ? <p key={i} className="flex gap-1.5"><span className="text-slate-400">•</span><span>{negrita(l.replace(/^[-*•]\s+/, ""))}</span></p>
+        : <p key={i}>{negrita(l.replace(/^#+\s*/, ""))}</p>))}
+    </div>
+  );
+}
+
+/* ---------- Tú frente al mercado: el mismo dinero, los mismos días, en un índice ---------- */
+export function FrenteMercado({ a, ids, periodo, referencia, setReferencia }) {
+  const per = usePeriodo(a, ids, periodo);
+  const ref = useMemo(() => (referencia ? curvaReferencia(a.serie, per.idsG, a.contribuciones, a.datos, referencia, per.i0 < 0) : null), [a, per.i0, per.idsG.join(), referencia]); // eslint-disable-line react-hooks/exhaustive-deps
+  const r = ref ? resultadoPeriodo(ref, per.i0) : null;
+  const info = REFERENCIAS.find((x) => x.simbolo === referencia);
+  const dif = r?.ganancia != null && per.res.ganancia != null ? per.res.ganancia - r.ganancia : null;
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold">Tú frente al mercado</h3>
+        <select aria-label="Comparar con" value={referencia} onChange={(e) => { setReferencia(e.target.value); guardarRef(e.target.value); }}
+          className="min-w-0 rounded-lg border bg-white px-2 py-1 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" style={{ borderColor: C.line }}>
+          {REFERENCIAS.map((x) => <option key={x.simbolo} value={x.simbolo}>{x.nombre}</option>)}
+          <option value="">No comparar</option>
+        </select>
+      </div>
+      {!referencia ? <p className="mt-2 text-sm text-slate-500">Elige un índice para ver si lo estás haciendo mejor o peor que el mercado.</p>
+        : !r || r.ganancia == null ? <p className="mt-2 text-sm text-slate-500">Trayendo los precios de {info?.nombre}… (tu servidor los descarga la primera vez).</p> : (
+          <>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <div className="rounded-xl border p-3" style={{ borderColor: C.line }}>
+                <div className="text-[11px] uppercase tracking-wide text-slate-500">Tú</div>
+                <div className="text-lg font-semibold" style={{ ...tnum, color: colorDe(per.res.ganancia) }}>{eur0(per.res.ganancia)}</div>
+                <div className="text-xs" style={{ ...tnum, color: colorDe(per.res.pct) }}>{pct(per.res.pct)}</div>
+              </div>
+              <div className="rounded-xl border p-3" style={{ borderColor: C.line }}>
+                <div className="truncate text-[11px] uppercase tracking-wide text-slate-500">En {info?.nombre}</div>
+                <div className="text-lg font-semibold" style={{ ...tnum, color: colorDe(r.ganancia) }}>{eur0(r.ganancia)}</div>
+                <div className="text-xs" style={{ ...tnum, color: colorDe(r.pct) }}>{pct(r.pct)}</div>
+              </div>
+            </div>
+            <p className="mt-2 text-sm" style={tnum}>
+              {Math.abs(dif) < 1 ? "Vas igual que el índice." : <>Vas <strong style={{ color: colorDe(dif) }}>{fmtE0(Math.abs(dif))} {dif > 0 ? "por delante" : "por detrás"}</strong> de {info?.nombre} {textoPeriodo(per, periodo)}.</>}
+            </p>
+            <p className="mt-1 text-[11px] text-slate-400">Como si cada euro que pusiste, el mismo día, lo hubieras puesto en un fondo indexado al {info?.nombre} ({info?.desc}). En la vista «%» del gráfico lo ves día a día.</p>
+          </>
+        )}
+    </Card>
+  );
+}
+export const referenciaInicial = leerRef;
+
+/* ---------- Lo destacable: frases cortas con lo que importa del periodo y de tu cartera ---------- */
+export function Destacados({ a, ids, periodo, filas, datos, onFecha }) {
+  const per = usePeriodo(a, ids, periodo);
+  const items = [];
+  const { max, mejor, peor } = per.dest;
+  const hoy = per.res.ganancia;
+  if (max && hoy != null && max.g - hoy > Math.max(50, Math.abs(per.res.inicio + per.res.puesto) * 0.01) && max.d !== per.hasta)
+    items.push({ icon: Flag, color: C.warn || C.muted, t: <>Tu mejor momento {textoPeriodo(per, periodo).replace(/^en /, "de ")} fue el {fechaLarga(max.d)}, con <strong>{eur0(max.g)}</strong>. Hoy estás en <strong style={{ color: colorDe(hoy) }}>{eur0(hoy)}</strong>: {fmtE0(max.g - hoy)} por debajo.</> });
+  if (mejor && mejor.g > 0.5) items.push({ icon: TrendingUp, color: C.income, t: <>Mejor día: el {fechaLarga(mejor.d)}, <strong style={{ color: C.income }}>{eur0(mejor.g)}</strong>.</> });
+  if (peor && peor.g < -0.5) items.push({ icon: TrendingDown, color: C.expense, t: <>Peor día: el {fechaLarga(peor.d)}, <strong style={{ color: C.expense }}>{eur0(peor.g)}</strong>.</> });
+  // Divisas: lo que cotiza fuera del euro se mueve también con el tipo de cambio.
+  const total = filas.reduce((t, f) => t + f.valor, 0);
+  const porDiv = {};
+  for (const f of filas) { const d = divisaDe(f.p, datos); if (d !== "EUR") porDiv[d] = (porDiv[d] || 0) + f.valor; }
+  for (const [d, v] of Object.entries(porDiv).sort((x, y) => y[1] - x[1]).slice(0, 2)) {
+    if (total && v / total > 0.05) items.push({ icon: Coins, color: C.accent, t: <>El {pct(v / total, false, 0)} cotiza en {d === "USD" ? "dólares" : d}: si el {d === "USD" ? "dólar" : d} baja un 5 % frente al euro, pierdes unos <strong>{fmtE0(v * 0.05)}</strong> aunque las cotizaciones no se muevan.</> });
+  }
+  // Concentración: cuánto pesan tus 3 productos más grandes.
+  if (filas.length > 4 && total) {
+    const top = [...filas].sort((x, y) => y.valor - x.valor).slice(0, 3);
+    const peso = top.reduce((t, f) => t + f.valor, 0) / total;
+    if (peso > 0.6) items.push({ icon: PieChart, color: C.accent, t: <>Tus 3 productos más grandes son el <strong>{pct(peso, false, 0)}</strong> de esto ({top.map((f) => f.p.nombre).join(", ")}).</> });
+  }
+  const sinFecha = filas.filter((f) => !f.compraConocida && !f.sinPrecio);
+  if (sinFecha.length) items.push({ icon: AlertTriangle, color: C.expense, t: <>{sinFecha.length === 1 ? `«${sinFecha[0].p.nombre}» no tiene` : `${sinFecha.length} productos no tienen`} fecha de compra: su historia empieza el día que los diste de alta. <button type="button" className="underline" onClick={() => onFecha(sinFecha[0].p.id)}>Ponla en su ficha</button>.</> });
+  if (!items.length) return null;
+  return (
+    <Card className="p-4">
+      <h3 className="text-sm font-semibold">Lo destacable</h3>
+      <ul className="mt-2 space-y-2">
+        {items.map((x, i) => { const I = x.icon; return <li key={i} className="flex items-start gap-2 text-sm text-slate-700"><I size={15} className="mt-0.5 shrink-0" style={{ color: x.color }} /><span style={tnum}>{x.t}</span></li>; })}
+      </ul>
+    </Card>
+  );
+}
+
+// Sin historia propia todavía (p. ej. sin fecha de compra): qué falta y cómo ha ido el precio.
+export function SinHistoria({ a, ids, desde, robo, candidato, onUsarAportacion, onFecha, primerId }) {
+  const s = useMemo(() => {
+    const pts = a.serie.slice(-260).map((p) => ({ et: fechaCorta(p.d), v: ids.reduce((t, id) => t + (p.porPosBase?.[id] || 0), 0) }));
+    const b = pts.find((x) => x.v > 0)?.v;
+    return b ? pts.map((x) => ({ ...x, r: (x.v / b - 1) * 100 })) : [];
+  }, [a.serie, ids.join()]); // eslint-disable-line react-hooks/exhaustive-deps
+  const r = s.length ? s[s.length - 1].r / 100 : null;
+  return (
+    <div className="flex h-full flex-col">
+      <p className="text-xs text-slate-600">Solo sé lo que tienes aquí desde el {fechaLarga(desde)}, así que aún no hay evolución tuya que dibujar.{" "}
+        {robo && candidato ? <>Si usas tus transferencias de {fmtE0(candidato.importe)}, la reconstruyo desde tu primera aportación. <button type="button" className="font-medium underline" style={{ color: C.accent }} onClick={onUsarAportacion}>Usarlas</button></>
+          : <>Pon la fecha de compra y la verás desde entonces. <button type="button" className="font-medium underline" style={{ color: C.accent }} onClick={() => onFecha(primerId)}>Poner fecha</button></>}
+      </p>
+      {s.length > 1 && (
+        <>
+          <p className="mt-2 text-[11px] text-slate-500" style={tnum}>Mientras, el precio de lo que tienes en el último año: <strong style={{ color: colorDe(r) }}>{pct(r)}</strong></p>
+          <div className="min-h-0 flex-1">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={s} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+                <XAxis dataKey="et" tick={{ fontSize: 10, fill: C.muted }} tickLine={false} axisLine={{ stroke: C.line }} interval="preserveStartEnd" minTickGap={44} />
+                <YAxis hide domain={["auto", "auto"]} />
+                <Line type="monotone" dataKey="r" stroke={C.muted} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}

@@ -65,9 +65,11 @@ nombre y añade lo nuevo, sin duplicar):
 | **Valor** | participaciones × último precio (en euros, al cambio del día) | Cuánto vale hoy |
 | **Invertido** | participaciones × coste medio, más las aportaciones de la cartera automatizada | Lo que has puesto |
 | **Plusvalía** | valor − invertido; en % = valor ÷ invertido − 1 | Lo mismo que «Plusvalía/Minusvalía» o «G/P» de tu entidad |
-| **Último cambio** | participaciones × (último precio publicado − el anterior), con su fecha | Cuánto se movió el último precio (en fondos, el de hace 1–2 días) |
-| **Mi %** (gráfico) | valor ÷ invertido − 1 en cada día, desde tu fecha de compra | Lo que ganas o pierdes con tu dinero a lo largo del tiempo; el último punto es tu plusvalía |
-| **Producto** (gráfico) | precio en el periodo, con lo que tienes hoy, aunque entonces no lo tuvieras | La historia del producto, no la tuya |
+| **Última sesión** | participaciones × (último precio publicado − el anterior), con su fecha | Cuánto se movió el último precio (en fondos, el de hace 1–2 días) |
+| **Resultado del periodo** (1S, 1M, 3M, Año, 1A, Todo) | valor al final − valor al principio − lo que pusiste entre medias; en % ÷ (valor al principio + lo que pusiste) | Cuánto has ganado o perdido en ese periodo. Si entraste después de que empiece, cuenta desde que entraste. Con «Todo» es la plusvalía |
+| **Qué explica tu resultado** | el mismo cálculo para cada plataforma o producto | Qué ha sumado y qué ha restado; sumados dan el total |
+| **Tú frente al mercado** | cada euro que pusiste, el mismo día, en un fondo indexado (MSCI World, S&P 500, Nasdaq 100 o STOXX Europe 600, cotizados en euros) | Si lo estás haciendo mejor o peor que el índice, con tus mismas aportaciones |
+| **Tu posición / El producto** (ficha) | tu plusvalía desde que entraste / variación de su precio en ese mismo tiempo | Separar cómo te ha ido a ti de cómo ha ido el producto |
 | **Variación 1 semana / 1 mes / este año / 1 año** de un producto | precio final ÷ precio inicial − 1 | Cómo ha ido el producto en sí |
 
 Tu posición **nunca se calcula hacia atrás**: cuenta desde tu fecha de compra (`compra`) o, si no
@@ -77,7 +79,15 @@ movimientos), ajustado para que coincida con tus participaciones e invertido de 
 
 Los totales y los grupos (por plataforma, por tipo) suman valores e invertido, y el % se calcula
 sobre esas sumas, como hacen las entidades en su cabecera. Los productos sin coste no entran en la
-plusvalía total y se indican aparte.
+plusvalía total («Todo») y se indican aparte; en un periodo sí cuentan, desde lo que valían al
+empezar.
+
+Un producto **sin fecha de compra** solo cuenta en un periodo desde el día que lo diste de alta y con
+lo que valía entonces: así no se apunta en el último mes lo que ganó antes.
+
+**«¿Por qué se ha movido?»** (opcional, con tu IA): busca en la web las noticias del periodo que
+explican lo que han hecho tus productos. A la IA solo se le envían nombres, identificadores y
+porcentajes; nunca cuánto tienes ni cuánto ganas.
 
 ## Cuándo coincide con tu entidad y cuándo no
 

@@ -1,6 +1,7 @@
 import { C, aiLeerCapturas, fmtE, fmtE0, nfNum, tnum } from "../core.js";
 import { Btn, Card, Modal, Seg } from "../ui/comunes.jsx";
-import { actualizarCampos, analizarInversiones, candidatosAportacion, fusionarPosiciones, normalizarPosiciones, posicionesDeCapturas, rentabilidadTWR, serieEUR, simbolosDe, dia, sumarDias, divisaDe } from "../inversiones.js";
+import { Destacados, FrenteMercado, Panel, QueHaMovido, SinHistoria, referenciaInicial } from "./inversiones-panel.jsx";
+import { REFERENCIAS, actualizarCampos, analizarInversiones, candidatosAportacion, fusionarPosiciones, normalizarPosiciones, posicionesDeCapturas, serieEUR, simbolosDe, dia, sumarDias, divisaDe } from "../inversiones.js";
 import { AlertTriangle, Camera, ChevronDown, ChevronRight, Pencil, Plus, RefreshCw, Repeat, Search, Trash2, Upload, Wallet } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, Line, ComposedChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -24,14 +25,6 @@ const fechaLarga = (f) => (f ? new Date(f + "T12:00:00").toLocaleDateString("es-
 const RANGOS = [{ v: 30, l: "1M" }, { v: 182, l: "6M" }, { v: 365, l: "1A" }, { v: 0, l: "Todo" }];
 // Colores de las series (entidades, productos): distinguibles en claro y en oscuro.
 const PALETA = ["#2F7DE1", "#16A34A", "#E0A100", "#8B5CF6", "#E5484D", "#0EA5A4", "#EA6A2A", "#64748B"];
-const recortar = (serie, rango) => {
-  if (!serie?.length) return [];
-  const desde = rango ? sumarDias(serie[serie.length - 1].d, -rango) : "0000-00-00";
-  const s = serie.filter((p) => p.d >= desde);
-  const paso = Math.max(1, Math.ceil(s.length / 260));
-  return s.filter((_, i) => i % paso === 0 || i === s.length - 1).map((p) => ({ ...p, et: fechaCorta(p.d) }));
-};
-const ejeY = (v) => (Math.abs(v) >= 10000 ? nfNum.format(Math.round(v / 1000)) + "k" : nfNum.format(Math.round(v * 100) / 100));
 
 function Cifra({ label, children, sub, color }) {
   return (
@@ -43,7 +36,7 @@ function Cifra({ label, children, sub, color }) {
   );
 }
 
-function GraficoEvolucion({ serie, conInvertido, referencia, alto = 200 }) {
+function GraficoEvolucion({ serie, conInvertido, referencia, marca, alto = 200 }) {
   const [rango, setRango] = useState(365);
   const datos = useMemo(() => {
     if (!serie?.length) return [];
@@ -53,9 +46,8 @@ function GraficoEvolucion({ serie, conInvertido, referencia, alto = 200 }) {
     return s.filter((_, i) => i % paso === 0 || i === s.length - 1).map((p) => ({ ...p, et: fechaCorta(p.d) }));
   }, [serie, rango]);
   if (datos.length < 2) return <p className="py-8 text-center text-sm text-slate-400">El gráfico aparecerá cuando lleguen los precios.</p>;
-  // Rentabilidad del periodo descontando las aportaciones (ver rentabilidadTWR), sobre la serie
-  // completa: la del gráfico está muestreada y podría saltarse el día de una aportación.
-  const rPeriodo = rentabilidadTWR(serie, { desde: datos[0].d }).r;
+  // Variación del precio en el periodo (en la ficha la serie es el precio del producto).
+  const rPeriodo = datos[0].valor ? datos[datos.length - 1].valor / datos[0].valor - 1 : null;
   const sube = (rPeriodo ?? 0) >= 0;
   const color = sube ? C.income : C.expense;
   const TT = ({ active, payload }) => {
@@ -91,158 +83,12 @@ function GraficoEvolucion({ serie, conInvertido, referencia, alto = 200 }) {
             <Tooltip content={<TT />} cursor={{ stroke: C.lineStrong }} />
             <Area type="monotone" dataKey="valor" stroke={color} strokeWidth={2} fill="url(#gradInv)" isAnimationActive={false} />
             {conInvertido && <Line type="stepAfter" dataKey="invertido" stroke={C.muted} strokeDasharray="4 3" strokeWidth={1.5} dot={false} isAnimationActive={false} />}
+            {marca && datos.some((p) => p.d >= marca) && <ReferenceLine x={datos.find((p) => p.d >= marca).et} stroke={C.accent} strokeDasharray="3 3" label={{ value: "Entraste", position: "insideTopRight", fontSize: 10, fill: C.accent }} />}
             {referencia != null && <ReferenceLine y={referencia} ifOverflow="extendDomain" stroke={C.muted} strokeDasharray="4 3" label={{ value: "Tu precio medio", position: "insideTopLeft", fontSize: 10, fill: C.muted }} />}
           </ComposedChart>
         </ResponsiveContainer>
       </div>
     </div>
-  );
-}
-
-/* Evolución navegable: Todo → plataforma → producto. En «€», cuánto vale y de qué se compone
-   (áreas apiladas y la línea de lo invertido); en «%», cómo ha rendido cada parte en el periodo
-   (rentabilidad ponderada por tiempo: las aportaciones no cuentan como ganancia). Debajo, lo que
-   compone el nivel, con su valor y su %: tocar una fila baja un nivel. */
-function Evolucion({ a, inv, nivel, setNivel, onAbrirProducto }) {
-  const [rango, setRango] = useState(365);
-  const [unidad, setUnidad] = useState("eur");
-  const entidades = a.porEntidad.map((g) => g.nombre);
-  const pos = nivel.id ? inv.posiciones.find((p) => p.id === nivel.id) : null;
-  const filaPos = pos ? a.filas.find((f) => f.p.id === pos.id) : null;
-  const colorEntidad = (e) => PALETA[Math.max(0, entidades.indexOf(e)) % PALETA.length];
-
-  // Qué hay en este nivel: sus partes (para apilar y para la lista) y cómo leer cada una.
-  const partes = useMemo(() => {
-    if (nivel.id) return [];
-    if (!nivel.e) return a.porEntidad.map((g) => ({ k: g.nombre, nombre: g.nombre, color: colorEntidad(g.nombre), entidad: g.nombre }));
-    const g = a.porEntidad.find((x) => x.nombre === nivel.e);
-    return (g?.filas || []).map((f, i) => ({ k: f.p.id, nombre: f.p.nombre, color: PALETA[i % PALETA.length], pos: f.p.id }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nivel, a.porEntidad]);
-
-  const leerValor = (p, x) => (x.pos ? p.porPos?.[x.pos] : x.entidad ? p.porEntidad?.[x.entidad] : p.valor) ?? 0;
-  const leerInv = (p, x) => (x.pos ? p.invPos?.[x.pos] : x.entidad ? p.invEntidad?.[x.entidad] : p.invertido);
-  const actual = nivel.id ? { pos: nivel.id } : nivel.e ? { entidad: nivel.e } : {};
-  // «Mi %»: lo que ganas o pierdes desde que entraste (valor ÷ invertido − 1), como tu entidad; solo
-  // existe desde tu compra. «Producto»: cómo ha ido el precio de lo que tienes en el periodo, aunque
-  // entonces no lo tuvieras (para ver su historia).
-  const valorCC = (p, x) => (x.pos ? p.porPos?.[x.pos] : x.entidad ? p.ccEntidad?.[x.entidad] : p.valorCC) ?? 0;
-  const miPct = (p, x) => { const iv = leerInv(p, x); return iv > 0 ? (valorCC(p, x) / iv - 1) * 100 : null; };
-  const base = (p, x) => (x.pos ? p.porPosBase?.[x.pos] : x.entidad ? p.porEntidadBase?.[x.entidad] : Object.values(p.porPosBase || {}).reduce((t, v) => t + v, 0)) ?? null;
-  const filasNivel = nivel.id ? a.filas.filter((f) => f.p.id === nivel.id) : nivel.e ? a.filas.filter((f) => (f.p.entidad || "Sin entidad") === nivel.e) : a.filas;
-  const entradaNivel = filasNivel.reduce((mn, f) => (f.entrada && f.entrada < mn ? f.entrada : mn), "9999-12-31");
-  const sinFecha = filasNivel.filter((f) => !f.compraConocida);
-
-  const datos = useMemo(() => {
-    const s = recortar(a.serie, rango);
-    if (unidad === "eur") return s.map((p) => {
-      const o = { d: p.d, et: p.et, inv: leerInv(p, actual) ?? null };
-      if (partes.length) for (const x of partes) o[x.k] = leerValor(p, x);
-      else o.valor = leerValor(p, actual);
-      return o;
-    });
-    if (unidad === "pos") return s.map((p) => {
-      const o = { d: p.d, et: p.et, _total: miPct(p, actual) };
-      for (const x of partes) o[x.k] = miPct(p, x);
-      return o;
-    });
-    const b0 = {};
-    for (const x of [actual, ...partes]) b0[x.k || "_total"] = s.map((p) => base(p, x)).find((v) => v > 0) ?? null;
-    return s.map((p) => {
-      const o = { d: p.d, et: p.et };
-      for (const x of [actual, ...partes]) { const k = x.k || "_total"; const v = base(p, x); o[k] = b0[k] && v > 0 ? (v / b0[k] - 1) * 100 : null; }
-      return o;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [a.serie, rango, unidad, partes, nivel]);
-
-  const ultimoDato = (k) => { for (let i = datos.length - 1; i >= 0; i--) if (datos[i][k] != null) return datos[i][k] / 100; return null; };
-  const rNivel = unidad === "eur" ? null : ultimoDato("_total");
-  const ultimo = a.serie[a.serie.length - 1];
-  const nombreRango = RANGOS.find((r) => r.v === rango)?.l;
-
-  const TT = ({ active, payload }) => {
-    if (!active || !payload?.length) return null;
-    const p = payload[0].payload;
-    const filas = payload.filter((x) => x.value != null && x.dataKey !== "inv").sort((x, y) => y.value - x.value).slice(0, 6);
-    const nombre = (k) => (k === "_total" ? (pos?.nombre || nivel.e || "Todo") : k === "valor" ? (pos?.nombre || "Valor") : partes.find((x) => x.k === k)?.nombre || k);
-    return (
-      <div className="max-w-[16rem] rounded-xl border bg-white px-3 py-2 text-xs shadow-lg" style={{ borderColor: C.line }}>
-        <div className="mb-1 font-medium">{fechaLarga(p.d)}</div>
-        {unidad === "eur" && partes.length > 0 && <div className="flex justify-between gap-3 font-semibold" style={tnum}><span>Total</span><span>{fmtE0(partes.reduce((t, x) => t + (p[x.k] || 0), 0))}</span></div>}
-        {unidad === "pos" && <div className="mb-0.5 text-slate-500">Ganas/pierdes desde que entraste</div>}
-        {filas.map((x) => <div key={x.dataKey} className="flex justify-between gap-3" style={tnum}><span className="truncate" style={{ color: x.color }}>{nombre(x.dataKey)}</span><span>{unidad === "eur" ? fmtE0(x.value) : pct(x.value / 100)}</span></div>)}
-        {unidad === "eur" && p.inv != null && <div className="mt-0.5 flex justify-between gap-3 text-slate-500" style={tnum}><span>Invertido</span><span>{fmtE0(p.inv)}</span></div>}
-      </div>
-    );
-  };
-
-  const color = colorDe(rNivel);
-  const ganancia = (x) => (x.pos ? a.filas.find((f) => f.p.id === x.pos)?.resultadoPct : a.porEntidad.find((g) => g.nombre === x.entidad)?.resultadoPct) ?? null;
-
-  return (
-    <Card className="p-4">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold">Evolución</h3>
-        <Seg ariaLabel="Qué ver" value={unidad} onChange={setUnidad} options={[{ v: "eur", l: "€" }, { v: "pos", l: "Mi %" }, { v: "prod", l: "Producto" }]} />
-      </div>
-      {unidad === "pos" && (
-        <p className="mt-1 text-xs" style={tnum}>
-          <span className="text-slate-500">Ganas/pierdes desde que entraste{entradaNivel < "9999" ? ` (${fechaCorta(entradaNivel)})` : ""}: </span><span className="font-semibold" style={{ color }}>{pct(rNivel)}</span>
-          {sinFecha.length > 0 && <span className="block text-[11px] text-slate-400">{sinFecha.length === 1 ? `«${sinFecha[0].p.nombre}» no tiene fecha de compra` : `${sinFecha.length} productos no tienen fecha de compra`}: cuenta{sinFecha.length === 1 ? "" : "n"} desde la fecha de tus datos. Añádela en su ficha.</span>}
-        </p>
-      )}
-      {unidad === "prod" && <p className="mt-1 text-xs" style={tnum}><span className="text-slate-500">Precio de lo que tienes en {nombreRango === "Todo" ? "todo el periodo" : nombreRango} (aunque entonces no lo tuvieras): </span><span className="font-semibold" style={{ color }}>{pct(rNivel)}</span></p>}
-
-      <div className="mt-3" style={{ height: 210 }}>
-        {datos.length < 2 ? <p className="pt-16 text-center text-sm text-slate-400">Aún no hay precios suficientes.</p> : (
-          <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={datos} margin={{ top: 6, right: 4, left: 4, bottom: 0 }}>
-              <CartesianGrid vertical={false} stroke={C.line} />
-              <XAxis dataKey="et" tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={{ stroke: C.line }} interval="preserveStartEnd" minTickGap={48} />
-              <YAxis tick={{ fontSize: 11, fill: C.muted }} tickLine={false} axisLine={false} width={unidad === "eur" ? 52 : 40} domain={["auto", "auto"]} tickFormatter={unidad === "eur" ? ejeY : (v) => `${Math.round(v)}%`} />
-              <Tooltip content={<TT />} cursor={{ stroke: C.lineStrong }} />
-              {unidad !== "eur" && <ReferenceLine y={0} stroke={C.lineStrong} />}
-              {unidad === "eur" && partes.map((x) => <Area key={x.k} type="monotone" dataKey={x.k} stackId="1" stroke={x.color} fill={x.color} fillOpacity={0.3} isAnimationActive={false} />)}
-              {unidad === "eur" && !partes.length && <Area type="monotone" dataKey="valor" stroke={color} fill={color} fillOpacity={0.15} strokeWidth={2} isAnimationActive={false} />}
-              {unidad === "eur" && <Line type="stepAfter" dataKey="inv" stroke={C.ink2} strokeDasharray="4 3" strokeWidth={1.25} dot={false} isAnimationActive={false} />}
-              {unidad !== "eur" && partes.map((x) => <Line key={x.k} type="monotone" dataKey={x.k} stroke={x.color} strokeWidth={1.5} dot={false} connectNulls isAnimationActive={false} />)}
-              {unidad !== "eur" && <Line type="monotone" dataKey="_total" stroke={C.ink} strokeWidth={2.5} dot={false} connectNulls isAnimationActive={false} />}
-            </ComposedChart>
-          </ResponsiveContainer>
-        )}
-      </div>
-      <div className="mt-2 flex items-center justify-between gap-2">
-        <span className="text-[11px] text-slate-400">{unidad === "eur" ? "– – invertido" : "— " + (pos?.nombre || nivel.e || "total")}</span>
-        <Seg ariaLabel="Periodo" value={rango} onChange={setRango} options={RANGOS} />
-      </div>
-
-      {partes.length > 0 ? (
-        <div className="mt-3 divide-y border-t" style={{ borderColor: C.line }}>
-          <div className="flex justify-end gap-2 pt-2 text-[10px] uppercase tracking-wide text-slate-400"><span>Valor</span><span className="w-16 text-right">{unidad === "prod" ? `Precio ${nombreRango}` : "Ganas"}</span><span className="w-3.5" /></div>
-          {partes.map((x) => {
-            const v = ultimo ? leerValor(ultimo, x) : 0;
-            // En «€», la ganancia desde que compraste (como en tu entidad); en «%», la del periodo.
-            const r = unidad === "prod" ? ultimoDato(x.k) : ganancia(x);
-            return (
-              <button key={x.k} type="button" onClick={() => setNivel(x.pos ? { e: nivel.e, id: x.pos } : { e: x.entidad, id: null })}
-                className="flex w-full items-center gap-2 py-2.5 text-left text-sm hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500">
-                <span className="inline-block h-3 w-3 shrink-0 rounded-sm" style={{ background: x.color }} />
-                <span className="min-w-0 flex-1 truncate">{x.nombre}</span>
-                <span className="shrink-0 font-medium" style={tnum}>{fmtE0(v)}</span>
-                <span className="w-16 shrink-0 text-right text-xs font-semibold" style={{ ...tnum, color: colorDe(r) }}>{r == null ? "–" : pct(r)}</span>
-                <ChevronRight size={14} className="shrink-0 text-slate-400" />
-              </button>
-            );
-          })}
-        </div>
-      ) : filaPos && (
-        <div className="mt-3 flex items-center justify-between gap-2 border-t pt-3 text-sm" style={{ borderColor: C.line }}>
-          <span className="text-slate-500" style={tnum}>{nfNum.format(Math.round(filaPos.unidades * 1000) / 1000)} × {filaPos.precio == null ? "–" : fmtE(filaPos.precio)}</span>
-          <Btn size="sm" onClick={() => onAbrirProducto(filaPos.p.id)}>Ver ficha</Btn>
-        </div>
-      )}
-    </Card>
   );
 }
 
@@ -289,7 +135,8 @@ function FilaPosicion({ f, datos, onAbrir }) {
       <Mini serie={serieEUR(f.p, datos)} />
       <div className="shrink-0 text-right">
         <div className="text-sm font-semibold" style={tnum}>{fmtE0(f.valor)}</div>
-        <div className="text-xs" style={{ ...tnum, color: colorDe(f.hoyPct) }}>{f.hoyPct == null ? "–" : pct(f.hoyPct)}</div>
+        {/* Lo que ganas o pierdes desde que lo compraste (como el total del grupo); sin coste, el último cambio. */}
+        <div className="text-xs" style={{ ...tnum, color: colorDe(f.resultado ?? f.hoyPct) }}>{f.resultado != null ? `${eur(Math.round(f.resultado), true).replace(/,00(?=\s?€)/, "")} · ${pct(f.resultadoPct)}` : f.hoyPct == null ? "–" : `${pct(f.hoyPct)} últ.`}</div>
       </div>
     </button>
   );
@@ -320,17 +167,33 @@ function Grupo({ g, datos, onAbrir, nota }) {
 function Detalle({ f, datos, onClose, onEditar, onBorrar, onFecha }) {
   const serie = useMemo(() => serieEUR(f.p, datos).map(([d, v]) => ({ d, valor: v })), [f, datos]);
   const div = divisaDe(f.p, datos);
+  const desdeEntrada = useMemo(() => { const ini = serie.filter((x) => x.d <= f.entrada).pop() || serie[0]; return ini && f.precio ? f.precio / ini.valor - 1 : null; }, [serie, f]);
   return (
     <Modal title={f.p.nombre} subtitle={[f.p.entidad, f.p.tipo === "accion" ? "Acción" : "Fondo", f.p.simbolo || f.p.isin].filter(Boolean).join(" · ")} onClose={onClose} wide
       footer={<div className="flex flex-wrap gap-2"><Btn onClick={onEditar}><Pencil size={14} /> Editar</Btn><Btn onClick={onBorrar}><Trash2 size={14} /> Quitar</Btn><Btn onClick={onClose} className="ml-auto">Cerrar</Btn></div>}>
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <Cifra label="Valor">{fmtE(f.valor)}</Cifra>
         <Cifra label="Último cambio" color={colorDe(f.hoy)} sub={pct(f.hoyPct)}>{eur(f.hoy, true)}</Cifra>
-        <Cifra label="Plusvalía" color={colorDe(f.resultado)} sub={f.resultado == null ? "falta el coste" : pct(f.resultadoPct)}>{f.resultado == null ? "–" : eur(f.resultado, true)}</Cifra>
+        <Cifra label="Ganas desde tu compra" color={colorDe(f.resultado)} sub={f.resultado == null ? "falta el coste" : pct(f.resultadoPct)}>{f.resultado == null ? "–" : eur(f.resultado, true)}</Cifra>
         <Cifra label="Peso en tu cartera">{pct(f.peso, false)}</Cifra>
       </div>
-      <div className="mt-4"><GraficoEvolucion serie={serie} referencia={f.precioMedio} alto={210} /></div>
-      <div className="mt-4 grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
+      {/* Dos preguntas distintas: cómo te ha ido a ti (desde tu compra, con tu precio medio) y cómo
+          ha ido el producto (su precio en cualquier periodo, lo tuvieras o no). */}
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <div className="rounded-xl border p-3" style={{ borderColor: C.line }}>
+          <div className="text-[11px] uppercase tracking-wide text-slate-500">Tu posición</div>
+          <div className="text-lg font-semibold" style={{ ...tnum, color: colorDe(f.resultadoPct) }}>{pct(f.resultadoPct)}</div>
+          <div className="text-[11px] text-slate-500">desde que entraste{f.compraConocida ? ` (${fechaCorta(f.entrada)})` : ""}, con tu precio medio</div>
+        </div>
+        <div className="rounded-xl border p-3" style={{ borderColor: C.line }}>
+          <div className="text-[11px] uppercase tracking-wide text-slate-500">El producto</div>
+          <div className="text-lg font-semibold" style={{ ...tnum, color: colorDe(desdeEntrada) }}>{pct(desdeEntrada)}</div>
+          <div className="text-[11px] text-slate-500">su precio en ese mismo tiempo</div>
+        </div>
+      </div>
+      <div className="mt-4"><GraficoEvolucion serie={serie} referencia={f.precioMedio} marca={f.compraConocida ? f.entrada : null} alto={210} /></div>
+      <div className="mt-3 text-[11px] font-medium uppercase tracking-wide text-slate-500">Precio del producto</div>
+      <div className="mt-1 grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
         {[["1 semana", f.var.s], ["1 mes", f.var.m], ["Este año", f.var.ytd], ["1 año", f.var.a]].map(([l, v]) => (
           <div key={l} className="rounded-xl border px-2 py-2" style={{ borderColor: C.line }}>
             <div className="text-[11px] text-slate-500">{l}</div>
@@ -623,7 +486,7 @@ function Aportacion({ inv, movs, onGuardar, onClose }) {
 }
 
 export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai, aiOn }) {
-  const inv = inversiones || { posiciones: [], aportacion: null };
+  const inv = useMemo(() => inversiones || { posiciones: [], aportacion: null }, [inversiones]);
   const [datos, setDatos] = useState(() => leer(PRECIOS_KEY) || { series: {}, meta: {} });
   const [cargando, setCargando] = useState(false);
   const [aviso, setAviso] = useState(null);
@@ -636,6 +499,9 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
   const [capturas, setCapturas] = useState(false);
   // Qué estás mirando: todo, una plataforma o un producto. Manda en la tarjeta, la gráfica y las listas.
   const [nivel, setNivel] = useState({ e: null, id: null });
+  const [periodo, setPeriodo] = useState("1m");
+  const [referencia, setReferencia] = useState(referenciaInicial);
+  const [desglose, setDesglose] = useState("entidad");
 
   const traer = useCallback(async () => {
     const d = await servidor.get("/inversiones/precios?desde=" + sumarDias(dia(new Date()), -800));
@@ -644,7 +510,8 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
   }, [servidor]);
 
   // Lo que hay que seguir: se lo dice al servidor cuando cambia, y trae precios si son viejos.
-  const simbolos = simbolosDe(inv).sort().join(",");
+  // Además de lo tuyo, los índices con los que comparar (fondos indexados en euros).
+  const simbolos = [...simbolosDe(inv), ...(inv.posiciones.length ? REFERENCIAS.map((r) => r.simbolo) : [])].sort().join(",");
   useEffect(() => {
     if (!servidor.listo || !servidor.rasgo) return;
     let vivo = true;
@@ -724,8 +591,13 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
     return { valor, hoy, hoyPct: valor - hoy ? hoy / (valor - hoy) : null, invertido, ganancia: cc.length ? valorCC - invertido : null, gananciaPct: invertido ? valorCC / invertido - 1 : null, sinCoste: selFilas.length - cc.length };
   })();
   const nombreSel = nivel.id ? selFilas[0]?.p.nombre : nivel.e || "Todas tus inversiones";
-  const fechaFondos = selFilas.filter((f) => f.p.tipo !== "accion" && f.fechaPrecio).reduce((mx, f) => (f.fechaPrecio > mx ? f.fechaPrecio : mx), "");
-  const horaAcc = selFilas.reduce((mx, f) => (f.p.tipo === "accion" && f.mercado > mx ? f.mercado : mx), 0);
+  const selIds = selFilas.map((f) => f.p.id);
+  const filasPorId = Object.fromEntries(a.filas.map((f) => [f.p.id, f]));
+  const entradaSel = selFilas.reduce((mn, f) => (f.entrada && f.entrada < mn ? f.entrada : mn), "9999-12-31");
+  // Qué se desglosa en «Qué explica tu resultado»: plataformas (o todos los productos) o los productos de la elegida.
+  const partesMov = nivel.id ? [] : !nivel.e && desglose === "entidad"
+    ? a.porEntidad.map((g, i) => ({ k: g.nombre, nombre: g.nombre, entidad: g.nombre, ids: g.filas.map((f) => f.p.id), color: PALETA[i % PALETA.length] }))
+    : selFilas.map((f) => ({ k: f.p.id, nombre: f.p.nombre, pos: f.p.id, ids: [f.p.id] }));
   const ultimaFecha = selFilas.reduce((mx, f) => (f.fechaPrecio && f.fechaPrecio > mx ? f.fechaPrecio : mx), "");
   const guardarPos = (p) => { setInversiones((x) => ({ ...x, posiciones: x.posiciones.some((q) => q.id === p.id) ? x.posiciones.map((q) => (q.id === p.id ? p : q)) : [...x.posiciones, p] })); setEditando(null); };
   const borrar = (id) => { if (window.confirm("¿Quitar esta posición de tus inversiones?")) { setInversiones((x) => ({ ...x, posiciones: x.posiciones.filter((p) => p.id !== id) })); setAbierta(null); } };
@@ -745,7 +617,6 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
     setImportando(false);
   };
 
-  const movidos = selFilas.filter((f) => f.hoyPct != null).sort((x, y) => Math.abs(y.hoyPct) - Math.abs(x.hoyPct)).slice(0, 4);
   const avisosCartera = [];
   for (const g of a.porEntidad) if (g.peso > 0.5 && a.porEntidad.length > 1) avisosCartera.push(`El ${pct(g.peso, false)} de lo invertido está en ${g.nombre}.`);
   // Un producto que ya es toda su entidad no repite el aviso.
@@ -805,45 +676,23 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
             </select>
           </div>
 
-          <Card className="p-4">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <div className="truncate text-xs font-medium text-slate-500">{nombreSel}</div>
-                <div className="text-[11px] uppercase tracking-wide text-slate-400">Valor hoy</div>
-                <div className="text-3xl font-semibold" style={tnum}>{fmtE0(sel.valor)}</div>
+          <Panel a={a} ids={selIds} nombre={nombreSel} periodo={periodo} setPeriodo={setPeriodo} referencia={referencia}
+            accion={<Btn size="sm" onClick={actualizar} disabled={cargando || !servidor.listo || !servidor.rasgo} title="Pedir los últimos precios ahora"><RefreshCw size={13} className={cargando ? "animate-spin" : ""} /> {cargando ? "Actualizando" : "Actualizar"}</Btn>}
+            vacio={<SinHistoria a={a} ids={selIds} desde={entradaSel} robo={selFilas.some((f) => f.p.robo) && !inv.aportacion} candidato={candidato} onUsarAportacion={() => candidato && usarAportacion(candidato)} onFecha={setAbierta} primerId={selFilas.find((f) => !f.compraConocida)?.p.id || selIds[0]} />}
+            cifras={
+              <div className="mt-3 grid grid-cols-3 gap-3 border-t pt-3" style={{ borderColor: C.line }}>
+                <Cifra label="Invertido">{sel.invertido ? fmtE0(sel.invertido) : "–"}</Cifra>
+                <Cifra label="Ganas en total" color={colorDe(sel.ganancia)} sub={sel.ganancia == null ? "falta el coste" : pct(sel.gananciaPct)}>{sel.ganancia == null ? "–" : eur(Math.round(sel.ganancia), true).replace(/,00(?=\s?€)/, "")}</Cifra>
+                <Cifra label="Últ. sesión" color={colorDe(sel.hoy)} sub={`${pct(sel.hoyPct)}${ultimaFecha ? ` · ${fechaCorta(ultimaFecha)}` : ""}`}>{eur(Math.round(sel.hoy), true).replace(/,00(?=\s?€)/, "")}</Cifra>
               </div>
-              <Btn size="sm" onClick={actualizar} disabled={cargando || !servidor.listo || !servidor.rasgo} title="Pedir los últimos precios ahora">
-                <RefreshCw size={13} className={cargando ? "animate-spin" : ""} /> {cargando ? "Actualizando" : "Actualizar"}
-              </Btn>
-            </div>
-            <div className="mt-3 grid grid-cols-3 gap-3">
-              <Cifra label="Invertido">{sel.invertido ? fmtE0(sel.invertido) : "–"}</Cifra>
-              <Cifra label="Ganas / pierdes" color={colorDe(sel.ganancia)} sub={sel.ganancia == null ? "falta el coste" : pct(sel.gananciaPct)}>{sel.ganancia == null ? "–" : eur(Math.round(sel.ganancia), true).replace(/,00(?=\s?€)/, "")}</Cifra>
-              <Cifra label="Último cambio" color={colorDe(sel.hoy)} sub={`${pct(sel.hoyPct)}${ultimaFecha ? ` · ${fechaCorta(ultimaFecha)}` : ""}`}>{eur(Math.round(sel.hoy), true).replace(/,00(?=\s?€)/, "")}</Cifra>
-            </div>
-            <p className="mt-2 text-[11px] leading-snug text-slate-400">
-              <strong className="font-medium">Ganas / pierdes</strong>: valor hoy − invertido, desde que compraste (como en tu entidad){sel.sinCoste ? `; ${sel.sinCoste} sin coste no cuenta${sel.sinCoste === 1 ? "" : "n"}` : ""}.{" "}
-              <strong className="font-medium">Último cambio</strong>: lo que se movió el último precio publicado de cada producto{horaAcc ? ` (acciones a las ${new Date(horaAcc).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}` : ""}{fechaFondos ? `${horaAcc ? "; " : " ("}fondos al ${fechaCorta(fechaFondos)}` : ""}{horaAcc || fechaFondos ? ")" : ""}.
-            </p>
-            {!nivel.e && <div className="mt-3"><Reparto grupos={a.porEntidad} total={a.total} /></div>}
-          </Card>
+            }
+            reparto={!nivel.e && <div className="mt-3"><Reparto grupos={a.porEntidad} total={a.total} /></div>} />
 
-          <Evolucion a={a} inv={inv} nivel={nivel} setNivel={setNivel} onAbrirProducto={setAbierta} />
-
-          {movidos.length > 1 && (
-            <Card className="p-4">
-              <h3 className="text-sm font-semibold">Lo que más se ha movido</h3>
-              <div className="mt-2 divide-y" style={{ borderColor: C.line }}>
-                {movidos.map((f) => (
-                  <button key={f.p.id} type="button" onClick={() => setAbierta(f.p.id)} className="flex w-full items-center gap-2 py-2 text-left text-sm">
-                    <span className="min-w-0 flex-1 truncate">{f.p.nombre}</span>
-                    <span className="shrink-0 text-xs text-slate-500" style={tnum}>{eur(f.hoy, true)}</span>
-                    <span className="w-16 shrink-0 text-right font-semibold" style={{ ...tnum, color: colorDe(f.hoyPct) }}>{pct(f.hoyPct)}</span>
-                  </button>
-                ))}
-              </div>
-            </Card>
-          )}
+          <QueHaMovido a={a} periodo={periodo} partes={partesMov} filasPorId={filasPorId} ai={ai} aiOn={aiOn}
+            control={!nivel.e && a.porEntidad.length > 1 && <Seg ariaLabel="Desglosar por" value={desglose} onChange={setDesglose} options={[{ v: "entidad", l: "Plataformas" }, { v: "producto", l: "Productos" }]} />}
+            onElegir={(x) => (x.pos ? (nivel.id === x.pos ? setAbierta(x.pos) : setNivel({ e: entidadDe(filasPorId[x.pos].p), id: x.pos })) : setNivel({ e: x.entidad, id: null }))} />
+          <FrenteMercado a={a} ids={selIds} periodo={periodo} referencia={referencia} setReferencia={setReferencia} />
+          <Destacados a={a} ids={selIds} periodo={periodo} filas={selFilas} datos={datos} onFecha={setAbierta} />
 
           <div className="flex items-center justify-between gap-2">
             <Seg ariaLabel="Agrupar por" value={vista} onChange={setVista} options={[{ v: "entidad", l: "Por plataforma" }, { v: "tipo", l: "Por tipo" }]} />
@@ -872,8 +721,11 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
             <div className="mt-2 space-y-2 text-slate-600">
               <p><strong>Plusvalía</strong> = valor actual − lo invertido, y en % = valor ÷ invertido − 1. Es lo que muestran los bancos y brókeres («Plusvalía/Minusvalía», «G/P»). Coincide con tu entidad si pones las mismas <em>participaciones</em> y el mismo <em>coste medio</em> de su ficha.</p>
               <p><strong>Valor actual</strong> = participaciones × último precio (cierre o valor liquidativo; en dólares, al cambio del día). Puede diferir unos céntimos de tu entidad si su precio o su cambio son de otra hora.</p>
-              <p><strong>Rentabilidad de un periodo</strong> (el gráfico, «en lo que va de año», «Comparar») es ponderada por tiempo: encadena lo que sube o baja cada día y descuenta las aportaciones, para que el dinero nuevo no parezca ganancia. Es el método estándar de gestoras y robo-advisors. Por eso puede no coincidir con la plusvalía: una mide el periodo, la otra desde que compraste.</p>
-              <p><strong>Último cambio</strong> = variación desde el precio anterior. Las acciones se actualizan cada media hora en horario de bolsa; los fondos, una vez al día, con 1–2 días de retraso.</p>
+              <p><strong>Resultado de un periodo</strong> (1S, 1M, 3M, Año, 1A) = valor al final − valor al principio − lo que pusiste entre medias. En % se divide entre lo que había al principio más lo que pusiste. Si entraste después de que empiece el periodo, cuenta desde que entraste: nunca hacia atrás. Con «Todo» es exactamente «Ganas en total».</p>
+              <p><strong>Qué explica tu resultado</strong> reparte ese mismo resultado entre plataformas o productos: sumados dan el total.</p>
+              <p><strong>Tú frente al mercado</strong>: cada euro que pusiste, el mismo día, en un fondo indexado al índice elegido (en euros). Así se compara lo que has hecho con «haberlo puesto todo en el índice», con tus mismas aportaciones.</p>
+              <p><strong>Tu posición y el producto</strong> (en la ficha): tu posición es lo que ganas con tu precio medio desde que entraste; el producto, cómo ha ido su precio en cualquier periodo, aunque entonces no lo tuvieras.</p>
+              <p><strong>Última sesión</strong> = variación desde el precio anterior. Las acciones se actualizan cada media hora en horario de bolsa; los fondos, una vez al día, con 1–2 días de retraso.</p>
               <p><strong>Para que cuadre:</strong> en la ficha de cada producto de tu entidad busca el nº de participaciones (o acciones) y el coste medio, e impórtalos con «Importar → Actualizar y añadir»: <code className="text-xs">{'{"nombre":"…","isin":"…","participaciones":"1.250,5","costeMedio":"12.3456"}'}</code></p>
             </div>
           </details>
