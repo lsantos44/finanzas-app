@@ -1,6 +1,7 @@
 import { C, fmtE0, tnum } from "../core.js";
 import { Card } from "./comunes.jsx";
 import { analizarInversiones } from "../inversiones.js";
+import { conEjemplo } from "../inversiones-ejemplo.js";
 import { ChevronRight, LineChart } from "lucide-react";
 import { useMemo } from "react";
 
@@ -13,7 +14,7 @@ const color = (v) => (v == null || Math.abs(v) < 1e-9 ? C.muted : v > 0 ? C.inco
 const signo = (v) => `${v > 0 ? "+" : ""}${fmtE0(v)}`;
 
 export function TarjetaInversiones({ inversiones, movs, onAbrir }) {
-  const a = useMemo(() => (inversiones?.posiciones?.length ? analizarInversiones(inversiones, leerPrecios() || { series: {}, meta: {} }, movs) : null), [inversiones, movs]);
+  const a = useMemo(() => (inversiones?.posiciones?.length ? analizarInversiones(inversiones, conEjemplo(leerPrecios() || { series: {}, meta: {} }, inversiones), movs) : null), [inversiones, movs]);
   if (!a) return null;
   return (
     <Card className="mb-4 overflow-hidden">

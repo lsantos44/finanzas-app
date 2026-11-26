@@ -65,6 +65,37 @@ export function aportacionesDe(movs, aportacion) {
 
 const unidadesEn = (lotes, f) => lotes.reduce((s, l) => (l.fecha <= f ? s + l.unidades : s), 0);
 
+// Las operaciones valen si cuadran con las participaciones que tienes (si las cambiaste a mano
+// después, mandan tus participaciones y la fecha de la primera compra).
+export function opsValidas(p) {
+  if (!Array.isArray(p.ops) || !p.ops.length) return null;
+  const neto = p.ops.reduce((t, o) => t + (Number(o.u) || 0), 0);
+  const tiene = p.participaciones || 0;
+  return Math.abs(neto - tiene) <= Math.max(1e-6, Math.abs(tiene) * 0.001) ? p.ops : null;
+}
+export const cerrada = (p) => Boolean(opsValidas(p)) && !(p.participaciones > 1e-9);
+
+/* Lotes de las operaciones: compra = + participaciones y + coste; venta = − participaciones y
+   − el coste de lo vendido (lo más antiguo primero, FIFO). `flujo`: dinero que entra (compra) o
+   sale (venta) ese día, para que el resultado de un periodo no cuente como ganancia lo que pones
+   ni como pérdida lo que sacas. */
+function lotesDeOps(ops, datos) {
+  const cola = [], ls = [];
+  const eur = (o) => (o.divisa && o.divisa !== "EUR" ? aEuros(o.importe, o.divisa, o.fecha, datos) ?? o.importe : o.importe);
+  for (const o of [...ops].sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : b.u - a.u))) {
+    const imp = eur(o);
+    if (o.u > 0) { cola.push({ u: o.u, c: imp }); ls.push({ fecha: o.fecha, unidades: o.u, coste: imp, flujo: imp, base: true }); continue; }
+    let q = -o.u, c = 0;
+    while (q > 1e-9 && cola.length) {
+      const l = cola[0], t = Math.min(q, l.u), ct = (l.c * t) / l.u;
+      c += ct; l.u -= t; l.c -= ct; q -= t;
+      if (l.u < 1e-9) cola.shift();
+    }
+    ls.push({ fecha: o.fecha, unidades: o.u, coste: -c, flujo: -imp, venta: true });
+  }
+  return ls;
+}
+
 // Participaciones de cada posición a lo largo del tiempo, en lotes: el de partida (vale para
 // todas las fechas: lo que tienes hoy, hacia atrás) y uno por cada aportación repartida.
 // La gestora compra unos días después de la transferencia: se usa el precio de dos días más tarde.
@@ -76,6 +107,9 @@ export function calcularLotes(inv, datos, aportes, previas = []) {
   // cartera. Sin ella, se da por hecho que lo tienes desde antes (lo normal en lo que llevas años)
   // con lo que tienes hoy; si lo compraste hace poco, pon la fecha y empieza ahí.
   for (const p of inv.posiciones) {
+    // Con las operaciones de tu bróker (importadas), cada compra y venta es un lote: exacto.
+    const ops = opsValidas(p);
+    if (ops) { lotes[p.id] = lotesDeOps(ops, datos); continue; }
     const desde = p.compra ? (!p.alta || p.compra <= p.alta ? p.compra : p.alta) : "0000-00-00";
     lotes[p.id] = [{ fecha: desde, unidades: unidadesBase(p, datos) ?? 0, coste: p.coste ?? 0, base: true }];
   }
@@ -85,6 +119,7 @@ export function calcularLotes(inv, datos, aportes, previas = []) {
   const tot = pesosObj.reduce((x, y) => x + y, 0);
   if (robo.length && previas.length && tot) {
     robo.forEach((p, i) => {
+      if (opsValidas(p)) return;
       const base = lotes[p.id][0];
       const raw = [];
       for (const a of previas) {
@@ -105,6 +140,7 @@ export function calcularLotes(inv, datos, aportes, previas = []) {
     const t = pesos.reduce((x, y) => x + y, 0);
     if (!t) continue;
     robo.forEach((p, i) => {
+      if (opsValidas(p)) return; // sus operaciones ya incluyen las aportaciones
       // Las participaciones de alta ya incluyen lo comprado hasta esa fecha: si recalibras con
       // los datos de tu entidad, las aportaciones anteriores no se vuelven a sumar.
       if (p.alta && fe <= p.alta) return;
@@ -139,7 +175,8 @@ function variacion(serie, dias) {
 
 /* Todo lo que enseña la pestaña, a partir de posiciones, precios y movimientos. */
 export function analizarInversiones(inv, datos, movs) {
-  const posiciones = inv?.posiciones || [];
+  // Lo vendido del todo no está en tu cartera (sus ventas cuentan en la Renta).
+  const posiciones = (inv?.posiciones || []).filter((p) => !cerrada(p));
   const aportes = aportacionesDe(movs, inv?.aportacion);
   const previas = inv?.aportacion ? aportacionesDe(movs, { ...inv.aportacion, desde: "0000-00-00" }).filter((a) => a.fecha <= (inv.aportacion.desde || "0000-00-00")) : [];
   const lotes = calcularLotes({ posiciones }, datos, aportes, previas);
@@ -157,7 +194,7 @@ export function analizarInversiones(inv, datos, movs) {
     const valor = sinPrecio ? (p.valorAlta || 0) : unidades * precio;
     const hoy = precio != null && precioAnt != null ? unidades * (precio - precioAnt) : null;
     return {
-      p, unidades, precio, valor, coste, aportado, sinPrecio, entrada, compraConocida: Boolean(p.compra || (p.robo && ls.length > 1 && ls[0].fecha < (p.alta || ""))),
+      p, unidades, precio, valor, coste, aportado, sinPrecio, entrada, compraConocida: Boolean(p.compra || opsValidas(p) || (p.robo && ls.length > 1 && ls[0].fecha < (p.alta || ""))),
       fechaPrecio: sinPrecio ? null : s[s.length - 1][0],
       hoy, hoyPct: precioAnt ? precio / precioAnt - 1 : null,
       resultado: coste != null ? valor - coste : null,
@@ -225,7 +262,7 @@ export function analizarInversiones(inv, datos, movs) {
   // Lo que pusiste en cada producto y cuándo (para el resultado de un periodo y para comparar con
   // un índice): cada lote con su coste; sin coste conocido, con lo que valía al entrar.
   const contribuciones = {};
-  const fechaConocida = (p, ls) => Boolean(p.compra || (p.robo && ls.length > 1 && ls[0].fecha < (p.alta || "")));
+  const fechaConocida = (p, ls) => Boolean(p.compra || opsValidas(p) || (p.robo && ls.length > 1 && ls[0].fecha < (p.alta || "")));
   for (const p of posiciones) {
     contribuciones[p.id] = [];
     for (const l of lotes[p.id]) {
@@ -236,7 +273,7 @@ export function analizarInversiones(inv, datos, movs) {
       // Sin fecha de compra no se sabe cuándo se ganó lo ganado: en un periodo cuenta desde el alta,
       // con lo que valía entonces (no con el coste); solo «Todo» usa el coste (la plusvalía).
       const mercado = conAlgo.includes(p) ? l.unidades * (pr ?? 0) : l.base ? p.valorAlta || 0 : 0;
-      contribuciones[p.id].push({ f, fecha: l.fecha, importe, periodo: fechaConocida(p, lotes[p.id]) ? importe : mercado });
+      contribuciones[p.id].push({ f, fecha: l.fecha, importe, periodo: l.flujo != null ? l.flujo : fechaConocida(p, lotes[p.id]) ? importe : mercado });
     }
   }
   const serie = fechas.map((f) => {
@@ -365,7 +402,7 @@ export function destacadosPeriodo(serie, i0, res) {
 }
 
 // Símbolos que el servidor tiene que seguir.
-export const simbolosDe = (inv) => [...new Set((inv?.posiciones || []).map((p) => p.simbolo).filter(Boolean))];
+export const simbolosDe = (inv) => [...new Set((inv?.posiciones || []).filter((p) => !cerrada(p)).map((p) => p.simbolo).filter((x) => x && !x.startsWith("DEMO:")))];
 
 // Importación de posiciones (texto JSON): valida y normaliza, sin aceptar campos raros.
 // Fecha como la escribe la gente o la muestran las entidades: 2026-03-09, 09/03/2026, 09-03-2026.
@@ -414,9 +451,16 @@ export function normalizarPosiciones(lista, hoy) {
     // Coste: el total invertido o, como lo dan las entidades, el coste (precio) medio por participación.
     const costeMedio = num(x.costeMedio);
     const coste = num(x.coste) ?? (costeMedio > 0 && part > 0 ? Math.round(costeMedio * part * 100) / 100 : null);
+    // Operaciones del bróker (importadas de su archivo): compras y ventas con fecha e importe.
+    if (Array.isArray(x.ops) && x.ops.length) {
+      const ops = x.ops.map((o) => ({ fecha: leerFecha(o?.fecha), u: num(o?.u), importe: num(o?.importe), divisa: /^[A-Z]{3}$/.test(o?.divisa || "") ? o.divisa : "EUR", ...(num(o?.comision) > 0 ? { comision: num(o.comision) } : {}), ...(o?.traspaso ? { traspaso: true } : {}) }))
+        .filter((o) => o.fecha && o.u && o.importe > 0);
+      if (ops.length) p.ops = ops.slice(0, 5000);
+    }
     if (part > 0) p.participaciones = part;
+    else if (p.ops) p.participaciones = Math.max(0, Math.round(p.ops.reduce((t, o) => t + o.u, 0) * 1e6) / 1e6);
     if (val > 0) p.valorAlta = val;
-    if (!(p.participaciones > 0) && !(p.valorAlta > 0)) throw new Error(`«${p.nombre}»: indica participaciones o valor actual.`);
+    if (!(p.participaciones > 0) && !(p.valorAlta > 0) && !p.ops) throw new Error(`«${p.nombre}»: indica participaciones o valor actual.`);
     p.coste = coste > 0 ? coste : null;
     if (x.robo) p.robo = true;
     // Cotización ya revisada (elegida a mano o por el servidor): no se vuelve a buscar sola.
@@ -457,7 +501,7 @@ export function fusionarPosiciones(existentes, nuevas) {
         coste: n.coste ?? v.coste, compra: n.compra || v.compra, alta: n.alta || v.alta, robo: n.robo ?? v.robo, pesoObjetivo: n.pesoObjetivo ?? v.pesoObjetivo };
       if (!out[i].compra) delete out[i].compra;
       // Si ahora se sabe el número de participaciones, el valor de alta ya no hace falta (y al revés).
-      if (n.participaciones > 0) delete out[i].valorAlta;
+      if (n.participaciones > 0 && !n.ops) delete out[i].valorAlta;
       else if (n.valorAlta > 0) delete out[i].participaciones;
       actualizadas++;
     } else { out.push(n); añadidas++; }

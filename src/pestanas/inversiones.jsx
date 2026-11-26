@@ -1,8 +1,10 @@
 import { C, aiLeerCapturas, fmtE, fmtE0, nfNum, tnum } from "../core.js";
 import { Btn, Card, Modal, Seg } from "../ui/comunes.jsx";
+import { Bienvenida, ImportarArchivo, ListaOperaciones, Renta } from "./inversiones-extra.jsx";
+import { carteraEjemplo, conEjemplo, esEjemplo } from "../inversiones-ejemplo.js";
 import { Destacados, FrenteMercado, Panel, QueHaMovido, SinHistoria, referenciaInicial } from "./inversiones-panel.jsx";
 import { REFERENCIAS, actualizarCampos, analizarInversiones, candidatosAportacion, fusionarPosiciones, normalizarPosiciones, posicionesDeCapturas, serieEUR, simbolosDe, dia, sumarDias, divisaDe } from "../inversiones.js";
-import { AlertTriangle, Camera, ChevronDown, ChevronRight, Pencil, Plus, RefreshCw, Repeat, Search, Trash2, Upload, Wallet } from "lucide-react";
+import { AlertTriangle, Camera, FileSpreadsheet, ChevronDown, ChevronRight, Pencil, Plus, RefreshCw, Repeat, Search, Trash2, Upload } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, Line, ComposedChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -193,6 +195,7 @@ function Detalle({ f, datos, onClose, onEditar, onBorrar, onFecha }) {
         </div>
       </div>
       <div className="mt-4"><GraficoEvolucion serie={serie} referencia={f.precioMedio} marca={f.compraConocida ? f.entrada : null} alto={210} /></div>
+      <ListaOperaciones ops={f.p.ops} />
       <div className="mt-3 text-[11px] font-medium uppercase tracking-wide text-slate-500">Precio del producto</div>
       <div className="mt-1 grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
         {[["1 semana", f.var.s], ["1 mes", f.var.m], ["Este año", f.var.ytd], ["1 año", f.var.a]].map(([l, v]) => (
@@ -503,6 +506,8 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
   const [periodo, setPeriodo] = useState("1m");
   const [referencia, setReferencia] = useState(referenciaInicial);
   const [desglose, setDesglose] = useState("entidad");
+  const [subiendo, setSubiendo] = useState(false); // importar el archivo del bróker
+  const [seccion, setSeccion] = useState("cartera"); // cartera | renta
 
   const traer = useCallback(async () => {
     const d = await servidor.get("/inversiones/precios?desde=" + sumarDias(dia(new Date()), -800));
@@ -580,7 +585,19 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
     finally { setCargando(false); }
   };
 
-  const a = useMemo(() => analizarInversiones(inv, datos, movs), [inv, datos, movs]);
+  // Con la cartera de ejemplo, sus precios inventados se suman a los de tu servidor.
+  const datosA = useMemo(() => conEjemplo(datos, inv), [datos, inv]);
+  const a = useMemo(() => analizarInversiones(inv, datosA, movs), [inv, datosA, movs]);
+  const ejemplo = esEjemplo(inv);
+  const importarArchivo = (lista) => {
+    try {
+      const norm = normalizarPosiciones(lista, dia(new Date()));
+      // Al traer lo tuyo, la cartera de ejemplo se va.
+      if (ejemplo) setInversiones((x) => ({ ...x, posiciones: x.posiciones.filter((p) => !p.ejemplo) }));
+      importar(norm, false, null);
+      setSubiendo(false);
+    } catch (e) { setAviso("No se pudo importar: " + e.message); setSubiendo(false); }
+  };
   const entidades = [...new Set(inv.posiciones.map((p) => p.entidad).filter(Boolean))];
   const filaAbierta = a.filas.find((f) => f.p.id === abierta);
   const entidadDe = (p) => p.entidad || "Sin entidad";
@@ -645,24 +662,24 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
 
   return (
     <div className="space-y-4">
-      {!servidor.listo && <Card className="p-4 text-sm text-slate-600">Para que los precios se actualicen solos necesitas tu servidor conectado (Ajustes → Tus datos y sincronización).</Card>}
+      {!servidor.listo && !esEjemplo(inv) && <Card className="p-4 text-sm text-slate-600">Para que los precios se actualicen solos necesitas tu servidor conectado (Ajustes → Tus datos y sincronización). Puedes importar igual: hasta entonces verás el valor de tu última operación.</Card>}
       {servidor.listo && !servidor.rasgo && <Card className="p-4 text-sm text-slate-600">Tu servidor aún no sabe traer precios: se actualiza solo en unos minutos si lo publicas desde GitHub. Mientras, puedes ir añadiendo tus posiciones.</Card>}
       {aviso && <div className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800"><AlertTriangle size={16} className="mt-0.5 shrink-0" />{aviso}</div>}
       {nota && <div role="status" className="flex items-start justify-between gap-2 rounded-xl border p-3 text-sm" style={{ borderColor: C.line, background: C.surface }}><span>{nota}</span><button type="button" className="text-xs underline" onClick={() => setNota(null)}>Cerrar</button></div>}
 
       {!inv.posiciones.length ? (
-        <Card className="p-6 text-center">
-          <Wallet size={28} className="mx-auto text-slate-400" />
-          <h2 className="mt-2 text-lg font-semibold">Tus inversiones, al día solas</h2>
-          <p className="mx-auto mt-1 max-w-md text-sm text-slate-600">Añade tus acciones y fondos una vez. Cada noche tu servidor trae los precios de cierre y aquí ves cuánto valen, cómo evolucionan y cuánto ganas o pierdes.</p>
-          <div className="mt-4 flex flex-wrap justify-center gap-2">
-            <Btn kind="primary" onClick={() => setEditando({})}><Plus size={14} /> Añadir un producto</Btn>
-            <Btn onClick={() => setCapturas(true)}><Camera size={14} /> Desde capturas de tu banco</Btn>
-            <Btn onClick={() => setImportando(true)}><Upload size={14} /> Pegar lista</Btn>
-          </div>
-        </Card>
+        <Bienvenida aiOn={aiOn} onImportar={() => setSubiendo(true)} onCapturas={() => setCapturas(true)} onAnadir={() => setEditando({})}
+          onEjemplo={() => setInversiones({ posiciones: carteraEjemplo(), aportacion: null })} onPegar={() => setImportando(true)} />
       ) : (
         <>
+          {ejemplo && (
+            <div role="status" className="flex items-center justify-between gap-2 rounded-xl border p-3 text-sm" style={{ borderColor: C.accent, background: C.accentSoft }}>
+              <span>Es una <strong>cartera de ejemplo</strong> con precios inventados. Explórala y, cuando quieras, trae la tuya.</span>
+              <span className="flex shrink-0 gap-1.5"><Btn size="sm" kind="primary" onClick={() => setSubiendo(true)}>Traer la mía</Btn><Btn size="sm" onClick={() => setInversiones((x) => ({ ...x, posiciones: x.posiciones.filter((p) => !p.ejemplo) }))}>Quitar</Btn></span>
+            </div>
+          )}
+          <Seg ariaLabel="Sección" value={seccion} onChange={setSeccion} options={[{ v: "cartera", l: "Tu cartera" }, { v: "renta", l: "Impuestos (Renta)" }]} />
+          {seccion === "renta" ? <Renta inv={inv} filas={a.filas} datos={datosA} onImportar={() => setSubiendo(true)} /> : (<>
           {/* Filtro: plataforma y producto. Todo lo de debajo se refiere a lo elegido. */}
           <div className="grid grid-cols-2 gap-2">
             <select aria-label="Plataforma" value={nivel.e || ""} onChange={(e) => setNivel({ e: e.target.value || null, id: null })}
@@ -693,18 +710,19 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
             control={!nivel.e && a.porEntidad.length > 1 && <Seg ariaLabel="Desglosar por" value={desglose} onChange={setDesglose} options={[{ v: "entidad", l: "Plataformas" }, { v: "producto", l: "Productos" }]} />}
             onElegir={(x) => (x.pos ? (nivel.id === x.pos ? setAbierta(x.pos) : setNivel({ e: entidadDe(filasPorId[x.pos].p), id: x.pos })) : setNivel({ e: x.entidad, id: null }))} />
           <FrenteMercado a={a} ids={selIds} periodo={periodo} referencia={referencia} setReferencia={setReferencia} />
-          <Destacados a={a} ids={selIds} periodo={periodo} filas={selFilas} datos={datos} onFecha={setAbierta} />
+          <Destacados a={a} ids={selIds} periodo={periodo} filas={selFilas} datos={datosA} onFecha={setAbierta} />
 
           <div className="flex items-center justify-between gap-2">
             <Seg ariaLabel="Agrupar por" value={vista} onChange={setVista} options={[{ v: "entidad", l: "Por plataforma" }, { v: "tipo", l: "Por tipo" }]} />
             <div className="flex gap-1.5">
-              <Btn size="sm" onClick={() => setCapturas(true)} title="Cargar o actualizar desde capturas de tu banco"><Camera size={14} /> Capturas</Btn>
+              <Btn size="sm" onClick={() => setSubiendo(true)} title="Importar el archivo de operaciones de tu bróker"><FileSpreadsheet size={14} /> Importar</Btn>
+              <Btn size="sm" onClick={() => setCapturas(true)} title="Cargar o actualizar desde capturas de tu banco"><Camera size={14} /></Btn>
               <Btn size="sm" kind="primary" onClick={() => setEditando({})}><Plus size={14} /> Añadir</Btn>
             </div>
           </div>
           {(vista === "entidad" ? a.porEntidad : a.porTipo)
             .map((g) => (nivel.e ? { ...g, filas: g.filas.filter((f) => selFilas.includes(f)) } : g)).filter((g) => g.filas.length)
-            .map((g, _i, todos) => <Grupo key={g.nombre} g={g} solo={todos.length === 1} datos={datos} onAbrir={setAbierta} nota={vista === "entidad" && g.nombre === entidadRobo ? notaRobo : null} />)}
+            .map((g, _i, todos) => <Grupo key={g.nombre} g={g} solo={todos.length === 1} datos={datosA} onAbrir={setAbierta} nota={vista === "entidad" && g.nombre === entidadRobo ? notaRobo : null} />)}
 
           {(avisosCartera.length > 0 || sinPrecio.length > 0) && (
             <Card className="p-4">
@@ -733,12 +751,15 @@ export function InversionesTab({ inversiones, setInversiones, movs, servidor, ai
 
           <div className="flex flex-wrap gap-2">
             {robo.length > 0 && <Btn size="sm" onClick={() => setAportando(true)}><Repeat size={13} /> Aportación mensual{inv.aportacion ? ` · ${fmtE0(inv.aportacion.importe)}` : ""}</Btn>}
+            <Btn size="sm" onClick={() => setSubiendo(true)}><FileSpreadsheet size={13} /> Importar de tu bróker</Btn>
             <Btn size="sm" onClick={() => setImportando(true)}><Upload size={13} /> Pegar lista</Btn>
           </div>
+          </>)}
         </>
       )}
 
-      {filaAbierta && <Detalle f={filaAbierta} datos={datos} onFecha={(id, fecha) => setInversiones((x) => ({ ...x, posiciones: x.posiciones.map((q) => (q.id === id ? (fecha ? { ...q, compra: fecha } : (({ compra, ...r }) => r)(q)) : q)) }))} onClose={() => setAbierta(null)} onEditar={() => { setEditando(filaAbierta.p); setAbierta(null); }} onBorrar={() => borrar(filaAbierta.p.id)} />}
+      {subiendo && <ImportarArchivo entidades={entidades} onImportar={importarArchivo} onClose={() => setSubiendo(false)} onCapturas={() => { setSubiendo(false); setCapturas(true); }} />}
+      {filaAbierta && <Detalle f={filaAbierta} datos={datosA} onFecha={(id, fecha) => setInversiones((x) => ({ ...x, posiciones: x.posiciones.map((q) => (q.id === id ? (fecha ? { ...q, compra: fecha } : (({ compra, ...r }) => r)(q)) : q)) }))} onClose={() => setAbierta(null)} onEditar={() => { setEditando(filaAbierta.p); setAbierta(null); }} onBorrar={() => borrar(filaAbierta.p.id)} />}
       {editando && <Editor inicial={editando} entidades={entidades} servidor={servidor} onGuardar={guardarPos} onClose={() => setEditando(null)} />}
       {importando && <Importar onImportar={importar} onClose={() => setImportando(false)} />}
       {capturas && <DesdeCapturas ai={ai} aiOn={aiOn} entidades={entidades} onClose={() => setCapturas(false)} onGuardar={(lista) => { importar(lista, false, null); setCapturas(false); }} />}
